@@ -132,6 +132,7 @@ Do not point the artifact directory at a folder you then commit. Generated audio
 | `audio_io.py` | WAV read/write, mono float |
 | `artifacts.py` | Copy out of scratch |
 | `cli/` | argparse entry points used by `scripts/` |
+| `shows/agent_yankers/` | Agent Yankers premise, marks, consent gate, session plan, voiceover cues, genaid episode manifest |
 
 `scripts/*.py` insert `src/` on `sys.path` so a checkout runs without an editable install, as long as the dependencies are present. Console scripts (`gen-audio-synth`, and the rest) come from `pip install`.
 
@@ -156,6 +157,10 @@ The in-window spectrogram is a browser DFT of the side-pane voice profile: perso
 | Gemini | same | None | `generateContent`. The key is a header, not a query parameter. |
 
 Vendor calls also require `GEN_AUDIO_CONNECTOR_LIVE=1`. Without it, a present token is reported as `token_present` and `complete` stays a mock envelope. Redirects are disabled so a `Location` header cannot carry `Authorization` to another host. Model ids reject `..` and `/`. Tool paths from MCP reject absolute paths, drive-letter paths (`C:\...`), UNC paths, and `..`. User-supplied repo reads are only `examples/` and `voices/`. Python scripts are an exact trusted list. Writes are a single file name inside the process scratch, and reads only succeed for files this process created. Model files for synth must live under `GEN_AUDIO_MODEL_DIR`. Python child processes do not inherit vendor API keys. Vendor URLs must be `https` to a public host, or `http` on `127.0.0.1` / `localhost` exactly (`http://127.0.0.1.evil.com` is rejected). `serve_health` with `probe=true` only contacts loopback, `10.1.8.70`, or `GEN_AUDIO_PROBE_HOSTS`.
+
+## Agent Yankers
+
+`gen_audio.shows.agent_yankers` plans one show. It does not open LiveKit, load PersonaPlex, or synthesize host lines. The call runner refuses a mark that lacks a recorded opt-in from both the caller and the mark, and it refuses before the transport is probed. `is_agent` is stored on the mark and copied onto call segments. It does not replace that check. The episode document (`schemas/shows/agent_yankers/episode.v1.schema.json`) is what genaid walks: `segments` in order, skipping `status: planned`. Field-by-field instructions are in [AGENT_YANKERS.md](AGENT_YANKERS.md).
 
 ## Work directory
 

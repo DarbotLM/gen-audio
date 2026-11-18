@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0.0",
+  "show": "agent_yankers",
+  "marks": [
+    {
+      "id": "mark-desk-agent",
+      "display_name": "Desk Agent",
+      "is_agent": true,
+      "endpoint": {
+        "kind": "livekit_agent",
+        "identity": "desk-agent"
+      },
+      "consent": {
+        "opt_in": true,
+        "recorded": true,
+        "recorded_at": "2026-03-01T15:00:00Z",
+        "method": "written",
+        "record_ref": "consent/desk-agent.txt",
+        "parties": ["caller", "mark"],
+        "statement": "Fictional LiveKit agent. Opts in to being called and recorded for Agent Yankers."
+      },
+      "notes": "Fictional help-desk agent operated for the show. Not a person and not a real extension."
+    },
+    {
+      "id": "mark-switchboard-agent",
+      "display_name": "Switchboard Agent",
+      "is_agent": true,
+      "endpoint": {
+        "kind": "livekit_agent",
+        "identity": "switchboard-agent"
+      },
+      "consent": {
+        "opt_in": true,
+        "recorded": true,
+        "recorded_at": "2026-03-01T15:05:00Z",
+        "method": "written",
+        "record_ref": "consent/switchboard-agent.txt",
+        "parties": ["caller", "mark"],
+        "statement": "Fictional LiveKit agent. Opts in to being called and recorded for Agent Yankers."
+      },
+      "notes": "Fictional switchboard agent operated for the show. Not a person and not a real extension."
+    }
+  ]
+}

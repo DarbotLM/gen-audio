@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "show": "agent_yankers",
+  "highlights": [
+    {
+      "id": "hl-desk-ticket",
+      "mark_id": "mark-desk-agent",
+      "in_s": 3.0,
+      "out_s": 8.0,
+      "note": "Desk Agent asks Hold Music Hank to spell a ticket number that was never filed."
+    },
+    {
+      "id": "hl-switch-hold",
+      "mark_id": "mark-switchboard-agent",
+      "in_s": 2.0,
+      "out_s": 6.5,
+      "note": "Switchboard Agent tries to transfer Hank back to the hold music."
+    }
+  ]
+}

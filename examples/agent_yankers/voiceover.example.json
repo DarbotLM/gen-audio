@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0.0",
+  "show": "agent_yankers",
+  "engine": "vibevoice",
+  "model_env": "GEN_AUDIO_VIBEVOICE_MODEL",
+  "sfx_dir_env": "GEN_AUDIO_AGENT_YANKERS_SFX_DIR",
+  "host_voice": {
+    "file_stem": "en-Alice_woman",
+    "file_prefix": "en",
+    "background_music": false
+  },
+  "cues": [
+    {
+      "id": "stinger-open",
+      "role": "stinger",
+      "placement": "open",
+      "sfx_id": "stinger-open"
+    },
+    {
+      "id": "host-open",
+      "role": "host",
+      "placement": "open",
+      "text": "Agent Yankers. Two fictional agents picked up, and neither of them had the ticket."
+    },
+    {
+      "id": "laugh-after",
+      "role": "laughter",
+      "placement": "after_call",
+      "sfx_id": "crowd-laugh-short"
+    },
+    {
+      "id": "host-close",
+      "role": "host",
+      "placement": "close",
+      "text": "That's the show. The marks were agents, the consent is on file, and the ticket is still not a ticket."
+    },
+    {
+      "id": "stinger-button",
+      "role": "stinger",
+      "placement": "close",
+      "sfx_id": "stinger-button"
+    }
+  ]
+}

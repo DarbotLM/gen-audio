@@ -1,0 +1,8 @@
+Agent Yankers consent record
+mark_id: mark-switchboard-agent
+is_agent: true
+This mark is a fictional LiveKit agent operated for the show.
+The mark opts in to being called and recorded.
+The caller (the Agent Yankers show) and this mark both consent.
+recorded_at: 2026-03-01T15:05:00Z
+method: written

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darbotlabs.dev/gen-audio/shows/agent_yankers/session.v1.schema.json",
+  "title": "AgentYankersCallSession",
+  "description": "PersonaPlex over LiveKit session plan for one consented mark. Credential fields name environment variables. They never hold the secret. improvise is true: the outline is not a script.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "show",
+    "premise_id",
+    "mark_id",
+    "is_agent",
+    "consent_record_ref",
+    "transport",
+    "speech",
+    "improvise",
+    "credentials",
+    "personaplex",
+    "livekit",
+    "recording"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "show": { "const": "agent_yankers" },
+    "premise_id": { "type": "string", "pattern": "^premise-[a-z0-9-]{1,48}$" },
+    "mark_id": { "type": "string", "pattern": "^mark-[a-z0-9-]{1,48}$" },
+    "is_agent": { "type": "boolean" },
+    "consent_record_ref": {
+      "type": "string",
+      "pattern": "^consent/[A-Za-z0-9][A-Za-z0-9._-]{0,64}\\.txt$"
+    },
+    "transport": { "const": "livekit" },
+    "speech": { "const": "personaplex" },
+    "improvise": { "const": true },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["livekit_url_env", "livekit_api_key_env", "livekit_api_secret_env", "personaplex_token_env"],
+      "properties": {
+        "livekit_url_env": { "const": "LIVEKIT_URL" },
+        "livekit_api_key_env": { "const": "LIVEKIT_API_KEY" },
+        "livekit_api_secret_env": { "const": "LIVEKIT_API_SECRET" },
+        "personaplex_token_env": { "const": "PERSONAPLEX_HF_TOKEN" }
+      }
+    },
+    "personaplex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "gated", "voice_code", "voice_prompt", "text_prompt", "sample_rate"],
+      "properties": {
+        "model_id": { "const": "nvidia/personaplex-7b-v1" },
+        "gated": { "const": true },
+        "voice_code": { "type": "string", "pattern": "^(NATF[0-3]|NATM[0-3]|VARF[0-4]|VARM[0-4])$" },
+        "voice_prompt": { "type": "string", "pattern": "^(NATF[0-3]|NATM[0-3]|VARF[0-4]|VARM[0-4])\\.pt$" },
+        "text_prompt": { "type": "string", "minLength": 8, "maxLength": 2000 },
+        "sample_rate": { "const": 24000 }
+      }
+    },
+    "livekit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["room", "caller_identity", "mark_identity"],
+      "properties": {
+        "room": { "type": "string", "pattern": "^agent-yankers-[a-z0-9-]{1,120}$" },
+        "caller_identity": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "mark_identity": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+      }
+    },
+    "recording": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "requires_recorded_consent", "format", "sample_rate"],
+      "properties": {
+        "enabled": { "const": true },
+        "requires_recorded_consent": { "const": true },
+        "format": { "const": "wav" },
+        "sample_rate": { "const": 24000 }
+      }
+    }
+  }
+}

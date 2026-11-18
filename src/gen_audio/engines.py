@@ -79,6 +79,19 @@ ENGINES: dict[str, EngineSpec] = {
             "a Magpie render is not available. No adapter and no weights are included."
         ),
     ),
+    "agentyankers": EngineSpec(
+        id="agentyankers",
+        kind="podcast",
+        status="format",
+        summary=(
+            "AgentYankers episode format. Host voiceover and multi-speaker "
+            "commentary use the VibeVoice adapter when local weights are configured. "
+            "A dry run writes placeholder tones. Laugh, stinger, and bed cues are "
+            "mixed here, then the episode gets a spectrogram and a cube revision. "
+            "Live calls stay in genaid_audio.agentyankers when that package is "
+            "installed. Voice files are read from GENAID_VOICES_DIR and stay there."
+        ),
+    ),
 }
 
 

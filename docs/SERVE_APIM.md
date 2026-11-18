@@ -37,7 +37,9 @@ GET http://<node>:8002/genaid-audio/health
 
 A 200 from `http://<node>:8002/health` can belong to a different Serve application on the same port. Treat that as a different check. The body that matches this service is `health_payload()`: `status` of `ok`, `service` of `genaid-audio`, `route_prefix` of `/genaid-audio`.
 
-This repository does not define a synthesis HTTP API. Rendering is a local `KokoroOnnxSynthesizer` call (or a WAV you already have). Add a request route on the node when a node deployment exists; do not assume one from this repo. `GET /genaid-audio/health` is liveness and stays successful when the model is unloaded. `GET /genaid-audio/ready` is readiness.
+`GET /genaid-audio/health` is liveness and stays successful when the model is unloaded. `GET /genaid-audio/ready` is readiness.
+
+`POST /genaid-audio/agentyankers/episode` dry-runs or renders an AgentYankers rundown. `GET /genaid-audio/agentyankers` describes that route. The body is a JSON rundown plus the mark index. Files are written only under `GEN_AUDIO_ARTIFACT_DIR`. See [AGENTYANKERS.md](AGENTYANKERS.md). Kokoro synthesis remains a local `KokoroOnnxSynthesizer` call.
 
 ## Power Table
 

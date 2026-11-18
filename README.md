@@ -62,6 +62,8 @@ Connector environment variables, mock behavior, and the live flag are in [docs/C
 
 The installable package is still `gen_audio` (`pip install -e .`). It turns a two-speaker script into a WAV with [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) when you supply model files, then runs the 24 kHz publish chain, draws spectrogram PNGs, and can run the cube-revision sketch.
 
+AgentYankers episodes are a format in that SDK. `gen_audio.agentyankers` mixes a rundown with VibeVoice host and multi-speaker commentary, laugh and stinger cues, a ducked bed, a spectrogram, and a cube revision. `POST /genaid-audio/agentyankers/episode` dry-runs or renders that rundown. Live calls stay in `genaid_audio.agentyankers` and are used when that package imports. Voice files are read from `GENAID_VOICES_DIR`. See [docs/AGENTYANKERS.md](docs/AGENTYANKERS.md).
+
 ## What actually runs
 
 | Piece | Status |
@@ -72,7 +74,8 @@ The installable package is still `gen_audio` (`pip install -e .`). It turns a tw
 | Before/after spectrogram PNGs | Implemented |
 | Inverse-HDR / BW95 / clip-fraction revision sketch | Implemented as a heuristic, not a mastering standard |
 | Engine compare on WAVs you already have | Implemented as measurement only; it does not rank engines |
-| VibeVoice, Magpie, Pocket TTS, dayour Kokoro | Names on the compare list only. No adapter and no weights |
+| VibeVoice, Magpie, Pocket TTS, dayour Kokoro | VibeVoice and dayour Kokoro have adapters that run when local weights are configured. Magpie and Pocket stay compare-list names until a measured runtime is present |
+| AgentYankers episode format | Implemented. Dry-run tones, or VibeVoice commentary when weights are configured. Laugh, stinger, bed, spectrogram, and cube revision |
 | misaki | Grapheme-to-phoneme library used by Kokoro. Not a waveform engine, and this repo does not call it |
 | Node HTTP process | Not started by import. URL helpers plus `python -m gen_audio.node_http` |
 | Tauri desktop card viewport | Implemented. Agent is a persona and Voice is a TTS model. Library tiles play a WAV when the file loads. The spectrogram panel follows that profile. The pipeline cube card stays a fixture; the spatial slide draws library cube JSON when a clip has one |
@@ -245,7 +248,8 @@ src/gen_audio/          installable package
   spectrogram.py        before/after PNG helpers
   guards.py             length, path, checksum, and TTS error guards
   gateway.py            /health versus /ready and proxy status classes
-  node_http.py          loopback genaid-audio health and ready routes
+  node_http.py          loopback genaid-audio health, ready, and AgentYankers routes
+  agentyankers/         AgentYankers rundown mix, consent, and VibeVoice commentary
   cube_revision.py      serial inv-HDR / BW95 / clip_frac sketch
   cube_layers.py        four-layer Library cube; inv_hdr is rms/peak, layer_score the composite (cube_revision.py layers)
   compare.py            measure existing WAVs

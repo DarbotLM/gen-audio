@@ -13,6 +13,7 @@ import pytest
 
 from gen_audio.adapters import EngineRefusal, Probe
 from gen_audio.agentyankers import (
+    ENV_VIBEVOICE_MODEL,
     SCHEMA_VERSION,
     GenAudioVoiceoverRenderer,
     assemble_with_core,
@@ -302,6 +303,27 @@ def test_named_recording_is_mixed_and_paths_stay_in_the_artifact_dir(tmp_path: P
     assert body["error"] == "missing_recording"
     assert "foreign.wav" not in json.dumps(body)
     assert str(outside) not in json.dumps(body)
+
+
+def test_duration_rules_and_vibevoice_env_name():
+    from gen_audio.agentyankers.schema import _duration, validate_rundown
+
+    assert ENV_VIBEVOICE_MODEL == "GEN_AUDIO_VIBEVOICE_MODEL"
+    assert _duration(None, "cue", required=False) is None
+    assert _duration(1.5, "cue", required=False) == 1.5
+    with pytest.raises(Exception, match="duration"):
+        _duration(None, "clip", required=True)
+    payload = _body()["rundown"]
+    commentary = json.loads(json.dumps(payload))
+    commentary["segments"][2].pop("duration_seconds")
+    validate_rundown(commentary)
+    missing = json.loads(json.dumps(payload))
+    missing["segments"][4].pop("duration_seconds")
+    with pytest.raises(Exception, match="duration_seconds"):
+        validate_rundown(missing)
+    optional_null = json.loads(json.dumps(payload))
+    optional_null["cues"][0]["duration_seconds"] = None
+    validate_rundown(optional_null)
 
 
 def test_engine_registry_names_the_podcast_format():

@@ -395,9 +395,12 @@ def _text(value: Any, label: str, limit: int) -> str:
     return value
 
 
-def _duration(value: Any, label: str, *, required: bool) -> float:
-    if value is None and not required:
-        raise AgentYankersError(f"invalid {label}")
+def _duration(value: Any, label: str, *, required: bool) -> float | None:
+    """A duration in ``(0, 30]``. Missing values pass only when ``required`` is false."""
+    if value is None:
+        if required:
+            raise AgentYankersError(f"{label} must be a duration above 0 and at most 30 seconds")
+        return None
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < float(value) <= 30:
         raise AgentYankersError(f"{label} must be a duration above 0 and at most 30 seconds")
     return float(value)

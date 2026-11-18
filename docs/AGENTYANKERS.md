@@ -66,7 +66,7 @@ Every mark in the body passes `require_publish_consent` before audio is written:
 
 `recording_disclosure()` is the only disclosure sentence. A rundown whose `disclosure_text` differs is refused. Show notes copy that sentence and the consent ids. Contact refs (`agent:`, `lk-identity:`, `room:`) stay out of the notes.
 
-Phone-number-like strings are refused. The error does not include the matched text. Secrets (`api_secret`, tokens, LiveKit keys) are refused; set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `GENAID_PERSONAPLEX_MODEL_BASE`, `GENAID_MODEL_BASE`, and `GENAID_VOICES_DIR` in the environment. The documented voice library root is `/mnt/fschia/genai-media/audio/voice-library`. This repo resolves a relative path under `GENAID_VOICES_DIR` and does not copy the file.
+Phone-number-like strings are refused. The error does not include the matched text. Secrets (`api_secret`, tokens, LiveKit keys) are refused. Live calls use `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `GENAID_PERSONAPLEX_MODEL_BASE`. Render mode in this package reads the VibeVoice weights from `GEN_AUDIO_VIBEVOICE_MODEL` (the adapter probed by `gen_audio.adapters`). The private core's env renderer names `GENAID_MODEL_BASE` and does not load those weights. Reference wavs resolve under `GENAID_VOICES_DIR`. The documented voice library root is `/mnt/fschia/genai-media/audio/voice-library`. This repo reads that relative path and leaves the file in the library.
 
 The fictional fixture is `tests/fixtures/agentyankers/dry_run.json`. It has no phone numbers.
 

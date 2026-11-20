@@ -62,6 +62,7 @@ gen-audio-compare = "gen_audio.cli.compare:main"
 gen-audio-generate = "gen_audio.cli.generate:main"
 gen-audio-release-gate = "gen_audio.cli.release_gate:main"
 gen-audio-voices = "gen_audio.cli.voices:main"
+gen-audio-agent-yankers = "gen_audio.cli.agent_yankers:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darbotlabs.dev/gen-audio/shows/agent_yankers/premise.v1.schema.json",
+  "title": "AgentYankersPremise",
+  "description": "Basic premise outline for one Agent Yankers bit. The caller improvises. This document is not a script and not a recording.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "show", "id", "title", "outline", "caller", "targets", "boundaries"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "show": { "const": "agent_yankers" },
+    "id": {
+      "type": "string",
+      "pattern": "^premise-[a-z0-9-]{1,48}$"
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "outline": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": { "type": "string", "minLength": 12, "maxLength": 400 }
+    },
+    "caller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_name", "persona_prompt", "voice_code"],
+      "properties": {
+        "agent_name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 '._-]{1,78}$"
+        },
+        "persona_prompt": { "type": "string", "minLength": 8, "maxLength": 2000 },
+        "voice_code": {
+          "type": "string",
+          "pattern": "^(NATF[0-3]|NATM[0-3]|VARF[0-4]|VARM[0-4])$",
+          "description": "PersonaPlex stock voice code. The voice prompt file is this code plus .pt."
+        }
+      }
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": { "type": "string", "pattern": "^mark-[a-z0-9-]{1,48}$" }
+    },
+    "boundaries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": { "type": "string", "minLength": 8, "maxLength": 240 },
+      "description": "Hard stops for the improvised call. One of them must say what happens when consent is withdrawn."
+    }
+  }
+}

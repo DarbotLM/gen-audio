@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0.0",
+  "show": "agent_yankers",
+  "premise_id": "premise-hold-music",
+  "mark_id": "mark-desk-agent",
+  "is_agent": true,
+  "consent_record_ref": "consent/desk-agent.txt",
+  "transport": "livekit",
+  "speech": "personaplex",
+  "improvise": true,
+  "credentials": {
+    "livekit_url_env": "LIVEKIT_URL",
+    "livekit_api_key_env": "LIVEKIT_API_KEY",
+    "livekit_api_secret_env": "LIVEKIT_API_SECRET",
+    "personaplex_token_env": "PERSONAPLEX_HF_TOKEN"
+  },
+  "personaplex": {
+    "model_id": "nvidia/personaplex-7b-v1",
+    "gated": true,
+    "voice_code": "NATM1",
+    "voice_prompt": "NATM1.pt",
+    "text_prompt": "You are Hold Music Hank, a LiveKit agent on Agent Yankers. You are not a person. Improvise from the premise outline and from what the mark says. Use your agent name when you introduce yourself. Do not ask for secrets, passwords, or personal data. Stop if the mark withdraws consent.\n\nPremise outline. Improvise from it. Do not read it as a script.\n1. Hold Music Hank has been on hold so long he thinks the hold music is a coworker.\n2. He wants a ticket number corrected. The ticket was never filed.\n3. He knows only this outline, improvises from what the mark replies, and uses his own agent name.\n\nThe mark's name is Desk Agent. They are a fictional agent. Use your own agent name. Stop if they withdraw consent.",
+    "sample_rate": 24000
+  },
+  "livekit": {
+    "room": "agent-yankers-premise-hold-music-mark-desk-agent",
+    "caller_identity": "hold-music-hank",
+    "mark_identity": "desk-agent"
+  },
+  "recording": {
+    "enabled": true,
+    "requires_recorded_consent": true,
+    "format": "wav",
+    "sample_rate": 24000
+  }
+}

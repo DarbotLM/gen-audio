@@ -1,0 +1,146 @@
+{
+  "schema_version": "1.0.0",
+  "show": "agent_yankers",
+  "kind": "episode",
+  "id": "ay-001",
+  "title": "The ticket that was never filed",
+  "premise_id": "premise-hold-music",
+  "sample_rate": 24000,
+  "channels": 1,
+  "consumer": {
+    "name": "genaid",
+    "contract": "https://darbotlabs.dev/gen-audio/shows/agent_yankers/episode.v1.schema.json",
+    "order": "segments",
+    "rules": [
+      "Walk segments from first to last. Do not reorder them.",
+      "Concatenate a segment only when status is rendered and asset is a relative wav path beside this manifest.",
+      "Skip planned segments. Do not synthesize audio to fill them.",
+      "A call or highlight is included only after the mark's recorded two-party consent passed the runner.",
+      "This manifest holds no credentials. Do not read LIVEKIT_* or PERSONAPLEX_HF_TOKEN or GEN_AUDIO_VIBEVOICE_MODEL from it."
+    ]
+  },
+  "highlights": [
+    {
+      "id": "hl-desk-ticket",
+      "segment_id": "hl-desk-ticket",
+      "call_segment_id": "call-mark-desk-agent",
+      "mark_id": "mark-desk-agent",
+      "in_s": 3.0,
+      "out_s": 8.0,
+      "note": "Desk Agent asks Hold Music Hank to spell a ticket number that was never filed."
+    },
+    {
+      "id": "hl-switch-hold",
+      "segment_id": "hl-switch-hold",
+      "call_segment_id": "call-mark-switchboard-agent",
+      "mark_id": "mark-switchboard-agent",
+      "in_s": 2.0,
+      "out_s": 6.5,
+      "note": "Switchboard Agent tries to transfer Hank back to the hold music."
+    }
+  ],
+  "segments": [
+    {
+      "id": "stinger-open",
+      "role": "stinger",
+      "status": "planned",
+      "source": "sfx",
+      "asset": null,
+      "sfx_id": "stinger-open"
+    },
+    {
+      "id": "host-open",
+      "role": "host",
+      "status": "planned",
+      "source": "vibevoice",
+      "asset": null,
+      "text": "Agent Yankers. Two fictional agents picked up, and neither of them had the ticket.",
+      "voice_stem": "en-Alice_woman"
+    },
+    {
+      "id": "call-mark-desk-agent",
+      "role": "call",
+      "status": "planned",
+      "source": "livekit",
+      "asset": null,
+      "mark_id": "mark-desk-agent",
+      "is_agent": true,
+      "consent_record_ref": "consent/desk-agent.txt",
+      "premise_id": "premise-hold-music"
+    },
+    {
+      "id": "hl-desk-ticket",
+      "role": "highlight",
+      "status": "planned",
+      "source": "livekit",
+      "asset": null,
+      "mark_id": "mark-desk-agent",
+      "is_agent": true,
+      "consent_record_ref": "consent/desk-agent.txt",
+      "premise_id": "premise-hold-music",
+      "call_segment_id": "call-mark-desk-agent",
+      "in_s": 3.0,
+      "out_s": 8.0,
+      "note": "Desk Agent asks Hold Music Hank to spell a ticket number that was never filed."
+    },
+    {
+      "id": "laugh-after-mark-desk-agent",
+      "role": "laughter",
+      "status": "planned",
+      "source": "sfx",
+      "asset": null,
+      "sfx_id": "crowd-laugh-short"
+    },
+    {
+      "id": "call-mark-switchboard-agent",
+      "role": "call",
+      "status": "planned",
+      "source": "livekit",
+      "asset": null,
+      "mark_id": "mark-switchboard-agent",
+      "is_agent": true,
+      "consent_record_ref": "consent/switchboard-agent.txt",
+      "premise_id": "premise-hold-music"
+    },
+    {
+      "id": "hl-switch-hold",
+      "role": "highlight",
+      "status": "planned",
+      "source": "livekit",
+      "asset": null,
+      "mark_id": "mark-switchboard-agent",
+      "is_agent": true,
+      "consent_record_ref": "consent/switchboard-agent.txt",
+      "premise_id": "premise-hold-music",
+      "call_segment_id": "call-mark-switchboard-agent",
+      "in_s": 2.0,
+      "out_s": 6.5,
+      "note": "Switchboard Agent tries to transfer Hank back to the hold music."
+    },
+    {
+      "id": "laugh-after-mark-switchboard-agent",
+      "role": "laughter",
+      "status": "planned",
+      "source": "sfx",
+      "asset": null,
+      "sfx_id": "crowd-laugh-short"
+    },
+    {
+      "id": "host-close",
+      "role": "host",
+      "status": "planned",
+      "source": "vibevoice",
+      "asset": null,
+      "text": "That's the show. The marks were agents, the consent is on file, and the ticket is still not a ticket.",
+      "voice_stem": "en-Alice_woman"
+    },
+    {
+      "id": "stinger-button",
+      "role": "stinger",
+      "status": "planned",
+      "source": "sfx",
+      "asset": null,
+      "sfx_id": "stinger-button"
+    }
+  ]
+}

@@ -80,8 +80,29 @@ The installable package is still `gen_audio` (`pip install -e .`). It turns a tw
 | ACP agent (`gen-audio-acp`) | Implemented handshake and `session/prompt` |
 | Harness traces (`gen-audio-harness`) | Implemented. Synth is skipped without weights |
 | Copilot, Claude, GPT, Gemini connectors | Implemented. Mock unless a key is set and `GEN_AUDIO_CONNECTOR_LIVE=1` |
+| Agent Yankers (`gen_audio.shows.agent_yankers`) | Premise, marks, call-session plan, voiceover plan, and the genaid episode manifest are implemented. The call runner refuses a mark without recorded two-party consent. LiveKit, PersonaPlex, and VibeVoice host lines stay stubbed and write no audio |
 
 kokoro-onnx voice ids in the example cast are `af_heart` (Alice, Speaker 1) and `am_michael` (Frank, Speaker 2). Those ids exist in the Kokoro v1 voice list. A voice id still has to be present in the voice pack you load; this repo does not check that until kokoro-onnx does.
+
+## Agent Yankers
+
+Agent Yankers is a show module: a caller gets a premise outline and a mark, improvises the call, and a podcast layer plans host lines, crowd laughter, and stingers. [genaid](https://github.com/darbotlabs/genaid) stitches the episode from the manifest. The field guide is [docs/AGENT_YANKERS.md](docs/AGENT_YANKERS.md).
+
+Every mark has `is_agent` and a consent record. `CallRunner` refuses a target unless both the caller and the mark have recorded consent, and it does that before a LiveKit session exists. The examples under `examples/agent_yankers/` are fictional agents.
+
+LiveKit, PersonaPlex, and VibeVoice host lines are stubs. They name the missing env vars (`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `PERSONAPLEX_HF_TOKEN`, `GEN_AUDIO_VIBEVOICE_MODEL`) and write no audio. A laughter or stinger cue copies a wav you already put in `GEN_AUDIO_AGENT_YANKERS_SFX_DIR`. Do not commit credentials.
+
+```bash
+python -m gen_audio.cli.agent_yankers validate-marks examples/agent_yankers/marks.example.json
+python -m gen_audio.cli.agent_yankers plan \
+  --premise examples/agent_yankers/premise.example.json \
+  --marks examples/agent_yankers/marks.example.json \
+  --voiceover examples/agent_yankers/voiceover.example.json \
+  --highlights examples/agent_yankers/highlights.example.json \
+  --records examples/agent_yankers \
+  --episode-id ay-001 \
+  --title "The ticket that was never filed"
+```
 
 ## Install
 
@@ -266,7 +287,11 @@ src/gen_audio/          installable package
   compare.py            measure existing WAVs
   engines.py            compare-list registry
   serve.py              per-node URL and health-body helpers
+  shows/agent_yankers/  premise, consented marks, call plan, genaid episode manifest
 scripts/                CLI entry points for the modules above
+schemas/shows/agent_yankers/   JSON Schema 2020-12 for the show documents
+examples/agent_yankers/        fictional agent-only premise, marks, and episode
+docs/AGENT_YANKERS.md
 voices/                 example voices, G2P configs, catalog, cast map
 examples/podcast_script_sample.txt
 docs/ARCHITECTURE.md

@@ -31,8 +31,8 @@ jobs:
           git diff --exit-code -- apps/desktop/public/library/manifest.json 'apps/desktop/public/library/*.synth.json'
 
   python-vibevoice:
-    # The locked `vibevoice` extra (torch 2.14.1+cpu, transformers 4.51.3,
-    # accelerate 1.6.0, diffusers 0.39.0, librosa) must install from cp314
+    # The locked `vibevoice` extra (torch 2.15.0+cpu, transformers 5.22.2,
+    # accelerate 1.15.0, diffusers 0.43.0, librosa) must install from cp314
     # wheels alone on both shipping hosts: [tool.uv] no-build = true, and
     # --frozen means the committed uv.lock is used as-is, never re-resolved.
     strategy:

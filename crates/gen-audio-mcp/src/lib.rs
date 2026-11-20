@@ -195,17 +195,31 @@ pub fn handle(server: &Server, message: Value) -> Result<Option<Value>, String> 
     }
 }
 
+/// MCP revisions this server speaks, oldest first.
+pub const SUPPORTED_PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+
+/// A known revision is echoed. A well-formed revision newer than the newest
+/// known one gets the newest known one back, which is how MCP negotiates.
+/// Anything older or malformed is refused.
+pub fn negotiate_protocol(requested: &str) -> Option<&'static str> {
+    if let Some(known) = SUPPORTED_PROTOCOLS.iter().find(|v| **v == requested) {
+        return Some(known);
+    }
+    let dated = requested.len() == 10
+        && requested.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
+    let newest = SUPPORTED_PROTOCOLS[SUPPORTED_PROTOCOLS.len() - 1];
+    (dated && requested > newest).then_some(newest)
+}
+
 fn initialize_result(params: &Value) -> Result<Value, (i32, String)> {
-    const SUPPORTED: &[&str] = &["2024-11-05", "2025-03-26"];
     let requested = params
         .get("protocolVersion")
         .and_then(Value::as_str)
         .unwrap_or("2024-11-05");
-    if !SUPPORTED.contains(&requested) {
-        return Err((-32602, format!("unsupported protocolVersion {requested}")));
-    }
+    let negotiated = negotiate_protocol(requested)
+        .ok_or_else(|| (-32602, format!("unsupported protocolVersion {requested}")))?;
     Ok(json!({
-        "protocolVersion": requested,
+        "protocolVersion": negotiated,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "gen-audio", "version": "0.1.0"},
         "instructions": "Stateless Gen-Audio MCP. initialize stores no session. UI tools queue a loopback command and do not write speech. Agent ids are personas (anton, alice, khortana, rocky, and the rest of the catalog), not connector ids. Voice ids are TTS models (kokoro_onnx, kokoro_dayour, misaki, vibevoice, magpie, pocket_tts). af_heart is a Kokoro pack ref, not a Voice id. GET /health is liveness. GET /ready means this listener is up, not that a model is loaded. GET /control/stream is a short stateless SSE snapshot."
@@ -784,6 +798,16 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
+        for (asked, got) in [("2025-06-18", "2025-06-18"), ("2025-11-25", "2025-11-25"), ("2099-01-01", "2025-11-25")] {
+            let init = handle(
+                &server,
+                json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion": asked}}),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(init["result"]["protocolVersion"], got, "{asked}");
+        }
+        assert_eq!(super::negotiate_protocol("2025-6-18"), None);
         let rejected = handle(
             &server,
             json!({"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}),

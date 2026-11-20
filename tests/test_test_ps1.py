@@ -247,7 +247,10 @@ def _stub_npm_and_gate(tmp_path: Path, *, fail_gate: bool) -> dict[str, str]:
     )
     for name in ("npm", "npx", "python3"):
         (bin_dir / name).chmod(0o755)
-    return {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    # The stubbed python3 must be the gate test.ps1 runs. A GEN_AUDIO_PYTHON inherited from
+    # the host (the toolbox sets one per user) would win over PATH and bypass the stub.
+    env = {k: v for k, v in os.environ.items() if k != "GEN_AUDIO_PYTHON"}
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
 
 
 @pytest.mark.skipif(SHELL is None or shutil.which("git") is None, reason="needs PowerShell and git")

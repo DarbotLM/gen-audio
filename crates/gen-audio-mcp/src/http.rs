@@ -155,7 +155,19 @@ fn post_mcp(addr: &str, payload: &Value) -> Result<Value, String> {
 
 fn bind_listener(addr: &str) -> std::io::Result<TcpListener> {
     ensure_bind_allowed(addr)?;
-    TcpListener::bind(addr)
+    TcpListener::bind(addr).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::AddrInUse {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                format!(
+                    "{addr} is already in use (another gen-audio-mcp, or an a2swe ACP server started with --port {}?). Stop that listener or pass --http 127.0.0.1:<free port>.",
+                    addr.rsplit(':').next().unwrap_or("?")
+                ),
+            )
+        } else {
+            err
+        }
+    })
 }
 
 fn accept_loop(listener: TcpListener) {
@@ -648,6 +660,11 @@ mod tests {
     #[test]
     fn http_health_has_no_session_header() {
         assert!(ensure_bind_allowed("0.0.0.0:8765").is_err());
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = held.local_addr().unwrap().to_string();
+        let err = bind_listener(&taken).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(err.to_string().contains("already in use"), "{err}");
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {

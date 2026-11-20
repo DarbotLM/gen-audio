@@ -27,15 +27,20 @@ The `Node` path:
    builds the MCP, ACP, and harness Rust crates.
 4. Stages checksum-verified Kokoro ONNX and voice-pack files in `models/`. It
    prefers the normalized a2swe model when that exact registry artifact exists.
-5. Persists checkout-local `GEN_AUDIO_*` environment values under the user
-   profile and writes `artifacts/runtime/node-environment.txt`.
-6. Runs the locked no-WAV validation gate.
+5. Writes `artifacts/runtime/node-environment.json`, a checkout-scoped runtime
+   descriptor, plus a sourceable compatibility text file. It sets process-only
+   environment values and does not mutate the user's persisted environment.
+6. Runs the locked no-WAV validation gate. `-SkipTests` is explicit: it reports a
+   degraded result and exits nonzero instead of claiming full completion.
 7. Launches and verifies:
-   - Node service: `http://127.0.0.1:8002/genaid-audio`
-   - MCP: `http://127.0.0.1:8765`
-   - UI preview: `http://127.0.0.1:1420`
+   - Node service: the configured `genaid-audio` health route
+   - MCP: the configured `gen-audio-mcp` health route
+   - UI preview: the configured Darbot Gen-Audio page
 
-The script writes launcher PIDs and service logs under `artifacts/runtime`.
+Defaults live in `scripts/runtime.json`; the checkout descriptor can override the
+ports. The script writes launcher PIDs and service logs under
+`artifacts/runtime`, holds a named checkout lease for the whole run, and refuses
+to adopt a healthy-looking service without a matching launcher record.
 
 ## Desktop package note
 

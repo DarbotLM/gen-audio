@@ -12,7 +12,7 @@ Seven surfaces are registered with `gen_audio_connectors::roster`, the MCP `list
 | `gpt` | `mock` | HTTPS call to the OpenAI chat completions URL. |
 | `gemini` | `mock` | HTTPS call to Gemini `generateContent`. |
 
-`complete` on a vendor connector returns text that says it is **not model output** whenever it did not perform the HTTP call. A credential alone does not send the prompt. Set `GEN_AUDIO_CONNECTOR_LIVE=1` as well.
+`complete` on a vendor connector returns text that says it is **not model output** whenever it did not perform the HTTP call. A credential alone does not send the prompt. Set `GEN_AUDIO_CONNECTOR_LIVE=1` as well. With live calls enabled, health reports `configured` and `authenticated: false`: health does not contact a vendor, so only a successful completion proves authentication. The registry validates plugin ids and duplicate factories at startup.
 
 ## Environment
 
@@ -51,6 +51,6 @@ The MCP smoke writes a fixture tone. The harness trace includes one `connector_h
 
 `synth`, `improve`, `spectrogram`, `cube_revision`, `serve_health`, `connector_health`, `list_connectors`, `list_engines`, `fixture_tone`, `benchmark_reference`, `harness_plan`.
 
-`serve_health` builds `http://<host>:8002/genaid-audio/health`. An unprobed row sets `healthy` and `probed` to false and does not set `ok`, so `isError` stays false without claiming the node is up. A probe sets `healthy` only when the JSON body has `"service": "genaid-audio"`. `GET /health` on the MCP port is the MCP process, not the node speech route. That body says `"service": "gen-audio-mcp"`. `initialize` accepts protocol versions `2024-11-05` and `2025-03-26` and stores no session. The harness `cast_resolved` event reads `voices/cast_map.example.json` and sets `synthesized` to false. ACP `session/new` requires `cwd` and does not open that directory.
+`serve_health` builds `http://<host>:8002/genaid-audio/health`. An unprobed row sets `healthy` and `probed` to false and does not set `ok`, so `isError` stays false without claiming the node is up. A probe sets `healthy` only when the JSON body has `"service": "genaid-audio"`. `GET /health` on the MCP port is the MCP process, not the node speech route. That body says `"service": "gen-audio-mcp"`. `initialize` accepts protocol versions `2024-11-05` and `2025-03-26` and stores no session. The harness `cast_resolved` event reads `voices/cast_map.example.json` and sets `synthesized` to false. ACP `session/new` requires `cwd` and does not open that directory. Its typed session-store interface explicitly advertises process-lifetime in-memory semantics in the default binary; durable stores can be injected without changing protocol handling. Intent plugins are registry-validated, and unrecognized prompts return an unsupported-intent error instead of falling back to a fake list action.
 
 Synth from MCP reads `GEN_AUDIO_KOKORO_MODEL` and `GEN_AUDIO_KOKORO_VOICES` from the environment, and both files must sit under `GEN_AUDIO_MODEL_DIR`. `script` and `castMap` may only name files under `examples/` or `voices/`. The Claude Code prompt is written to the CLI stdin, not argv. `CLAUDE_CODE_BIN` must be a file named `claude`. The desktop capability set allows the three app commands and does not grant shell or filesystem plugins. `run_fixture_improve` returns status fields only, not Python stdout.

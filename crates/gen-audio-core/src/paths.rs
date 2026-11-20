@@ -265,13 +265,14 @@ pub fn mcp_addr_path() -> PathBuf {
     if let Some(path) = std::env::var_os("GEN_AUDIO_MCP_ADDR_FILE") {
         return PathBuf::from(path);
     }
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("state"))
-        })
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("gen-audio").join("mcp.addr")
+    if let Some(repo) = find_repo_root() {
+        return repo.join("artifacts").join("runtime").join("mcp.addr");
+    }
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".gen-audio")
+        .join("runtime")
+        .join("mcp.addr")
 }
 
 pub fn write_mcp_addr(addr: &str) -> Result<(), String> {
@@ -371,8 +372,28 @@ extern "C" fn on_mcp_stop(_sig: i32) {
     std::process::exit(0);
 }
 
-pub fn delete_mcp_addr() {
-    let _ = fs::remove_file(mcp_addr_path());
+/// Remove the address descriptor only when this process owns it.
+pub fn delete_mcp_addr() -> Result<(), String> {
+    let path = mcp_addr_path();
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let owner = text
+        .lines()
+        .nth(1)
+        .and_then(|line| line.trim().parse::<u32>().ok());
+    if owner.is_some_and(|pid| pid != std::process::id()) {
+        return Err(format!(
+            "refusing to delete MCP address owned by pid {}: {}",
+            owner.unwrap(),
+            path.display()
+        ));
+    }
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 pub fn read_mcp_addr() -> Option<String> {
@@ -413,13 +434,35 @@ fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    #[cfg(unix)]
+    {
+        return std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> *mut std::ffi::c_void;
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let _ = unsafe { CloseHandle(handle) };
+        return true;
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        false
+    }
 }
 
 fn port_accepts(addr: &str) -> bool {
@@ -670,7 +713,10 @@ mod tests {
         ] {
             assert!(reject_repo_scratch(&dir, &repo).is_err(), "{dir:?}");
         }
-        let escaped = repo.join("artifacts/runtime/mcp/../../../src").canonicalize().unwrap();
+        let escaped = repo
+            .join("artifacts/runtime/mcp/../../../src")
+            .canonicalize()
+            .unwrap();
         assert!(reject_repo_scratch(&escaped, &repo).is_err());
     }
 

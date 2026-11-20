@@ -11,6 +11,11 @@
 *.css text eol=lf
 *.html text eol=lf
 *.yml text eol=lf
+*.ps1 text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
 *.wav binary
 *.png binary
 *.onnx binary

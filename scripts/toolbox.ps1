@@ -7,7 +7,9 @@ Bootstrap, configure, build, test, launch, and verify a Gen-Audio Windows node.
 Run this entry point from a checkout or download it directly from GitHub. A Node
 run preserves an existing checkout, installs the complete locked Python, Rust,
 and npm framework, stages checksum-verified Kokoro assets, persists local
-environment configuration, and launches the node, MCP, and UI preview services.
+checkout-scoped runtime configuration, and launches the node, MCP, and UI
+preview services. Overlapping runs of the same checkout are rejected by a named
+lease. Skipped validation or best-effort warnings produce a degraded exit code.
 
 .EXAMPLE
 pwsh -NoProfile -File .\scripts\toolbox.ps1 -Step Node -RepoRoot G:\gen-audio
@@ -25,9 +27,9 @@ param(
     [string]$RepoRef = 'main',
     [ValidatePattern('^24\.\d+\.\d+$')]
     [string]$NodeVersion = '24.14.1',
-    [int]$NodePort = 8002,
-    [int]$McpPort = 8765,
-    [int]$PreviewPort = 1420,
+    [ValidateRange(0, 65535)][int]$NodePort = 0,
+    [ValidateRange(0, 65535)][int]$McpPort = 0,
+    [ValidateRange(0, 65535)][int]$PreviewPort = 0,
     [string]$LogRoot = (Join-Path $env:LOCALAPPDATA 'gen-audio\toolbox\logs'),
     [switch]$SkipTests,
     [switch]$NoBrowser,
@@ -48,6 +50,11 @@ $script:OriginalPath = $env:Path
 $script:LogPath = $null
 $script:TranscriptPath = $null
 $script:RuntimeDir = $null
+$script:RuntimeConfig = $null
+$script:LeaseMutex = $null
+$script:LeaseOwned = $false
+$script:BestEffortWarnings = New-Object System.Collections.Generic.List[string]
+$script:ValidationSkipped = $false
 
 function Resolve-SessionPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -62,6 +69,84 @@ function Add-PathPrefix {
         $script:PathPrefix = @($Directory) + $script:PathPrefix
         Resolve-SessionPath
     }
+}
+
+function Resolve-ToolboxCheckoutRoot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $trimmed = $Path.Trim()
+    if ($trimmed.Length -ge 2 -and
+        (($trimmed[0] -eq '"' -and $trimmed[-1] -eq '"') -or
+         ($trimmed[0] -eq "'" -and $trimmed[-1] -eq "'"))) {
+        $trimmed = $trimmed.Substring(1, $trimmed.Length - 2).Trim()
+    }
+    if (-not $trimmed) { throw 'Checkout root is empty.' }
+    $full = [IO.Path]::GetFullPath($trimmed)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ($full.Length -gt $root.Length) {
+        $full = $full.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    }
+    if (Test-Path -LiteralPath $full) {
+        $resolved = (Resolve-Path -LiteralPath $full -ErrorAction Stop).ProviderPath
+        $full = if ($resolved.Length -gt [IO.Path]::GetPathRoot($resolved).Length) {
+            $resolved.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        } else { $resolved }
+    }
+    return $full
+}
+
+function Resolve-ToolboxRepositoryTarget {
+    $candidate = $null
+    if ($RepoRoot) { $candidate = $RepoRoot }
+    elseif ($CheckoutPath) { $candidate = $CheckoutPath }
+    else {
+        $adjacent = Join-Path $PSScriptRoot '..'
+        if ((Test-Path -LiteralPath (Join-Path $adjacent 'pyproject.toml') -PathType Leaf) -and
+            (Select-String -LiteralPath (Join-Path $adjacent 'pyproject.toml') -SimpleMatch 'name = "gen-audio"' -Quiet)) {
+            $candidate = $adjacent
+        }
+    }
+    if (-not $candidate) {
+        throw 'No gen-audio checkout was detected. Pass -RepoRoot, for example -RepoRoot G:\gen-audio.'
+    }
+    if (-not [IO.Path]::IsPathRooted($candidate.Trim())) {
+        $candidate = Join-Path ([IO.Directory]::GetCurrentDirectory()) $candidate.Trim()
+    }
+    $script:RepoRoot = Resolve-ToolboxCheckoutRoot $candidate
+    $RepoRoot = $script:RepoRoot
+}
+
+function Request-ToolboxLease {
+    $canonical = Resolve-ToolboxCheckoutRoot $RepoRoot
+    $bytes = [Text.Encoding]::UTF8.GetBytes($canonical.ToUpperInvariant())
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $digest = (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16) }
+    finally { $sha.Dispose() }
+    $name = "Local\gen-audio-toolbox-$digest"
+    $script:LeaseMutex = New-Object Threading.Mutex($false, $name)
+    if (-not $script:LeaseMutex.WaitOne(0)) {
+        $script:LeaseMutex.Dispose()
+        $script:LeaseMutex = $null
+        throw "Another toolbox run owns the checkout lease for $RepoRoot"
+    }
+    $script:LeaseOwned = $true
+    Write-ToolboxLog 'INFO' "Acquired checkout lease for $RepoRoot ($digest)."
+}
+
+function Complete-ToolboxLease {
+    if ($script:LeaseOwned -and $script:LeaseMutex) {
+        $script:LeaseMutex.ReleaseMutex()
+        $script:LeaseOwned = $false
+    }
+    if ($script:LeaseMutex) {
+        $script:LeaseMutex.Dispose()
+        $script:LeaseMutex = $null
+    }
+}
+
+function Add-BestEffortWarning {
+    param([Parameter(Mandatory = $true)][string]$Message)
+    $script:BestEffortWarnings.Add($Message)
+    Write-ToolboxLog 'WARN' $Message
 }
 
 function Get-Tool {
@@ -108,11 +193,12 @@ function Initialize-Logging {
     $script:LogPath = Join-Path $LogRoot "toolbox-$stamp.log"
     $script:TranscriptPath = Join-Path $LogRoot "toolbox-$stamp.transcript.log"
     try { Start-Transcript -LiteralPath $script:TranscriptPath -Force | Out-Null }
-    catch { Write-ToolboxLog 'WARN' "Transcript not started: $($_.Exception.Message)" }
+    catch { Add-BestEffortWarning "Transcript not started: $($_.Exception.Message)" }
 }
 
 function Complete-Logging {
-    try { Stop-Transcript | Out-Null } catch { Write-Output 'Transcript was not active.' }
+    try { Stop-Transcript | Out-Null }
+    catch { Add-BestEffortWarning "Transcript stop failed: $($_.Exception.Message)" }
 }
 
 function Invoke-External {
@@ -161,7 +247,7 @@ function Install-WingetPackage {
     try { Invoke-External $winget $arguments $RepoRoot }
     catch {
         if (-not (Get-Tool @($Id.Split('.')[-1]))) { throw }
-        Write-ToolboxLog 'WARN' "$Id reports an existing installation."
+        Add-BestEffortWarning "$Id reported an installation error, but its tool is now available; continuing in degraded mode."
     }
     Resolve-SessionPath
 }
@@ -173,23 +259,7 @@ function Test-Checkout {
 }
 
 function Initialize-Repository {
-    $candidate = $null
-    if ($RepoRoot) { $candidate = $RepoRoot }
-    elseif ($CheckoutPath) { $candidate = $CheckoutPath }
-    else {
-        $adjacent = Join-Path $PSScriptRoot '..'
-        if ((Test-Path -LiteralPath (Join-Path $adjacent 'pyproject.toml') -PathType Leaf) -and
-            (Select-String -LiteralPath (Join-Path $adjacent 'pyproject.toml') -SimpleMatch 'name = "gen-audio"' -Quiet)) {
-            $candidate = $adjacent
-        }
-    }
-    if (-not $candidate) {
-        throw 'No gen-audio checkout was detected. Pass -RepoRoot, for example -RepoRoot G:\gen-audio.'
-    }
-    if (-not [IO.Path]::IsPathRooted($candidate)) {
-        $candidate = Join-Path ([IO.Directory]::GetCurrentDirectory()) $candidate
-    }
-    $script:RepoRoot = [IO.Path]::GetFullPath($candidate)
+    $script:RepoRoot = Resolve-ToolboxCheckoutRoot $RepoRoot
     $RepoRoot = $script:RepoRoot
     if (Test-Checkout) {
         if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot '.git'))) {
@@ -209,7 +279,13 @@ function Initialize-Repository {
         if (-not (Test-Checkout)) { throw "The cloned repository is not Gen-Audio: $RepoRoot" }
         Write-ToolboxLog 'OK' "Cloned $RepoUrl at $RepoRef to $RepoRoot"
     }
-    $script:RuntimeDir = Join-Path $RepoRoot 'artifacts\runtime'
+    $runtimeLibrary = Join-Path $RepoRoot 'scripts\lib\runtime-config.ps1'
+    . $runtimeLibrary
+    $script:RuntimeConfig = Read-GenAudioRuntimeConfig -RepoRoot $RepoRoot -NodePort $NodePort -McpPort $McpPort -PreviewPort $PreviewPort
+    $script:NodePort = [int]$script:RuntimeConfig.ports.Node
+    $script:McpPort = [int]$script:RuntimeConfig.ports.Mcp
+    $script:PreviewPort = [int]$script:RuntimeConfig.ports.Preview
+    $script:RuntimeDir = $script:RuntimeConfig.runtime
 }
 
 function Initialize-PackageNetwork {
@@ -243,7 +319,7 @@ function Install-Node {
     $name = "node-v$NodeVersion-win-x64"
     $installDir = Join-Path $env:LOCALAPPDATA "gen-audio\toolbox\tools\$name"
     if (-not (Test-Path -LiteralPath (Join-Path $installDir 'node.exe') -PathType Leaf)) {
-        $cache = Join-Path $env:TEMP ("gen-audio-node-" + [guid]::NewGuid().ToString('N'))
+        $cache = Join-Path $script:RuntimeDir ("cache-node-" + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Force -Path $cache | Out-Null
         try {
             $baseUrl = "https://nodejs.org/dist/v$NodeVersion"
@@ -259,7 +335,8 @@ function Install-Node {
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installDir) | Out-Null
             Move-Item -LiteralPath (Join-Path $cache $name) -Destination $installDir
         } finally {
-            Remove-Item -LiteralPath $cache -Recurse -Force -ErrorAction SilentlyContinue
+            try { Remove-Item -LiteralPath $cache -Recurse -Force -ErrorAction Stop }
+            catch { Add-BestEffortWarning "Node cache cleanup failed for $cache`: $($_.Exception.Message)" }
         }
     }
     Add-PathPrefix $installDir
@@ -340,7 +417,7 @@ function Install-ModelSet {
             Copy-Item -LiteralPath $asset.Preferred -Destination $destination -Force
             Write-ToolboxLog 'OK' "Using normalized $($asset.Name) from the a2swe model registry."
         } elseif (-not $currentValid) {
-            $download = Join-Path $env:TEMP ("gen-audio-" + [guid]::NewGuid().ToString('N') + "-" + $asset.Name)
+            $download = Join-Path $script:RuntimeDir ("cache-" + [guid]::NewGuid().ToString('N') + "-" + $asset.Name)
             try {
                 Write-ToolboxLog 'INFO' "Downloading $($asset.Name)"
                 Invoke-WebRequest -UseBasicParsing -Uri $asset.Uri -OutFile $download -TimeoutSec 600
@@ -349,7 +426,8 @@ function Install-ModelSet {
                 }
                 Copy-Item -LiteralPath $download -Destination $destination -Force
             } finally {
-                Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
+                try { Remove-Item -LiteralPath $download -Force -ErrorAction Stop }
+                catch { Add-BestEffortWarning "Model download cleanup failed for $download`: $($_.Exception.Message)" }
             }
         }
         if ((Get-Item -LiteralPath $destination).Length -lt 1) {
@@ -428,46 +506,182 @@ function Build-Framework {
 }
 
 function Write-NodeConfiguration {
-    $python = Join-Path $RepoRoot '.venv\Scripts\python.exe'
-    $models = Join-Path $RepoRoot 'models'
-    $configuration = [ordered]@{
-        GEN_AUDIO_REPO = $RepoRoot
-        GEN_AUDIO_PYTHON = $python
-        GEN_AUDIO_MODEL_DIR = $models
-        GEN_AUDIO_KOKORO_MODEL = Join-Path $models 'kokoro-v1.0.onnx'
-        GEN_AUDIO_KOKORO_VOICES = Join-Path $models 'voices-v1.0.bin'
-        GENAID_MODEL_BASE = $models
-        GEN_AUDIO_MCP_ADDR = "127.0.0.1:$McpPort"
-        GEN_AUDIO_WORK_DIR = Join-Path $script:RuntimeDir 'mcp'
-    }
+    $configuration = Get-GenAudioRuntimeEnvironment $script:RuntimeConfig
     New-Item -ItemType Directory -Force -Path $script:RuntimeDir | Out-Null
     foreach ($entry in $configuration.GetEnumerator()) {
-        [Environment]::SetEnvironmentVariable($entry.Key, "$($entry.Value)", 'User')
         [Environment]::SetEnvironmentVariable($entry.Key, "$($entry.Value)", 'Process')
     }
     $legacyEnvironment = Join-Path $script:RuntimeDir 'node-environment.ps1'
     if (Test-Path -LiteralPath $legacyEnvironment) {
-        Remove-Item -LiteralPath $legacyEnvironment -Force
+        Remove-Item -LiteralPath $legacyEnvironment -Force -ErrorAction Stop
+    }
+    $legacyText = Join-Path $script:RuntimeDir 'node-environment.txt'
+    $descriptor = [ordered]@{
+        checkout = $RepoRoot
+        ports = $script:RuntimeConfig.ports
+        paths = [ordered]@{
+            runtime = $script:RuntimeDir
+            models = $script:RuntimeConfig.models
+            python = $script:RuntimeConfig.python
+            mcpAddress = $script:RuntimeConfig.mcpAddressFile
+        }
+        environment = $configuration
+        generatedAt = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    $descriptorPath = $script:RuntimeConfig.descriptor
+    $temporary = "$descriptorPath.$PID.tmp"
+    try {
+        [IO.File]::WriteAllText($temporary, ($descriptor | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $descriptorPath) {
+            Remove-Item -LiteralPath $descriptorPath -Force -ErrorAction Stop
+        }
+        Move-Item -LiteralPath $temporary -Destination $descriptorPath
+    } finally {
+        if (Test-Path -LiteralPath $temporary) {
+            try { Remove-Item -LiteralPath $temporary -Force -ErrorAction Stop }
+            catch { Add-BestEffortWarning "Descriptor temporary-file cleanup failed for $temporary`: $($_.Exception.Message)" }
+        }
+    }
+    if (Test-Path -LiteralPath $legacyText) {
+        Remove-Item -LiteralPath $legacyText -Force -ErrorAction Stop
     }
     $lines = @($configuration.GetEnumerator() | ForEach-Object {
         '$env:{0} = {1}' -f $_.Key, ([System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent("$($_.Value)") -replace '^', "'" -replace '$', "'")
     })
-    [IO.File]::WriteAllLines(
-        (Join-Path $script:RuntimeDir 'node-environment.txt'),
-        $lines,
-        (New-Object Text.UTF8Encoding($false))
-    )
-    Write-ToolboxLog 'OK' "Persisted Gen-Audio environment for $RepoRoot."
+    [IO.File]::WriteAllLines($legacyText, $lines, (New-Object Text.UTF8Encoding($false)))
+    Write-ToolboxLog 'OK' "Persisted checkout-scoped Gen-Audio descriptor: $descriptorPath"
 }
 
-function Test-Url {
-    param([Parameter(Mandatory = $true)][string]$Uri)
+function Test-ServiceIdentity {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('Node', 'Mcp', 'Preview')][string]$Service,
+        [Parameter(Mandatory = $true)][string]$Uri
+    )
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 2
-        return $response.StatusCode -eq 200
+        if ($response.StatusCode -ne 200) { return $false }
+        if ($Service -eq 'Preview') { return "$($response.Content)" -match '<title>Darbot Gen-Audio</title>' }
+        $body = $response.Content | ConvertFrom-Json
+        $expected = if ($Service -eq 'Node') { 'genaid-audio' } else { 'gen-audio-mcp' }
+        return $body.service -eq $expected
     } catch {
         return $false
     }
+}
+
+function Test-LauncherOwnership {
+    param([Parameter(Mandatory = $true)][string]$PidPath, [Parameter(Mandatory = $true)][string]$ExpectedService)
+    if (-not (Test-Path -LiteralPath $PidPath -PathType Leaf)) { return $false }
+    $recorded = 0
+    if (-not [int]::TryParse((Get-Content -LiteralPath $PidPath -Raw).Trim(), [ref]$recorded)) { return $false }
+    $record = Get-CimInstance Win32_Process -Filter "ProcessId=$recorded" -ErrorAction SilentlyContinue
+    if (-not $record) { return $false }
+    $expectedRun = Join-Path $RepoRoot 'scripts\run.ps1'
+    return $record.CommandLine -like "*$expectedRun*" -and $record.CommandLine -like "*$ExpectedService*"
+}
+
+function Test-HealthOwnership {
+    param(
+        [Parameter(Mandatory = $true)][string]$PidPath,
+        [Parameter(Mandatory = $true)][string]$Uri
+    )
+    $launcherPid = 0
+    if (-not (Test-Path -LiteralPath $PidPath) -or
+        -not [int]::TryParse((Get-Content -LiteralPath $PidPath -Raw).Trim(), [ref]$launcherPid)) { return $false }
+    try {
+        $body = Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 2 |
+            Select-Object -ExpandProperty Content | ConvertFrom-Json
+        $reportedPid = [int]$body.pid
+        if ($reportedPid -lt 1) { return $false }
+        $current = $reportedPid
+        for ($depth = 0; $depth -lt 8; $depth++) {
+            if ($current -eq $launcherPid) { return $true }
+            $record = Get-CimInstance Win32_Process -Filter "ProcessId=$current" -ErrorAction SilentlyContinue
+            if (-not $record -or -not $record.ParentProcessId) { break }
+            $current = [int]$record.ParentProcessId
+        }
+    } catch {
+        return $false
+    }
+    return $false
+}
+
+function Get-ToolboxProcessTreeId {
+    param([Parameter(Mandatory = $true)][int]$RootProcessId)
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $depths = @{}
+    $depths[$RootProcessId] = 0
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($record in $processes) {
+            $parent = [int]$record.ParentProcessId
+            $processId = [int]$record.ProcessId
+            if ($depths.ContainsKey($parent) -and -not $depths.ContainsKey($processId)) {
+                $depths[$processId] = $depths[$parent] + 1
+                $changed = $true
+            }
+        }
+    }
+    return @($depths.Keys | Sort-Object { $depths[$_] } -Descending)
+}
+
+function Complete-ToolboxProcessTree {
+    param(
+        [Parameter(Mandatory = $true)][int]$RootProcessId,
+        [int[]]$AdditionalProcessIds = @()
+    )
+    $ids = @(Get-ToolboxProcessTreeId -RootProcessId $RootProcessId)
+    foreach ($processId in $AdditionalProcessIds) {
+        if ($processId -gt 0 -and $ids -notcontains $processId) { $ids += $processId }
+    }
+    $errors = New-Object System.Collections.Generic.List[string]
+    foreach ($processId in ($ids | Select-Object -Unique)) {
+        if (Get-Process -Id $processId -ErrorAction SilentlyContinue) {
+            try { Stop-Process -Id $processId -Force -ErrorAction Stop }
+            catch { $errors.Add("failed to stop PID $processId`: $($_.Exception.Message)") }
+        }
+    }
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        $alive = @($ids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+        if ($alive.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    $alive = @($ids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    foreach ($processId in $alive) { $errors.Add("PID $processId survived full process-tree termination") }
+    if ($errors.Count) { throw ($errors -join '; ') }
+}
+
+function Test-ToolboxPortReleased {
+    param([Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$Port)
+    $listener = $null
+    try {
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+        $listener.Server.ExclusiveAddressUse = $true
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() }
+            catch { $null = $_ }
+        }
+    }
+}
+
+function Wait-ToolboxPortReleased {
+    param(
+        [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$Port,
+        [int]$TimeoutSeconds = 10
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-ToolboxPortReleased -Port $Port) { return }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    throw "port 127.0.0.1:$Port is still owned after launcher process-tree termination"
 }
 
 function Invoke-NodeService {
@@ -478,8 +692,14 @@ function Invoke-NodeService {
     )
     $serviceName = $Service.ToLowerInvariant()
     $pidPath = Join-Path $script:RuntimeDir "$serviceName.pid"
-    if (Test-Url $HealthUrl) {
-        Write-ToolboxLog 'OK' "$Service is already healthy at $HealthUrl."
+    if (Test-ServiceIdentity -Service $Service -Uri $HealthUrl) {
+        if (-not (Test-LauncherOwnership -PidPath $pidPath -ExpectedService $Service)) {
+            throw "$Service identity matched at $HealthUrl, but no live toolbox-owned launcher PID is recorded; refusing to adopt an unknown process."
+        }
+        if ($Service -in @('Node', 'Mcp') -and -not (Test-HealthOwnership -PidPath $pidPath -Uri $HealthUrl)) {
+            throw "$Service identity matched at $HealthUrl, but its reported PID is not owned by the recorded launcher."
+        }
+        Write-ToolboxLog 'OK' "$Service is healthy at $HealthUrl and owned by this checkout."
         return
     }
     if (Test-Path -LiteralPath $pidPath) {
@@ -489,31 +709,61 @@ function Invoke-NodeService {
             $record = Get-CimInstance Win32_Process -Filter "ProcessId=$recorded" -ErrorAction SilentlyContinue
             $expectedRun = Join-Path $RepoRoot 'scripts\run.ps1'
             if ($record -and $record.CommandLine -like "*$expectedRun*" -and $record.CommandLine -like "*$Service*") {
-                Stop-Process -Id $existing.Id -Force
-                Start-Sleep -Milliseconds 500
+                Complete-ToolboxProcessTree -RootProcessId $existing.Id
+                Wait-ToolboxPortReleased -Port $Port
             } else {
-                Write-ToolboxLog 'WARN' "PID $recorded was reused by another process; stale $serviceName PID file ignored."
+                Add-BestEffortWarning "PID $recorded was reused by another process; stale $serviceName PID file will be replaced."
             }
         }
-        Remove-Item -LiteralPath $pidPath -Force
+        Remove-Item -LiteralPath $pidPath -Force -ErrorAction Stop
     }
     $powershell = Get-Tool @('pwsh.exe', 'powershell.exe')
     $run = Join-Path $RepoRoot 'scripts\run.ps1'
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $run, '-Service', $Service, '-Port', "$Port")
     $process = Start-Process -FilePath $powershell -ArgumentList $arguments -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
     [IO.File]::WriteAllText($pidPath, "$($process.Id)", (New-Object Text.UTF8Encoding($false)))
-    $deadline = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $deadline) {
-        if ($process.HasExited) {
-            throw "$Service exited with $($process.ExitCode). See $script:RuntimeDir."
+    $trackedChildIds = New-Object System.Collections.Generic.HashSet[int]
+    try {
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                foreach ($processId in (Get-ToolboxProcessTreeId -RootProcessId $process.Id)) {
+                    if ($processId -ne $process.Id) { $trackedChildIds.Add($processId) | Out-Null }
+                }
+            } catch {
+                Add-BestEffortWarning "Could not snapshot launcher descendants for PID $($process.Id): $($_.Exception.Message)"
+            }
+            if ($process.HasExited) {
+                throw "$Service exited with $($process.ExitCode). See $script:RuntimeDir."
+            }
+            if (Test-ServiceIdentity -Service $Service -Uri $HealthUrl) {
+                if ($Service -in @('Node', 'Mcp') -and -not (Test-HealthOwnership -PidPath $pidPath -Uri $HealthUrl)) {
+                    throw "$Service at $HealthUrl reports a PID outside launcher $($process.Id)'s process tree."
+                }
+                Write-ToolboxLog 'OK' "$Service healthy at $HealthUrl (launcher PID $($process.Id))."
+                return
+            }
+            Start-Sleep -Milliseconds 500
         }
-        if (Test-Url $HealthUrl) {
-            Write-ToolboxLog 'OK' "$Service healthy at $HealthUrl (launcher PID $($process.Id))."
-            return
+        throw "$Service did not become healthy at $HealthUrl."
+    } catch {
+        $startupError = $_.Exception.Message
+        $cleanupErrors = New-Object System.Collections.Generic.List[string]
+        try {
+            Complete-ToolboxProcessTree -RootProcessId $process.Id `
+                -AdditionalProcessIds @($trackedChildIds)
         }
-        Start-Sleep -Milliseconds 500
+        catch { $cleanupErrors.Add("failed to stop launcher process tree $($process.Id): $($_.Exception.Message)") }
+        try { Wait-ToolboxPortReleased -Port $Port }
+        catch { $cleanupErrors.Add($_.Exception.Message) }
+        if (Test-Path -LiteralPath $pidPath) {
+            try { Remove-Item -LiteralPath $pidPath -Force -ErrorAction Stop }
+            catch { $cleanupErrors.Add("failed to remove $pidPath`: $($_.Exception.Message)") }
+        }
+        if ($cleanupErrors.Count) { $startupError += '; cleanup errors: ' + ($cleanupErrors -join '; ') }
+        throw $startupError
     }
-    throw "$Service did not become healthy at $HealthUrl."
+
 }
 
 function Invoke-ServiceSuite {
@@ -533,7 +783,7 @@ function Test-ServiceSuite {
     if ($health.service -ne 'genaid-audio') { throw 'Node health response is not Gen-Audio.' }
     $ready = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$NodePort/genaid-audio/ready" -TimeoutSec 5 |
         Select-Object -ExpandProperty Content | ConvertFrom-Json
-    if (-not $ready.ready) { throw 'Node readiness check failed.' }
+    if (-not $ready.ready -or $ready.service -ne 'genaid-audio') { throw 'Node readiness check failed or returned the wrong service.' }
     $mcpHealth = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$McpPort/health" -TimeoutSec 5 |
         Select-Object -ExpandProperty Content | ConvertFrom-Json
     if ($mcpHealth.service -ne 'gen-audio-mcp') { throw 'MCP health response is not Gen-Audio.' }
@@ -551,13 +801,28 @@ function Test-ServiceSuite {
         -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 5 |
         Select-Object -ExpandProperty Content | ConvertFrom-Json
     if ($initialize.result.serverInfo.name -ne 'gen-audio') { throw 'MCP initialize returned the wrong server.' }
-    if (-not (Test-Url "http://127.0.0.1:$PreviewPort/")) { throw 'Preview is not reachable.' }
+    if (-not (Test-ServiceIdentity -Service Preview -Uri "http://127.0.0.1:$PreviewPort/")) { throw 'Preview is not reachable or is not the Gen-Audio UI.' }
+    foreach ($item in @(@('Node', $NodePort), @('Mcp', $McpPort), @('Preview', $PreviewPort))) {
+        $pidPath = Join-Path $script:RuntimeDir "$($item[0].ToLowerInvariant()).pid"
+        if (-not (Test-LauncherOwnership -PidPath $pidPath -ExpectedService $item[0])) {
+            throw "$($item[0]) on port $($item[1]) is healthy but is not owned by a current toolbox launcher."
+        }
+    }
+    $nodePid = Join-Path $script:RuntimeDir 'node.pid'
+    $mcpPid = Join-Path $script:RuntimeDir 'mcp.pid'
+    if (-not (Test-HealthOwnership -PidPath $nodePid -Uri "http://127.0.0.1:$NodePort/genaid-audio/health")) {
+        throw 'Node health PID is not in the checkout launcher process tree.'
+    }
+    if (-not (Test-HealthOwnership -PidPath $mcpPid -Uri "http://127.0.0.1:$McpPort/health")) {
+        throw 'MCP health PID is not in the checkout launcher process tree.'
+    }
     Write-ToolboxLog 'OK' "Node=$NodePort MCP=$McpPort Preview=$PreviewPort; all health checks passed."
 }
 
 function Test-Framework {
     if ($SkipTests) {
-        Write-ToolboxLog 'WARN' 'Framework validation skipped by -SkipTests.'
+        $script:ValidationSkipped = $true
+        Add-BestEffortWarning 'Framework validation was explicitly skipped by -SkipTests; toolbox result is degraded.'
         return
     }
     Write-ToolboxLog 'STEP' 'Running the locked Gen-Audio validation gate.'
@@ -572,7 +837,6 @@ function Test-Framework {
     foreach ($name in $names) {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
         [Environment]::SetEnvironmentVariable($name, $null, 'Process')
-        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
     }
     try {
         Invoke-External $powershell @(
@@ -589,10 +853,14 @@ function Test-Framework {
 }
 
 function Invoke-Toolbox {
-    Initialize-Logging
     $exitCode = 0
+    $loggingStarted = $false
     try {
         if ($env:OS -ne 'Windows_NT') { throw 'The Windows node toolbox requires Windows.' }
+        Resolve-ToolboxRepositoryTarget
+        Request-ToolboxLease
+        Initialize-Logging
+        $loggingStarted = $true
         Initialize-Repository
         $steps = if ($Step -contains 'All' -or $Step -contains 'Node') {
             @('Deps', 'Models', 'Build', 'Test', 'Start', 'Verify')
@@ -611,14 +879,26 @@ function Invoke-Toolbox {
                 'Verify' { Test-ServiceSuite }
             }
         }
-        Write-ToolboxLog 'OK' "Gen-Audio toolbox completed in $([math]::Round(((Get-Date) - $script:RunStartedAt).TotalMinutes, 1)) minutes."
+        if ($script:ValidationSkipped -or $script:BestEffortWarnings.Count -gt 0) {
+            $exitCode = 2
+            Write-ToolboxLog 'WARN' "Gen-Audio toolbox ended DEGRADED ($($script:BestEffortWarnings.Count) warning(s)); this is not a full success."
+        } else {
+            Write-ToolboxLog 'OK' "Gen-Audio toolbox completed in $([math]::Round(((Get-Date) - $script:RunStartedAt).TotalMinutes, 1)) minutes."
+        }
     } catch {
         $exitCode = 1
         Write-ToolboxLog 'ERROR' "$($_.Exception.Message)"
         Write-ToolboxLog 'ERROR' "Bootstrap failed; inspect $script:LogPath and $script:RuntimeDir."
     } finally {
-        Complete-Logging
-        Write-Output "Log: $script:LogPath"
+        try { Complete-ToolboxLease }
+        catch {
+            $exitCode = 1
+            Write-ToolboxLog 'ERROR' "Checkout lease cleanup failed: $($_.Exception.Message)"
+        }
+        if ($loggingStarted) { Complete-Logging }
+        if ($exitCode -eq 0 -and $script:BestEffortWarnings.Count -gt 0) { $exitCode = 2 }
+        Write-Output "TOOLBOX_EXIT $exitCode"
+        if ($script:LogPath) { Write-Output "Log: $script:LogPath" }
     }
     exit $exitCode
 }

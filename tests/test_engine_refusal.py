@@ -37,9 +37,9 @@ def test_vibevoice_dtype_follows_the_device(monkeypatch):
     assert _vibevoice_dtype_name("cuda:0") == "fp32"
 
 
-def test_vibevoice_cuda_device_refuses_when_cuda_is_absent(monkeypatch):
+def test_vibevoice_cuda_device_refuses_when_cuda_is_absent(monkeypatch, tmp_path):
     monkeypatch.setenv("GEN_AUDIO_VIBEVOICE_DEVICE", "cuda")
-    monkeypatch.setenv("GEN_AUDIO_VIBEVOICE_MODEL", "/tmp/gen-audio-vibevoice-missing")
+    monkeypatch.setenv("GEN_AUDIO_VIBEVOICE_MODEL", str(tmp_path / "gen-audio-vibevoice-missing"))
     monkeypatch.setattr(
         "gen_audio.adapters._module_present",
         lambda name: name in {"torch", "vibevoice"},

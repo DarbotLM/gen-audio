@@ -544,7 +544,11 @@ fn serve_health(args: &Value) -> Result<Value, (i32, String)> {
             "note": "No host is configured. This is not a live genaid-audio probe."
         }));
     };
-    let port = args.get("port").and_then(Value::as_u64).unwrap_or(8002) as u16;
+    let port = match args.get("port").and_then(Value::as_u64) {
+        Some(port) if port > 0 && port <= u16::MAX as u64 => port as u16,
+        Some(_) => return Err((-32602, "port must be between 1 and 65535".into())),
+        None => serve::configured_node_port().map_err(|err| (-32602, err))?,
+    };
     let base = node_base_url(host, port).map_err(|err| (-32602, err))?;
     let health = health_url(host, port).map_err(|err| (-32602, err))?;
     let ready = ready_url(host, port).map_err(|err| (-32602, err))?;

@@ -1,0 +1,16 @@
+{
+  "ports": {
+    "Node": 8002,
+    "Mcp": 8765,
+    "Desktop": 8765,
+    "Preview": 1420
+  },
+  "paths": {
+    "runtime": "artifacts/runtime",
+    "models": "models",
+    "python": ".venv/Scripts/python.exe",
+    "mcpExecutable": "target/release/gen-audio-mcp.exe",
+    "desktopExecutable": "target/release/gen-audio.exe",
+    "mcpAddress": "artifacts/runtime/mcp.addr"
+  }
+}

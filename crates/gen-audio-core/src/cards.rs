@@ -179,7 +179,7 @@ fn validate_body(id: &str, kind: &str, body: &Value) -> Result<(), String> {
             let mode = expect_string(obj.get("mode"), "mode", 1, 32)?;
             if !matches!(
                 mode.as_str(),
-                "mock" | "live" | "local" | "token_present" | "misconfigured"
+                "mock" | "live" | "configured" | "local" | "token_present" | "misconfigured"
             ) {
                 return Err(format!("card {id} has unknown connector mode"));
             }

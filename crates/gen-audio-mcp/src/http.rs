@@ -14,7 +14,8 @@ use crate::{handle, Server};
 /// allowed origin is echoed back, never `*`. Requests with no Origin
 /// (mcp-call.ps1, agent clients, curl) are not browser pages and pass.
 /// Release: the Tauri webview origins (Windows http/https://tauri.localhost,
-/// macOS/Linux tauri://localhost). Debug builds add the vite devUrl.
+/// macOS/Linux tauri://localhost). Configured loopback Vite origins are accepted
+/// when `GEN_AUDIO_PREVIEW_PORT` is a validated port, including in release.
 #[cfg(not(debug_assertions))]
 pub const ALLOWED_ORIGINS: &[&str] = &["http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"];
 #[cfg(debug_assertions)]
@@ -26,12 +27,31 @@ pub const ALLOWED_ORIGINS: &[&str] = &[
     "http://127.0.0.1:1420",
 ];
 
+fn origin_allowed(origin: &str) -> bool {
+    if ALLOWED_ORIGINS.contains(&origin) {
+        return true;
+    }
+    configured_preview_origin_allowed(
+        origin,
+        std::env::var("GEN_AUDIO_PREVIEW_PORT").ok().as_deref(),
+    )
+}
+
+fn configured_preview_origin_allowed(origin: &str, configured_port: Option<&str>) -> bool {
+    let Some(port) = configured_port.and_then(|raw| raw.trim().parse::<u16>().ok()) else {
+        return false;
+    };
+    port != 0
+        && (origin == format!("http://localhost:{port}")
+            || origin == format!("http://127.0.0.1:{port}"))
+}
+
 pub fn serve(addr: &str) -> std::io::Result<()> {
     gen_audio_core::paths::reap_stale_mcp_addr();
     let listener = bind_listener(addr)?;
-    if let Ok(bound) = listener.local_addr() {
-        let _ = gen_audio_core::paths::publish_mcp_addr(&bound.to_string());
-    }
+    let bound = listener.local_addr()?;
+    gen_audio_core::paths::publish_mcp_addr(&bound.to_string())
+        .map_err(std::io::Error::other)?;
     accept_loop(listener);
     Ok(())
 }
@@ -89,8 +109,8 @@ pub fn initialize_handshake(addr: &str) -> Result<Value, String> {
     Ok(value)
 }
 
-/// POST one `tools/call` to a running desktop listener and return the tool JSON.
-pub fn tools_call(addr: &str, name: &str, args: &Value) -> Result<Value, String> {
+/// POST one `tools/call` and retain the MCP result envelope, including `isError`.
+pub fn tools_call_result(addr: &str, name: &str, args: &Value) -> Result<Value, String> {
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -101,7 +121,20 @@ pub fn tools_call(addr: &str, name: &str, args: &Value) -> Result<Value, String>
     if let Some(message) = response["error"]["message"].as_str() {
         return Err(message.to_string());
     }
-    let text = response["result"]["content"][0]["text"]
+    let result = response
+        .get("result")
+        .cloned()
+        .ok_or("tools/call returned no result")?;
+    result["content"][0]["text"]
+        .as_str()
+        .ok_or("tools/call returned no text")?;
+    Ok(result)
+}
+
+/// POST one `tools/call` to a running desktop listener and return the inner tool JSON.
+pub fn tools_call(addr: &str, name: &str, args: &Value) -> Result<Value, String> {
+    let result = tools_call_result(addr, name, args)?;
+    let text = result["content"][0]["text"]
         .as_str()
         .ok_or("tools/call returned no text")?;
     serde_json::from_str(text).map_err(|err| err.to_string())
@@ -244,7 +277,7 @@ pub fn handle_connection(server: &Server, mut stream: TcpStream) -> std::io::Res
     }
     let cors = match header(&head, "origin") {
         None => String::new(),
-        Some(origin) if ALLOWED_ORIGINS.contains(&origin) => cors_headers(&stream, origin),
+        Some(origin) if origin_allowed(origin) => cors_headers(&stream, origin),
         Some(_) => return reject(&server.rejections, &mut stream, method, path, 403, br#"{"error":"origin not allowed"}"#, "", "origin"),
     };
     if method == "OPTIONS" {
@@ -256,6 +289,7 @@ pub fn handle_connection(server: &Server, mut stream: TcpStream) -> std::io::Res
             "status": "ok",
             "service": "gen-audio-mcp",
             "role": "mcp",
+            "pid": std::process::id(),
             "stateless": true,
             "genaidAudioProbed": false,
             "rejected": rejected,
@@ -988,6 +1022,17 @@ mod tests {
             let (key, value) = line.split_once(':')?;
             key.trim().eq_ignore_ascii_case(name).then(|| value.trim())
         })
+    }
+
+    #[test]
+    fn configured_preview_origin_is_exact_loopback_in_all_builds() {
+        assert!(configured_preview_origin_allowed("http://localhost:18888", Some("18888")));
+        assert!(configured_preview_origin_allowed("http://127.0.0.1:18888", Some(" 18888 ")));
+        assert!(!configured_preview_origin_allowed("https://localhost:18888", Some("18888")));
+        assert!(!configured_preview_origin_allowed("http://evil.example:18888", Some("18888")));
+        assert!(!configured_preview_origin_allowed("http://localhost:18889", Some("18888")));
+        assert!(!configured_preview_origin_allowed("http://localhost:0", Some("0")));
+        assert!(!configured_preview_origin_allowed("http://localhost:1420", Some("not-a-port")));
     }
 
     #[test]

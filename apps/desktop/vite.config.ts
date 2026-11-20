@@ -97,11 +97,16 @@ function failReleaseStubs(): Plugin {
   };
 }
 
+const configuredPort = Number.parseInt(process.env.GEN_AUDIO_PREVIEW_PORT ?? "1420", 10);
+if (!Number.isInteger(configuredPort) || configuredPort < 1 || configuredPort > 65535) {
+  throw new Error(`GEN_AUDIO_PREVIEW_PORT must be 1-65535, got ${process.env.GEN_AUDIO_PREVIEW_PORT ?? ""}`);
+}
+
 export default defineConfig({
   clearScreen: false,
   plugins: [failReleaseStubs()],
   server: {
-    port: 1420,
+    port: configuredPort,
     strictPort: true,
   },
   build: {

@@ -83,7 +83,11 @@ fn mcp_status(state: tauri::State<'_, Mutex<McpRuntime>>) -> Result<McpRuntime, 
 }
 
 fn preferred_addr() -> String {
-    std::env::var("GEN_AUDIO_MCP_ADDR").unwrap_or_else(|_| "127.0.0.1:8765".into())
+    std::env::var("GEN_AUDIO_MCP_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(gen_audio_core::paths::read_mcp_addr)
+        .unwrap_or_else(|| "127.0.0.1:8765".into())
 }
 
 fn sidecar_binary() -> Option<PathBuf> {
@@ -126,7 +130,9 @@ fn hide_console(cmd: &mut Command) {
 /// Hidden helper process with every stdio stream closed (reg add).
 #[cfg(windows)]
 fn spawn_hidden(mut cmd: Command) -> std::io::Result<Child> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     hide_console(&mut cmd);
     cmd.spawn()
 }
@@ -135,7 +141,9 @@ fn spawn_hidden(mut cmd: Command) -> std::io::Result<Child> {
 /// startup errors) drained into the rotating gen-audio-mcp.log in the app log
 /// dir instead of thrown away (see sidecar_log).
 fn spawn_sidecar(mut cmd: Command, log_dir: Option<PathBuf>) -> std::io::Result<Child> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
     hide_console(&mut cmd);
     let mut child = cmd.spawn()?;
     if let Some(stderr) = child.stderr.take() {
@@ -148,11 +156,21 @@ fn boot_mcp(log_dir: Option<PathBuf>) -> (McpRuntime, Option<Child>) {
     gen_audio_core::paths::reap_stale_mcp_addr();
     let addr = preferred_addr();
     if http::initialize_handshake(&addr).is_ok() {
-        let _ = gen_audio_core::paths::publish_mcp_addr(&addr);
-        return (
-            runtime(addr, true, "initialize ok (already listening)", "existing"),
-            None,
-        );
+        return match gen_audio_core::paths::publish_mcp_addr(&addr) {
+            Ok(()) => (
+                runtime(addr, true, "initialize ok (already listening)", "existing"),
+                None,
+            ),
+            Err(err) => (
+                runtime(
+                    addr,
+                    false,
+                    format!("MCP descriptor publish failed: {err}"),
+                    "existing",
+                ),
+                None,
+            ),
+        };
     }
     if let Some(bin) = sidecar_binary() {
         let mut cmd = Command::new(&bin);
@@ -160,7 +178,15 @@ fn boot_mcp(log_dir: Option<PathBuf>) -> (McpRuntime, Option<Child>) {
         match spawn_sidecar(cmd, log_dir) {
             Ok(child) => {
                 if wait_for_handshake(&addr) {
-                    let _ = gen_audio_core::paths::publish_mcp_addr(&addr);
+                    if let Err(err) = gen_audio_core::paths::publish_mcp_addr(&addr) {
+                        let mut child = child;
+                        let cleanup = stop_sidecar(&mut child).err();
+                        let detail = match cleanup {
+                            Some(cleanup) => format!("MCP descriptor publish failed: {err}; cleanup failed: {cleanup}"),
+                            None => format!("MCP descriptor publish failed: {err}"),
+                        };
+                        return (runtime(addr, false, detail, "sidecar"), None);
+                    }
                     register_login_autostart();
                     return (
                         runtime(addr, true, "initialize ok (sidecar)", "sidecar"),
@@ -168,8 +194,9 @@ fn boot_mcp(log_dir: Option<PathBuf>) -> (McpRuntime, Option<Child>) {
                     );
                 }
                 let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Err(cleanup) = stop_sidecar(&mut child) {
+                    eprintln!("gen-audio: failed sidecar cleanup: {cleanup}");
+                }
             }
             Err(err) => {
                 // The in-process listener still starts below. The sidecar
@@ -182,7 +209,17 @@ fn boot_mcp(log_dir: Option<PathBuf>) -> (McpRuntime, Option<Child>) {
     match bind_loopback_range(&addr) {
         Ok(bound) => {
             let text = bound.to_string();
-            let _ = gen_audio_core::paths::publish_mcp_addr(&text);
+            if let Err(err) = gen_audio_core::paths::publish_mcp_addr(&text) {
+                return (
+                    runtime(
+                        text,
+                        false,
+                        format!("MCP descriptor publish failed: {err}"),
+                        "in-process",
+                    ),
+                    None,
+                );
+            }
             let detail = if text == addr {
                 "initialize ok (in-process)".to_string()
             } else {
@@ -224,9 +261,13 @@ fn register_login_autostart() {
 #[cfg(not(windows))]
 fn register_login_autostart() {}
 
-fn stop_sidecar(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+fn stop_sidecar(child: &mut Child) -> Result<(), String> {
+    let kill = match child.try_wait().map_err(|err| err.to_string())? {
+        Some(_) => Ok(()),
+        None => child.kill().map_err(|err| err.to_string()),
+    };
+    let wait = child.wait().map_err(|err| err.to_string());
+    kill.and(wait.map(|_| ()))
 }
 
 fn bind_loopback_range(preferred: &str) -> std::io::Result<std::net::SocketAddr> {
@@ -234,13 +275,20 @@ fn bind_loopback_range(preferred: &str) -> std::io::Result<std::net::SocketAddr>
     if !preferred.is_empty() {
         candidates.push(preferred.to_string());
     }
-    for port in 8765u16..=8770 {
+    let start = preferred
+        .parse::<std::net::SocketAddr>()
+        .map(|socket| socket.port())
+        .unwrap_or(8765);
+    let end = start.saturating_add(5).min(u16::MAX);
+    for port in start..=end {
         let addr = format!("127.0.0.1:{port}");
         if !candidates.iter().any(|item| item == &addr) {
             candidates.push(addr);
         }
     }
-    let mut last = std::io::Error::other("no loopback port in 8765-8770 was free");
+    let mut last = std::io::Error::other(format!(
+        "no configured loopback port in {start}-{end} was free"
+    ));
     for addr in candidates {
         match http::spawn_loopback(&addr) {
             Ok(bound) => return Ok(bound),
@@ -251,11 +299,15 @@ fn bind_loopback_range(preferred: &str) -> std::io::Result<std::net::SocketAddr>
 }
 
 fn request_quit(app: &tauri::AppHandle) {
-    gen_audio_core::paths::delete_mcp_addr();
+    if let Err(err) = gen_audio_core::paths::delete_mcp_addr() {
+        eprintln!("gen-audio: MCP descriptor cleanup warning: {err}");
+    }
     if let Some(state) = app.try_state::<SidecarChild>() {
         if let Ok(mut guard) = state.0.lock() {
             if let Some(child) = guard.as_mut() {
-                stop_sidecar(child);
+                if let Err(err) = stop_sidecar(child) {
+                    eprintln!("gen-audio: MCP sidecar cleanup warning: {err}");
+                }
             }
         }
     }
@@ -355,11 +407,15 @@ pub fn run() {
 
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
-            gen_audio_core::paths::delete_mcp_addr();
+            if let Err(err) = gen_audio_core::paths::delete_mcp_addr() {
+                eprintln!("gen-audio: MCP descriptor cleanup warning: {err}");
+            }
             if let Some(state) = app.try_state::<SidecarChild>() {
                 if let Ok(mut guard) = state.0.lock() {
                     if let Some(child) = guard.as_mut() {
-                        stop_sidecar(child);
+                        if let Err(err) = stop_sidecar(child) {
+                            eprintln!("gen-audio: MCP sidecar cleanup warning: {err}");
+                        }
                     }
                 }
             }
@@ -394,7 +450,10 @@ mod sidecar_boot {
                     use std::os::unix::fs::PermissionsExt;
                     let mode = fs::metadata(&fake).expect("fake meta").permissions().mode();
                     if mode & 0o111 != 0 {
-                        eprintln!("gen-audio: refusing to replace executable {}", fake.display());
+                        eprintln!(
+                            "gen-audio: refusing to replace executable {}",
+                            fake.display()
+                        );
                         std::process::exit(2);
                     }
                 }
@@ -411,7 +470,8 @@ mod sidecar_boot {
             std::process::exit(if ok { 0 } else { 3 });
         }
 
-        let work = std::env::temp_dir().join(format!("gen-audio-desktop-boot-{}", std::process::id()));
+        let work =
+            std::env::temp_dir().join(format!("gen-audio-desktop-boot-{}", std::process::id()));
         let _ = fs::remove_dir_all(&work);
         fs::create_dir_all(&work).expect("work dir");
         let addr_file = work.join("mcp.addr");

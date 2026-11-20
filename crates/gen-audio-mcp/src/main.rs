@@ -4,7 +4,7 @@ use gen_audio_mcp::Server;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help") {
-        eprintln!("gen-audio-mcp [--smoke] [--http 127.0.0.1:8765]");
+        eprintln!("gen-audio-mcp [--smoke] [--http <loopback-address>]");
         std::process::exit(0);
     }
     if args.iter().any(|arg| arg == "--smoke") {

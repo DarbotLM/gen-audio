@@ -13,7 +13,7 @@ export const CARD_KINDS = [
 ] as const;
 
 export const CONNECTOR_IDS = ["mcp", "acp", "harness", "copilot", "claude", "gpt", "gemini", "local"] as const;
-export const CONNECTOR_MODES = ["mock", "live", "local", "token_present", "misconfigured"] as const;
+export const CONNECTOR_MODES = ["mock", "live", "configured", "local", "token_present", "misconfigured"] as const;
 export const ENGINE_STATUSES = ["implemented", "external", "library", "weights_absent", "unavailable"] as const;
 export const LIBRARY_STATUSES = ["ok", "running", "weights_absent", "unavailable", "external"] as const;
 

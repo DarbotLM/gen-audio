@@ -7,9 +7,9 @@ Finds the server the same way the desktop app binds it, then checks that the
 port really is Gen-Audio (initialize, serverInfo.name = gen-audio):
   1. -Port, when given
   2. GEN_AUDIO_MCP_ADDR (host:port), the desktop app's preferred address
-  3. 127.0.0.1:8765, the default
+  3. the checkout's MCP port from scripts/runtime.json or its descriptor
   4. Windows only: loopback ports a gen-audio / gen-audio-mcp process is
-     listening on (the app falls back to an ephemeral port when 8765 is taken)
+     listening on (the app falls back through its configured loopback range)
 Prints `MCP addr=<host:port> tool=<name>` and then the JSON-RPC result.
 Exits non-zero on a JSON-RPC error or a tool result with isError true.
 
@@ -41,6 +41,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'lib\devenv.ps1')
+. (Join-Path $PSScriptRoot 'lib\runtime-config.ps1')
+$runtimeConfig = Read-GenAudioRuntimeConfig -RepoRoot (Split-Path -Parent $PSScriptRoot)
 
 function Invoke-JsonRpc {
     param([Parameter(Mandatory = $true)][string]$Address, [Parameter(Mandatory = $true)][string]$Body, [int]$Timeout = 5)
@@ -77,7 +79,7 @@ if ($Port -gt 0) {
     $candidates.Add("127.0.0.1:$Port")
 } else {
     if ($env:GEN_AUDIO_MCP_ADDR) { $candidates.Add($env:GEN_AUDIO_MCP_ADDR) }
-    $candidates.Add('127.0.0.1:8765')
+    $candidates.Add("127.0.0.1:$($runtimeConfig.ports.Mcp)")
     if ((Test-IsWindowsHost) -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
         $owners = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like 'gen-audio*' } | ForEach-Object { $_.Id })
         if ($owners.Count -gt 0) {

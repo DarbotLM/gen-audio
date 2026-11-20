@@ -5,34 +5,215 @@
 //! stdio lifetime and does not pin a client to a Serve node.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use gen_audio_connectors::health_all;
 use serde_json::{json, Value};
 
-#[derive(Clone)]
-struct Track {
-    /// ACP requires cwd. It is stored so the session exists and this process never opens it.
-    #[allow(dead_code)]
-    cwd: String,
-    agents: Vec<String>,
-    voice: String,
-    /// Library asset uids bound to this track (max 8). Uids only, never paths.
-    #[allow(dead_code)]
-    assets: Vec<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSemantics {
+    Durable,
+    ProcessLifetime,
+    Stateless,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Session {
+    pub cwd: String,
+    pub agents: Vec<String>,
+    pub voice: String,
+    /// Library asset uids bound to this session (max 8). Uids only, never paths.
+    pub assets: Vec<String>,
+}
+
+/// Storage contract used by ACP. The protocol-facing agent never reaches into a
+/// concrete map, so a durable implementation can replace the in-memory default.
+pub trait SessionStore: Send + Sync {
+    fn semantics(&self) -> SessionSemantics;
+    /// Atomically allocate a collision-free session id and insert the session.
+    /// Durable stores must make this operation atomic in their backing store.
+    fn create(&self, prefix: &str, session: Session) -> Result<String, String>;
+    fn put(&self, id: String, session: Session) -> Result<(), String>;
+    fn get(&self, id: &str) -> Result<Option<Session>, String>;
+    fn delete(&self, id: &str) -> Result<bool, String>;
+}
+
+#[derive(Default)]
+struct SessionState {
+    sessions: HashMap<String, Session>,
+    next: u64,
+}
+
+pub struct InMemorySessionStore {
+    state: Mutex<SessionState>,
+}
+
+impl Default for InMemorySessionStore {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(SessionState {
+                sessions: HashMap::new(),
+                next: 1,
+            }),
+        }
+    }
+}
+
+impl SessionStore for InMemorySessionStore {
+    fn semantics(&self) -> SessionSemantics {
+        SessionSemantics::ProcessLifetime
+    }
+
+    fn create(&self, prefix: &str, session: Session) -> Result<String, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "session store lock poisoned")?;
+        loop {
+            let candidate = format!("{prefix}-{}", state.next);
+            state.next = state
+                .next
+                .checked_add(1)
+                .ok_or("session id space exhausted")?;
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                state.sessions.entry(candidate.clone())
+            {
+                entry.insert(session);
+                return Ok(candidate);
+            }
+        }
+    }
+
+    fn put(&self, id: String, session: Session) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "session store lock poisoned")?;
+        let stored = state
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| format!("cannot update unknown sessionId {id}"))?;
+        *stored = session;
+        Ok(())
+    }
+
+    fn get(&self, id: &str) -> Result<Option<Session>, String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| "session store lock poisoned")?
+            .sessions
+            .get(id)
+            .cloned())
+    }
+
+    fn delete(&self, id: &str) -> Result<bool, String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| "session store lock poisoned")?
+            .sessions
+            .remove(id)
+            .is_some())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ToolCall {
+    pub name: String,
+    pub arguments: Value,
+}
+
+pub enum IntentPlan {
+    Health,
+    Tools(Vec<ToolCall>),
+}
+
+pub trait IntentPlugin: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn supports(&self, prompt: &str) -> bool;
+    fn plan(&self, prompt: &str, session: &Session) -> Result<IntentPlan, String>;
+}
+
+pub struct IntentRegistry {
+    plugins: Vec<Box<dyn IntentPlugin>>,
+}
+
+impl IntentRegistry {
+    pub fn new() -> Self {
+        Self {
+            plugins: Vec::new(),
+        }
+    }
+
+    pub fn register(&mut self, plugin: Box<dyn IntentPlugin>) -> Result<(), String> {
+        if self.plugins.iter().any(|item| item.id() == plugin.id()) {
+            return Err(format!("duplicate ACP intent plugin {}", plugin.id()));
+        }
+        self.plugins.push(plugin);
+        Ok(())
+    }
+
+    fn plan(&self, prompt: &str, session: &Session) -> Result<IntentPlan, String> {
+        let matches: Vec<&dyn IntentPlugin> = self
+            .plugins
+            .iter()
+            .map(Box::as_ref)
+            .filter(|plugin| plugin.supports(prompt))
+            .collect();
+        if matches.is_empty() {
+            return Err("unsupported intent: no registered ACP plugin accepts this prompt".into());
+        }
+        if matches.len() > 1 {
+            let ids = matches
+                .iter()
+                .map(|plugin| plugin.id())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "ambiguous intent: multiple ACP plugins matched: {ids}"
+            ));
+        }
+        matches[0].plan(prompt, session)
+    }
+}
+
+impl Default for IntentRegistry {
+    fn default() -> Self {
+        let mut registry = Self::new();
+        registry
+            .register(Box::new(HealthIntent))
+            .expect("health plugin is unique");
+        registry
+            .register(Box::new(ProductIntent))
+            .expect("product plugin is unique");
+        registry
+    }
 }
 
 pub struct Agent {
-    sessions: Mutex<HashMap<String, Track>>,
-    next: Mutex<u64>,
+    sessions: Arc<dyn SessionStore>,
+    intents: IntentRegistry,
 }
 
 impl Agent {
     pub fn new() -> Self {
+        Self::with_session_store(Arc::new(InMemorySessionStore::default()))
+    }
+
+    pub fn with_session_store(sessions: Arc<dyn SessionStore>) -> Self {
         Self {
-            sessions: Mutex::new(HashMap::new()),
-            next: Mutex::new(1),
+            sessions,
+            intents: IntentRegistry::default(),
         }
+    }
+
+    pub fn register_intent_plugin(&mut self, plugin: Box<dyn IntentPlugin>) -> Result<(), String> {
+        self.intents.register(plugin)
+    }
+
+    pub fn session_semantics(&self) -> SessionSemantics {
+        self.sessions.semantics()
     }
 }
 
@@ -58,7 +239,7 @@ pub fn handle(agent: &Agent, message: Value) -> Result<AcpOutput, String> {
     let params = obj.get("params").cloned().unwrap_or(json!({}));
     let notification = matches!(id, None | Some(Value::Null));
     let (result, notes) = match method {
-        "initialize" => (initialize(&params)?, Vec::new()),
+        "initialize" => (initialize(agent, &params)?, Vec::new()),
         "session/new" => (session_new(agent, &params)?, Vec::new()),
         "session/prompt" => session_prompt(agent, &params)?,
         "session/cancel" => {
@@ -79,8 +260,16 @@ pub fn handle(agent: &Agent, message: Value) -> Result<AcpOutput, String> {
     })
 }
 
-fn initialize(params: &Value) -> Result<Value, String> {
-    let version = params.get("protocolVersion").and_then(Value::as_u64).unwrap_or(1);
+fn initialize(agent: &Agent, params: &Value) -> Result<Value, String> {
+    let version = params
+        .get("protocolVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let session_semantics = match agent.session_semantics() {
+        SessionSemantics::Durable => "durable",
+        SessionSemantics::ProcessLifetime => "process_lifetime_in_memory",
+        SessionSemantics::Stateless => "stateless",
+    };
     if version != 1 {
         return Err(format!("unsupported ACP protocolVersion {version}"));
     }
@@ -88,6 +277,7 @@ fn initialize(params: &Value) -> Result<Value, String> {
         "protocolVersion": 1,
         "agentCapabilities": {
             "loadSession": false,
+            "sessionSemantics": session_semantics,
             "promptCapabilities": {"image": false, "audio": false, "embeddedContext": false}
         },
         "agentInfo": {"name": "gen-audio", "version": "0.1.0"},
@@ -101,26 +291,33 @@ fn session_new(agent: &Agent, params: &Value) -> Result<Value, String> {
         return Err("session/new requires cwd".into());
     }
     // ACP requires cwd. This agent does not open it and does not read files from it.
-    let agents = params.get("agents").and_then(Value::as_array).cloned().unwrap_or_default();
-    let voice = params.get("voice").and_then(Value::as_str).unwrap_or("").to_string();
+    let agents = params
+        .get("agents")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let voice = params
+        .get("voice")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if !agents.is_empty() || !voice.is_empty() {
         gen_audio_mcp::control::validate_track(&agents, &voice).map_err(|(_, message)| message)?;
     }
-    let agent_ids: Vec<String> = agents.iter().filter_map(|value| value.as_str().map(str::to_string)).collect();
+    let agent_ids: Vec<String> = agents
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect();
     let assets = session_assets(params.get("assets"))?;
-    let mut next = agent.next.lock().expect("session counter");
-    let id = format!("gen-audio-session-{next}");
-    *next += 1;
-    drop(next);
-    agent.sessions.lock().expect("sessions").insert(
-        id.clone(),
-        Track {
+    let id = agent.sessions.create(
+        "gen-audio-session",
+        Session {
             cwd: cwd.to_string(),
             agents: agent_ids.clone(),
             voice: voice.clone(),
             assets: assets.clone(),
         },
-    );
+    )?;
     Ok(json!({"sessionId": id, "agents": agent_ids, "voice": voice, "assets": assets}))
 }
 
@@ -130,7 +327,9 @@ fn session_assets(value: Option<&Value>) -> Result<Vec<String>, String> {
     let Some(value) = value else {
         return Ok(Vec::new());
     };
-    let items = value.as_array().ok_or("assets must be an array of asset uids")?;
+    let items = value
+        .as_array()
+        .ok_or("assets must be an array of asset uids")?;
     if items.len() > MAX_SESSION_ASSETS {
         return Err(format!("assets is capped at {MAX_SESSION_ASSETS} uids"));
     }
@@ -151,125 +350,215 @@ fn session_prompt(agent: &Agent, params: &Value) -> Result<(Value, Vec<Value>), 
         .get("sessionId")
         .and_then(Value::as_str)
         .ok_or("session/prompt requires sessionId")?;
-    let track = agent
-        .sessions
-        .lock()
-        .expect("sessions")
-        .get(session_id)
-        .cloned()
-        .ok_or("unknown sessionId")?;
+    let mut session = agent.sessions.get(session_id)?.ok_or("unknown sessionId")?;
     let prompt = prompt_text(params.get("prompt"))?;
-    if prompt.trim().eq_ignore_ascii_case("health") || prompt.trim() == "status" {
-        let lines: Vec<String> = health_all()
-            .into_iter()
-            .map(|item| format!("{}={:?}", item.connector_id, item.mode))
-            .collect();
-        let summary = format!(
-            "Gen-Audio connector health (local report, not a vendor completion): {}",
-            lines.join(", ")
-        );
-        let note = json!({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "sessionId": session_id,
-                "update": {
+    match agent.intents.plan(&prompt, &session)? {
+        IntentPlan::Health => {
+            let reports = health_all();
+            let failed = reports
+                .iter()
+                .filter(|item| item.mode == gen_audio_connectors::Mode::Misconfigured)
+                .count();
+            let lines: Vec<String> = reports
+                .iter()
+                .map(|item| {
+                    format!(
+                        "{}={:?}(authenticated={})",
+                        item.connector_id, item.mode, item.authenticated
+                    )
+                })
+                .collect();
+            let summary = format!(
+                "Gen-Audio connector health (local configuration report, not a vendor authentication probe): {}",
+                lines.join(", ")
+            );
+            let note = json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"sessionId": session_id, "update": {
                     "sessionUpdate": "agent_message_chunk",
                     "content": {"type": "text", "text": summary}
+                }}
+            });
+            return Ok((
+                json!({
+                    "stopReason": "end_turn",
+                    "status": if failed == 0 { "ok" } else { "failed" },
+                    "failed": failed
+                }),
+                vec![note],
+            ));
+        }
+        IntentPlan::Tools(planned) => {
+            let calls = planned;
+            let mut changed = false;
+            for call in &calls {
+                if call.name == "ui_set_sidepane" || call.name == "ui_generate" {
+                    if let Some(list) = call.arguments.get("agents").and_then(Value::as_array) {
+                        session.agents = list
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect();
+                        changed = true;
+                    }
+                    if let Some(voice) = call.arguments.get("voice").and_then(Value::as_str) {
+                        session.voice = voice.to_string();
+                        changed = true;
+                    }
                 }
             }
+            if changed {
+                agent.sessions.put(session_id.to_string(), session)?;
+            }
+            let mut notes = Vec::new();
+            let mut summary = String::new();
+            let mut completed = 0usize;
+            let mut failed = Vec::new();
+            for (index, call) in calls.iter().enumerate() {
+                let tool_id = format!("gen-audio-tool-{}", index + 1);
+                notes.push(json!({
+                    "jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": session_id, "update": {
+                            "sessionUpdate": "tool_call", "toolCallId": tool_id,
+                            "title": call.name, "kind": "other", "status": "pending"
+                        }
+                    }
+                }));
+                match mcp_tool(&call.name, call.arguments.clone()) {
+                    Ok(outcome) => {
+                        if !summary.is_empty() {
+                            summary.push('\n');
+                        }
+                        summary.push_str(&outcome.text);
+                        for warning in &outcome.warnings {
+                            summary.push('\n');
+                            summary.push_str(warning);
+                        }
+                        if let Some(reason) =
+                            explicit_tool_failure(&outcome.payload, outcome.is_error)
+                        {
+                            failed.push(json!({
+                                "toolCallId": tool_id,
+                                "tool": call.name,
+                                "error": reason
+                            }));
+                            notes.push(json!({
+                                "jsonrpc": "2.0", "method": "session/update", "params": {
+                                    "sessionId": session_id, "update": {
+                                        "sessionUpdate": "tool_call_update", "toolCallId": tool_id,
+                                        "status": "failed", "content": [{"type": "text", "text": failed.last().unwrap()["error"]}]
+                                    }
+                                }
+                            }));
+                        } else {
+                            completed += 1;
+                            notes.push(json!({
+                                "jsonrpc": "2.0", "method": "session/update", "params": {
+                                    "sessionId": session_id, "update": {
+                                        "sessionUpdate": "tool_call_update", "toolCallId": tool_id,
+                                        "status": "completed", "content": [{"type": "text", "text": outcome.text}]
+                                    }
+                                }
+                            }));
+                        }
+                    }
+                    Err(err) => {
+                        if !summary.is_empty() {
+                            summary.push('\n');
+                        }
+                        summary.push_str(&err);
+                        failed
+                            .push(json!({"toolCallId": tool_id, "tool": call.name, "error": err}));
+                        notes.push(json!({
+                            "jsonrpc": "2.0", "method": "session/update", "params": {
+                                "sessionId": session_id, "update": {
+                                    "sessionUpdate": "tool_call_update", "toolCallId": tool_id,
+                                    "status": "failed", "content": [{"type": "text", "text": failed.last().unwrap()["error"]}]
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+            summary.push_str(" synthesizedSpeech is false. This agent does not invent a podcast.");
+            notes.push(json!({
+                "jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": session_id, "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": summary}
+                    }
+                }
+            }));
+            let status = if failed.is_empty() {
+                "ok"
+            } else if completed == 0 {
+                "failed"
+            } else {
+                "partial"
+            };
+            Ok((
+                json!({
+                    "stopReason": "end_turn", "status": status, "success": failed.is_empty(),
+                    "completedToolCalls": completed, "failedToolCalls": failed
+                }),
+                notes,
+            ))
+        }
+    }
+}
+
+fn explicit_tool_failure(value: &Value, is_error: bool) -> Option<String> {
+    if is_error || value.get("ok").and_then(Value::as_bool) == Some(false) {
+        let detail = value
+            .get("reason")
+            .or_else(|| value.get("error"))
+            .and_then(Value::as_str)
+            .unwrap_or(if is_error {
+                "tool returned isError=true"
+            } else {
+                "tool returned ok=false"
+            });
+        return Some(detail.to_string());
+    }
+    if value.get("isError").and_then(Value::as_bool) == Some(true) {
+        return Some("tool returned isError=true".into());
+    }
+    None
+}
+
+#[derive(Debug)]
+struct ToolOutcome {
+    payload: Value,
+    text: String,
+    is_error: bool,
+    warnings: Vec<String>,
+}
+
+fn normalize_tool_result(value: Value, warnings: Vec<String>) -> Result<ToolOutcome, String> {
+    if let Some(content) = value.get("content") {
+        let text = content
+            .get(0)
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            .ok_or("MCP tool result has no text content")?;
+        let payload: Value = serde_json::from_str(text)
+            .map_err(|err| format!("MCP tool result text is not JSON: {err}"))?;
+        return Ok(ToolOutcome {
+            payload,
+            text: text.to_string(),
+            is_error: value
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            warnings,
         });
-        return Ok((json!({"stopReason": "end_turn"}), vec![note]));
     }
-    let mut calls = product_plan(&prompt, &track);
-    for (name, args) in &calls {
-        if name == "ui_set_sidepane" || name == "ui_generate" {
-            if let Some(stored) = agent.sessions.lock().expect("sessions").get_mut(session_id) {
-                if let Some(list) = args.get("agents").and_then(Value::as_array) {
-                    stored.agents = list.iter().filter_map(|value| value.as_str().map(str::to_string)).collect();
-                }
-                if let Some(voice) = args.get("voice").and_then(Value::as_str) {
-                    stored.voice = voice.to_string();
-                }
-            }
-        }
-    }
-    if calls.is_empty() {
-        calls.push(("voice_profile_list".into(), json!({})));
-    }
-    let mut notes = Vec::new();
-    let mut summary = String::new();
-    for (index, (name, args)) in calls.iter().enumerate() {
-        let tool_id = format!("gen-audio-tool-{}", index + 1);
-        notes.push(json!({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "tool_call",
-                    "toolCallId": tool_id,
-                    "title": name,
-                    "kind": "other",
-                    "status": "pending"
-                }
-            }
-        }));
-        match mcp_tool(name, args.clone()) {
-            Ok(value) => {
-                let text = value["content"][0]["text"].as_str().unwrap_or("");
-                if !summary.is_empty() {
-                    summary.push('\n');
-                }
-                summary.push_str(text);
-                notes.push(json!({
-                    "jsonrpc": "2.0",
-                    "method": "session/update",
-                    "params": {
-                        "sessionId": session_id,
-                        "update": {
-                            "sessionUpdate": "tool_call_update",
-                            "toolCallId": tool_id,
-                            "status": "completed",
-                            "content": [{"type": "text", "text": text}]
-                        }
-                    }
-                }));
-            }
-            Err(err) => {
-                if !summary.is_empty() {
-                    summary.push('\n');
-                }
-                summary.push_str(&err);
-                notes.push(json!({
-                    "jsonrpc": "2.0",
-                    "method": "session/update",
-                    "params": {
-                        "sessionId": session_id,
-                        "update": {
-                            "sessionUpdate": "tool_call_update",
-                            "toolCallId": tool_id,
-                            "status": "failed",
-                            "content": [{"type": "text", "text": err}]
-                        }
-                    }
-                }));
-            }
-        }
-    }
-    summary.push_str(" synthesizedSpeech is false. This agent does not invent a podcast.");
-    notes.push(json!({
-        "jsonrpc": "2.0",
-        "method": "session/update",
-        "params": {
-            "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "agent_message_chunk",
-                "content": {"type": "text", "text": summary}
-            }
-        }
-    }));
-    Ok((json!({"stopReason": "end_turn"}), notes))
+    Ok(ToolOutcome {
+        text: value.to_string(),
+        payload: value,
+        is_error: false,
+        warnings,
+    })
 }
 
 fn control_tool(name: &str) -> bool {
@@ -343,9 +632,12 @@ fn ensure_loopback_target(addr: &str) -> Result<(), String> {
 
 /// UI actions go to the desktop's bound MCP listener.
 /// An in-process server has a different control bus, so it is not a fallback.
-fn mcp_tool(name: &str, args: Value) -> Result<Value, String> {
+fn mcp_tool(name: &str, args: Value) -> Result<ToolOutcome, String> {
     if let Some(addr) = desktop_addr()? {
-        return gen_audio_mcp::http::tools_call(&addr, name, &args);
+        return normalize_tool_result(
+            gen_audio_mcp::http::tools_call_result(&addr, name, &args)?,
+            Vec::new(),
+        );
     }
     if control_tool(name) {
         return Err(
@@ -356,8 +648,15 @@ fn mcp_tool(name: &str, args: Value) -> Result<Value, String> {
     let server = gen_audio_mcp::Server::boot();
     let result = gen_audio_mcp::call_tool(&server, &json!({"name": name, "arguments": args}))
         .map_err(|err| err.message);
-    let _ = std::fs::remove_dir_all(&server.scratch.dir);
-    result
+    let cleanup = std::fs::remove_dir_all(&server.scratch.dir);
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => normalize_tool_result(value, Vec::new()),
+        (Ok(value), Err(err)) => {
+            normalize_tool_result(value, vec![format!("scratch cleanup failed: {err}")])
+        }
+        (Err(err), Ok(())) => Err(err),
+        (Err(err), Err(cleanup)) => Err(format!("{err}; scratch cleanup also failed: {cleanup}")),
+    }
 }
 
 #[cfg(test)]
@@ -368,6 +667,48 @@ thread_local! {
 #[cfg(test)]
 fn bind_desktop_for_test(addr: Option<String>) {
     DESKTOP_ADDR.with(|slot| *slot.borrow_mut() = addr);
+}
+
+struct HealthIntent;
+struct ProductIntent;
+
+impl IntentPlugin for HealthIntent {
+    fn id(&self) -> &'static str {
+        "health"
+    }
+    fn supports(&self, prompt: &str) -> bool {
+        matches!(
+            prompt.trim().to_ascii_lowercase().as_str(),
+            "health" | "status"
+        )
+    }
+    fn plan(&self, _prompt: &str, _session: &Session) -> Result<IntentPlan, String> {
+        Ok(IntentPlan::Health)
+    }
+}
+
+impl IntentPlugin for ProductIntent {
+    fn id(&self) -> &'static str {
+        "product"
+    }
+    fn supports(&self, prompt: &str) -> bool {
+        prompt.split_whitespace().any(is_verb)
+    }
+    fn plan(&self, prompt: &str, session: &Session) -> Result<IntentPlan, String> {
+        let calls = product_plan(prompt, session);
+        if calls.is_empty() {
+            return Err(
+                "unsupported intent: recognized plugin but the prompt has no executable action"
+                    .into(),
+            );
+        }
+        Ok(IntentPlan::Tools(
+            calls
+                .into_iter()
+                .map(|(name, arguments)| ToolCall { name, arguments })
+                .collect(),
+        ))
+    }
 }
 
 fn is_verb(token: &str) -> bool {
@@ -393,7 +734,7 @@ fn is_verb(token: &str) -> bool {
     )
 }
 
-fn product_plan(prompt: &str, track: &Track) -> Vec<(String, Value)> {
+fn product_plan(prompt: &str, track: &Session) -> Vec<(String, Value)> {
     let tokens: Vec<String> = prompt.split_whitespace().map(str::to_string).collect();
     let mut calls = Vec::new();
     let mut agents: Vec<String> = Vec::new();
@@ -420,7 +761,10 @@ fn product_plan(prompt: &str, track: &Track) -> Vec<(String, Value)> {
             "navigate" | "slide" => {
                 index += 1;
                 if index < tokens.len() && !is_verb(&tokens[index]) {
-                    calls.push(("ui_navigate".into(), json!({"slide": tokens[index].to_ascii_lowercase()})));
+                    calls.push((
+                        "ui_navigate".into(),
+                        json!({"slide": tokens[index].to_ascii_lowercase()}),
+                    ));
                     index += 1;
                 }
             }
@@ -531,7 +875,11 @@ fn product_plan(prompt: &str, track: &Track) -> Vec<(String, Value)> {
         track.voice.clone()
     };
     if !agents.is_empty() || voice.is_some() {
-        let agents = if agents.is_empty() { fallback_agents } else { agents };
+        let agents = if agents.is_empty() {
+            fallback_agents
+        } else {
+            agents
+        };
         let voice = voice.unwrap_or(fallback_voice);
         let args = json!({"agents": agents, "voice": voice});
         if generate {
@@ -572,7 +920,7 @@ fn session_cancel(agent: &Agent, params: &Value) -> Result<Value, String> {
         .get("sessionId")
         .and_then(Value::as_str)
         .ok_or("session/cancel requires sessionId")?;
-    agent.sessions.lock().expect("sessions").remove(session_id);
+    agent.sessions.delete(session_id)?;
     Ok(json!({}))
 }
 
@@ -708,8 +1056,75 @@ mod tests {
     use gen_audio_core::bridge::NoKokoroEnv;
 
     #[test]
+    fn tool_results_normalize_inner_payloads_and_failures() {
+        let direct =
+            normalize_tool_result(json!({"ok": false, "reason": "refused"}), Vec::new()).unwrap();
+        assert_eq!(direct.payload["ok"], false);
+        assert_eq!(
+            explicit_tool_failure(&direct.payload, direct.is_error).as_deref(),
+            Some("refused")
+        );
+
+        let enveloped = normalize_tool_result(
+            json!({
+                "content": [{"type": "text", "text": "{\"ok\":false,\"reason\":\"refused\"}"}],
+                "isError": true
+            }),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(enveloped.payload["ok"], false);
+        assert!(enveloped.is_error);
+        assert_eq!(
+            explicit_tool_failure(&enveloped.payload, enveloped.is_error).as_deref(),
+            Some("refused")
+        );
+
+        let outer_error = normalize_tool_result(
+            json!({
+                "content": [{"type": "text", "text": "{\"ok\":true}"}],
+                "isError": true
+            }),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(explicit_tool_failure(&outer_error.payload, outer_error.is_error).is_some());
+
+        let direct_ok =
+            normalize_tool_result(json!({"ok": true, "queued": 4}), Vec::new()).unwrap();
+        assert_eq!(direct_ok.text, "{\"ok\":true,\"queued\":4}");
+        assert!(explicit_tool_failure(&direct_ok.payload, direct_ok.is_error).is_none());
+    }
+
+    #[test]
     fn handshake_smoke() {
         assert_eq!(smoke().unwrap(), "acp smoke ok");
+    }
+
+    #[test]
+    fn shared_session_store_allocates_without_overwriting_ids() {
+        let store = Arc::new(InMemorySessionStore::default());
+        let first_agent = Agent::with_session_store(store.clone());
+        let second_agent = Agent::with_session_store(store.clone());
+        let first = handle(
+            &first_agent,
+            json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"first"}}),
+        )
+        .unwrap();
+        let second = handle(
+            &second_agent,
+            json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"second"}}),
+        )
+        .unwrap();
+        let first_id = first.response.as_ref().unwrap()["result"]["sessionId"]
+            .as_str()
+            .unwrap();
+        let second_id = second.response.as_ref().unwrap()["result"]["sessionId"]
+            .as_str()
+            .unwrap();
+        assert_ne!(first_id, second_id);
+        assert_eq!(store.get(first_id).unwrap().unwrap().cwd, "first");
+        assert_eq!(store.get(second_id).unwrap().unwrap().cwd, "second");
     }
 
     #[test]
@@ -720,7 +1135,10 @@ mod tests {
             json!({"jsonrpc":"2.0","id":7,"method":"session/new","params":{"cwd":"/this/path/is/not/opened"}}),
         )
         .unwrap();
-        assert!(created.response.unwrap()["result"]["sessionId"].as_str().unwrap().starts_with("gen-audio-session-"));
+        assert!(created.response.unwrap()["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .starts_with("gen-audio-session-"));
         let missing = handle(
             &agent,
             json!({"jsonrpc":"2.0","id":8,"method":"session/load","params":{}}),
@@ -736,6 +1154,41 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_intents_are_errors_and_plugin_ids_are_unique() {
+        struct Never;
+        impl IntentPlugin for Never {
+            fn id(&self) -> &'static str {
+                "health"
+            }
+            fn supports(&self, _prompt: &str) -> bool {
+                false
+            }
+            fn plan(&self, _prompt: &str, _session: &Session) -> Result<IntentPlan, String> {
+                unreachable!()
+            }
+        }
+        let mut agent = Agent::new();
+        assert!(agent.register_intent_plugin(Box::new(Never)).is_err());
+        let created = handle(
+            &agent,
+            json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"."}}),
+        )
+        .unwrap();
+        let session_id = created.response.unwrap()["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let error = handle(
+            &agent,
+            json!({"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{
+                "sessionId": session_id, "prompt":[{"type":"text","text":"frobnicate this"}]
+            }}),
+        )
+        .unwrap_err();
+        assert!(error.contains("unsupported intent"), "{error}");
+    }
+
+    #[test]
     fn prompt_calls_the_voice_profile_tool() {
         let agent = Agent::new();
         let created = handle(
@@ -743,7 +1196,10 @@ mod tests {
             json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"."}}),
         )
         .unwrap();
-        let session_id = created.response.unwrap()["result"]["sessionId"].as_str().unwrap().to_string();
+        let session_id = created.response.unwrap()["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let prompted = handle(
             &agent,
             json!({
@@ -796,13 +1252,30 @@ mod tests {
             }),
         )
         .unwrap();
+        assert_eq!(
+            prompted.response.as_ref().unwrap()["result"]["success"],
+            false
+        );
+        assert_eq!(
+            prompted.response.as_ref().unwrap()["result"]["status"],
+            "failed"
+        );
+        assert!(
+            !prompted.response.as_ref().unwrap()["result"]["failedToolCalls"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         let blob = serde_json::to_string(&prompted.notifications).unwrap();
         assert!(blob.contains("ui_generate"), "{blob}");
         assert!(blob.contains("synth"), "{blob}");
         assert!(blob.contains("No speech was invented"), "{blob}");
         assert!(blob.contains("tool_call"), "{blob}");
         assert!(!blob.contains("\"synthesizedSpeech\":true"), "{blob}");
-        assert!(blob.contains("GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES are unset"), "{blob}");
+        assert!(
+            blob.contains("GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES are unset"),
+            "{blob}"
+        );
         let rejected = handle(
             &agent,
             json!({
@@ -813,7 +1286,10 @@ mod tests {
             }),
         )
         .unwrap_err();
-        assert!(rejected.contains("connector") || rejected.contains("af_heart"), "{rejected}");
+        assert!(
+            rejected.contains("connector") || rejected.contains("af_heart"),
+            "{rejected}"
+        );
     }
 
     #[test]
@@ -823,7 +1299,10 @@ mod tests {
         let saved = std::env::var("GEN_AUDIO_MCP_ADDR").ok();
         std::env::set_var("GEN_AUDIO_MCP_ADDR", "10.1.8.70:8765");
         let err = ensure_loopback_target(&read_configured_addr().expect("env addr")).unwrap_err();
-        assert!(err.contains("loopback") || err.contains("non-loopback"), "{err}");
+        assert!(
+            err.contains("loopback") || err.contains("non-loopback"),
+            "{err}"
+        );
         match saved {
             Some(value) => std::env::set_var("GEN_AUDIO_MCP_ADDR", value),
             None => std::env::remove_var("GEN_AUDIO_MCP_ADDR"),
@@ -833,7 +1312,8 @@ mod tests {
     #[test]
     fn session_new_binds_library_asset_uids() {
         let agent = Agent::new();
-        let clip = gen_audio_core::asset_catalog::uid_for_legacy("audio_clip", "lib-misaki-kokoro").unwrap();
+        let clip = gen_audio_core::asset_catalog::uid_for_legacy("audio_clip", "lib-misaki-kokoro")
+            .unwrap();
         let out = handle(
             &agent,
             json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":".","assets":[clip, "ga:cube_ihdr:biaxxmnibxtcur7nxdu3ffvna4"]}}),
@@ -842,7 +1322,10 @@ mod tests {
         let result = &out.response.unwrap()["result"];
         assert_eq!(result["assets"][0], clip);
         let session = result["sessionId"].as_str().unwrap();
-        assert_eq!(agent.sessions.lock().unwrap()[session].assets.len(), 2);
+        assert_eq!(
+            agent.sessions.get(session).unwrap().unwrap().assets.len(),
+            2
+        );
         for bad in [
             json!(["ga:cube_ihdr:aaaaaaaaaaaaaaaaaaaaaaaaaa"]),
             json!(["lib-misaki-kokoro"]),
@@ -850,7 +1333,10 @@ mod tests {
             json!(vec![clip; 9]),
             json!("ga:cube_ihdr:biaxxmnibxtcur7nxdu3ffvna4"),
         ] {
-            let err = handle(&agent, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","assets":bad}}));
+            let err = handle(
+                &agent,
+                json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","assets":bad}}),
+            );
             assert!(err.is_err(), "{bad} should be rejected");
         }
     }
@@ -868,7 +1354,10 @@ mod tests {
             json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"."}}),
         )
         .unwrap();
-        let session_id = created.response.unwrap()["result"]["sessionId"].as_str().unwrap().to_string();
+        let session_id = created.response.unwrap()["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let prompted = handle(
             &agent,
             json!({
@@ -890,8 +1379,7 @@ mod tests {
         let events = after["events"].as_array().cloned().unwrap_or_default();
         assert!(
             events.iter().any(|event| {
-                event["op"] == "navigate"
-                    && event["args"]["slide"] == "slide:spatial"
+                event["op"] == "navigate" && event["args"]["slide"] == "slide:spatial"
             }),
             "{after}"
         );
@@ -903,11 +1391,15 @@ mod tests {
     fn ui_navigate_without_a_desktop_does_not_touch_an_isolated_bus() {
         bind_desktop_for_test(None);
         let marker = format!("isolated-{}", std::process::id());
-        let err = mcp_tool("ui_navigate", json!({"slide": "spatial", "tileId": marker})).unwrap_err();
+        let err =
+            mcp_tool("ui_navigate", json!({"slide": "spatial", "tileId": marker})).unwrap_err();
         assert!(err.contains("not bound"), "{err}");
         let delta = gen_audio_mcp::control::since(0);
         assert!(
-            delta.events.iter().all(|event| event["args"]["tileId"] != marker),
+            delta
+                .events
+                .iter()
+                .all(|event| event["args"]["tileId"] != marker),
             "isolated ACP published onto the local bus"
         );
     }

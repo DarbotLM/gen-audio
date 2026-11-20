@@ -10,6 +10,7 @@ def test_health_is_live_when_the_model_is_unloaded():
     assert body["status"] == "ok"
     assert body["service"] == "genaid-audio"
     assert body["model_loaded"] is False
+    assert isinstance(body["pid"], int) and body["pid"] > 0
 
 
 def test_ready_stays_ready_for_lazy_load():

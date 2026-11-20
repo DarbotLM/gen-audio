@@ -5,6 +5,18 @@ pub const DEFAULT_PORT: u16 = 8002;
 pub const ROUTE_PREFIX: &str = "/genaid-audio";
 pub const SHARED_GATEWAY_HOST: &str = "10.1.8.70";
 
+pub fn configured_node_port() -> Result<u16, String> {
+    let raw = std::env::var("GEN_AUDIO_NODE_PORT").unwrap_or_else(|_| DEFAULT_PORT.to_string());
+    let port: u16 = raw
+        .trim()
+        .parse()
+        .map_err(|_| format!("GEN_AUDIO_NODE_PORT must be 1-65535, got {raw:?}"))?;
+    if port == 0 {
+        return Err("GEN_AUDIO_NODE_PORT must be 1-65535, got 0".into());
+    }
+    Ok(port)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PowerRow {
     pub id: String,

@@ -151,6 +151,8 @@ def test_build_script_saves_its_transcript_even_when_it_throws(tmp_path):
     (root / "scripts" / "lib").mkdir(parents=True)
     shutil.copy2(BUILD, root / "scripts" / BUILD.name)
     shutil.copy2(DEVENV, root / "scripts" / "lib" / DEVENV.name)
+    shutil.copy2(REPO / "scripts" / "runtime.json", root / "scripts" / "runtime.json")
+    shutil.copy2(REPO / "scripts" / "lib" / "runtime-config.ps1", root / "scripts" / "lib" / "runtime-config.ps1")
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
     subprocess.run([*git, "init", "-q"], cwd=root, check=True)
     subprocess.run([*git, "add", "."], cwd=root, check=True)

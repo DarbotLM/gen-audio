@@ -9,11 +9,13 @@ unloaded. ``/ready`` is the lazy-load readiness probe.
 from __future__ import annotations
 
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from gen_audio.serve import (
     AGENTYANKERS_EPISODE_PATH,
     AGENTYANKERS_FORMAT_PATH,
+    DEFAULT_PORT,
     ROUTE_PREFIX,
     health_payload,
     ready_payload,
@@ -34,6 +36,7 @@ def dispatch(
     route = path.split("?", 1)[0].rstrip("/") or "/"
     if method == "GET" and route == f"{ROUTE_PREFIX}/health":
         payload: dict[str, object] = dict(health_payload())
+        payload["pid"] = os.getpid()
         payload["model_loaded"] = model_loaded
         return 200, payload
     if method == "GET" and route == f"{ROUTE_PREFIX}/ready":
@@ -53,8 +56,16 @@ def dispatch(
     return 404, {"error": "not found"}
 
 
-def serve_loopback(host: str = "127.0.0.1", port: int = 8002) -> ThreadingHTTPServer:
+def serve_loopback(host: str = "127.0.0.1", port: int | None = None) -> ThreadingHTTPServer:
     """Bind a loopback listener. The caller starts ``serve_forever``."""
+    if port is None:
+        raw = os.environ.get("GEN_AUDIO_NODE_PORT", str(DEFAULT_PORT)).strip()
+        try:
+            port = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"GEN_AUDIO_NODE_PORT must be an integer, got {raw!r}") from exc
+        if port < 1 or port > 65535:
+            raise ValueError(f"GEN_AUDIO_NODE_PORT must be between 1 and 65535, got {port}")
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802

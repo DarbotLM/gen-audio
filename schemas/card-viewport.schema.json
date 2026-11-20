@@ -172,7 +172,7 @@
       "required": ["connectorId", "mode", "authenticated", "detail"],
       "properties": {
         "connectorId": { "enum": ["mcp", "acp", "harness", "copilot", "claude", "gpt", "gemini", "local"] },
-        "mode": { "enum": ["mock", "live", "local", "token_present", "misconfigured"] },
+        "mode": { "enum": ["mock", "live", "configured", "local", "token_present", "misconfigured"] },
         "authenticated": { "type": "boolean" },
         "detail": { "type": "string" }
       }

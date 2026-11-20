@@ -6,7 +6,6 @@
 
 #[cfg(test)]
 use std::cell::RefCell;
-#[cfg(test)]
 use std::collections::BTreeMap;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
@@ -25,6 +24,8 @@ pub enum Mode {
     Mock,
     Live,
     Local,
+    /// A live request is enabled, but liveness/authentication has not been probed.
+    Configured,
     TokenPresent,
     Misconfigured,
 }
@@ -51,7 +52,7 @@ pub struct ConnectorError {
 }
 
 impl ConnectorError {
-    fn new(message: impl Into<String>) -> Self {
+    pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: redact_secrets(&message.into()),
         }
@@ -70,25 +71,122 @@ pub trait Connector {
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError>;
 }
 
+type ConnectorFactory = fn() -> Box<dyn Connector>;
+
+/// Runtime connector registry. Factories are used so connector instances do not
+/// retain process-global credentials or one request's mutable state.
+pub struct ConnectorRegistry {
+    factories: BTreeMap<&'static str, ConnectorFactory>,
+}
+
+impl ConnectorRegistry {
+    pub fn new() -> Self {
+        Self {
+            factories: BTreeMap::new(),
+        }
+    }
+
+    pub fn register(
+        &mut self,
+        id: &'static str,
+        factory: ConnectorFactory,
+    ) -> Result<(), ConnectorError> {
+        let probe = factory();
+        if probe.id() != id {
+            return Err(ConnectorError::new(format!(
+                "connector registry key {id} does not match plugin id {}",
+                probe.id()
+            )));
+        }
+        if self.factories.insert(id, factory).is_some() {
+            return Err(ConnectorError::new(format!("duplicate connector {id}")));
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), ConnectorError> {
+        for (id, factory) in &self.factories {
+            if factory().id() != *id {
+                return Err(ConnectorError::new(format!(
+                    "connector {id} factory changed identity"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.factories.keys().copied()
+    }
+
+    pub fn connector(&self, id: &str) -> Option<Box<dyn Connector>> {
+        self.factories.get(id).map(|factory| factory())
+    }
+
+    pub fn roster(&self) -> Result<Vec<Box<dyn Connector>>, ConnectorError> {
+        self.validate()?;
+        Ok(self.factories.values().map(|factory| factory()).collect())
+    }
+}
+
+impl Default for ConnectorRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn local_mcp() -> Box<dyn Connector> {
+    Box::new(LocalConnector::new(
+        "mcp",
+        "Local stateless MCP server (stdio and optional loopback HTTP). No vendor credential.",
+    ))
+}
+fn local_acp() -> Box<dyn Connector> {
+    Box::new(LocalConnector::new(
+        "acp",
+        "Local ACP agent with explicitly in-process session storage for this stdio lifetime.",
+    ))
+}
+fn local_harness() -> Box<dyn Connector> {
+    Box::new(LocalConnector::new(
+        "harness",
+        "Local harness plans tools and writes JSONL traces. It does not invent speech audio.",
+    ))
+}
+fn copilot() -> Box<dyn Connector> {
+    Box::new(CopilotConnector)
+}
+fn claude() -> Box<dyn Connector> {
+    Box::new(ClaudeConnector)
+}
+fn gpt() -> Box<dyn Connector> {
+    Box::new(GptConnector)
+}
+fn gemini() -> Box<dyn Connector> {
+    Box::new(GeminiConnector)
+}
+
+pub fn default_registry() -> Result<ConnectorRegistry, ConnectorError> {
+    let mut registry = ConnectorRegistry::new();
+    for (id, factory) in [
+        ("mcp", local_mcp as ConnectorFactory),
+        ("acp", local_acp as ConnectorFactory),
+        ("harness", local_harness as ConnectorFactory),
+        ("copilot", copilot as ConnectorFactory),
+        ("claude", claude as ConnectorFactory),
+        ("gpt", gpt as ConnectorFactory),
+        ("gemini", gemini as ConnectorFactory),
+    ] {
+        registry.register(id, factory)?;
+    }
+    registry.validate()?;
+    Ok(registry)
+}
+
 pub fn roster() -> Vec<Box<dyn Connector>> {
-    vec![
-        Box::new(LocalConnector::new(
-            "mcp",
-            "Local stateless MCP server (stdio and optional loopback HTTP). No vendor credential.",
-        )),
-        Box::new(LocalConnector::new(
-            "acp",
-            "Local Agent Client Protocol agent. Sessions exist only because ACP requires sessionId.",
-        )),
-        Box::new(LocalConnector::new(
-            "harness",
-            "Local harness plans tools and writes JSONL traces. It does not invent speech audio.",
-        )),
-        Box::new(CopilotConnector),
-        Box::new(ClaudeConnector),
-        Box::new(GptConnector),
-        Box::new(GeminiConnector),
-    ]
+    default_registry()
+        .and_then(|registry| registry.roster())
+        .expect("built-in connector registry must validate")
 }
 
 pub fn health_all() -> Vec<HealthReport> {
@@ -96,17 +194,15 @@ pub fn health_all() -> Vec<HealthReport> {
 }
 
 pub fn health_one(id: &str) -> Result<HealthReport, ConnectorError> {
-    roster()
-        .into_iter()
-        .find(|item| item.id() == id)
+    default_registry()?
+        .connector(id)
         .map(|item| item.health())
         .ok_or_else(|| ConnectorError::new(format!("unknown connector {id}")))
 }
 
 pub fn complete_one(id: &str, prompt: &str) -> Result<Completion, ConnectorError> {
-    let connector = roster()
-        .into_iter()
-        .find(|item| item.id() == id)
+    let connector = default_registry()?
+        .connector(id)
         .ok_or_else(|| ConnectorError::new(format!("unknown connector {id}")))?;
     connector.complete(prompt)
 }
@@ -138,16 +234,10 @@ impl Connector for LocalConnector {
 
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError> {
         check_prompt(prompt)?;
-        Ok(Completion {
-            connector_id: self.id.to_string(),
-            text: format!(
-                "local connector '{}' does not call a vendor model. Prompt length: {}.",
-                self.id,
-                prompt.chars().count()
-            ),
-            mock: false,
-            model: "local".into(),
-        })
+        Err(ConnectorError::new(format!(
+            "connector '{}' is a local protocol surface, not a model completion provider; use its typed tool/session API",
+            self.id
+        )))
     }
 }
 
@@ -177,7 +267,8 @@ impl Connector for CopilotConnector {
         if let Ok(studio) = std::env::var("COPILOT_STUDIO_ENDPOINT") {
             let url = require_https_or_loopback(&studio)?;
             let body = json!({"prompt": prompt, "source": "gen-audio"});
-            let text = send_json(&url, &[("authorization", &format!("Bearer {token}"))], &body)?;
+            let authorization = "Bearer ".to_owned() + &token;
+            let text = send_json(&url, &[("authorization", &authorization)], &body)?;
             return Ok(Completion {
                 connector_id: "copilot".into(),
                 text,
@@ -188,10 +279,11 @@ impl Connector for CopilotConnector {
         let model = std::env::var("COPILOT_GITHUB_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
         check_model(&model)?;
         let body = chat_body(&model, prompt);
+        let authorization = "Bearer ".to_owned() + &token;
         let text = send_json(
             "https://models.github.ai/inference/chat/completions",
             &[
-                ("authorization", &format!("Bearer {token}")),
+                ("authorization", &authorization),
                 ("accept", "application/vnd.github+json"),
             ],
             &body,
@@ -210,24 +302,50 @@ impl Connector for ClaudeConnector {
         "claude"
     }
     fn health(&self) -> HealthReport {
-        let mut detail = "Anthropic Messages API. Claude Code CLI is not spawned unless GEN_AUDIO_CLAUDE_CODE_CLI=1.".to_string();
-        if claude_bin().is_some() {
-            detail.push_str(" claude binary is on PATH.");
+        if claude_code_enabled() {
+            let available = claude_bin().is_some();
+            let detail = if available {
+                if live_enabled() {
+                    "Claude Code CLI is selected and available; GEN_AUDIO_CONNECTOR_LIVE=1 permits execution. Authentication is not verified by health. The Anthropic API key is ignored while CLI mode is selected."
+                } else {
+                    "Claude Code CLI is selected and available, but execution remains disabled until GEN_AUDIO_CONNECTOR_LIVE=1. The Anthropic API key is ignored while CLI mode is selected."
+                }
+            } else {
+                "GEN_AUDIO_CLAUDE_CODE_CLI=1 selects the Claude Code CLI, but no valid claude binary was found. The Anthropic API key is not used while CLI mode is selected."
+            };
+            return HealthReport {
+                connector_id: "claude".into(),
+                mode: if available {
+                    Mode::Configured
+                } else {
+                    Mode::Misconfigured
+                },
+                authenticated: false,
+                detail: detail.into(),
+            };
         }
-        vendor_health("claude", env_var("ANTHROPIC_API_KEY").is_ok(), &detail)
+        vendor_health(
+            "claude",
+            token_present(&["ANTHROPIC_API_KEY"]),
+            "Anthropic Messages API. GEN_AUDIO_CLAUDE_CODE_CLI is not enabled.",
+        )
     }
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError> {
         check_prompt(prompt)?;
-        if env_var("GEN_AUDIO_CLAUDE_CODE_CLI").ok().as_deref() == Some("1") {
+        if claude_code_enabled() {
+            if !live_enabled() {
+                return Ok(mock_completion("claude", "claude-code-cli", prompt));
+            }
             return run_claude_code(prompt);
         }
-        let Some(key) = env_var("ANTHROPIC_API_KEY").ok() else {
+        let Some(key) = first_env(&["ANTHROPIC_API_KEY"]) else {
             return Ok(mock_completion("claude", "claude-api", prompt));
         };
         if !live_enabled() {
             return Ok(mock_completion("claude", "claude-api", prompt));
         }
-        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-5-haiku-latest".into());
+        let model =
+            std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-5-haiku-latest".into());
         check_model(&model)?;
         let body = json!({
             "model": model,
@@ -236,10 +354,7 @@ impl Connector for ClaudeConnector {
         });
         let text = send_json(
             "https://api.anthropic.com/v1/messages",
-            &[
-                ("x-api-key", &key),
-                ("anthropic-version", "2023-06-01"),
-            ],
+            &[("x-api-key", &key), ("anthropic-version", "2023-06-01")],
             &body,
         )?;
         Ok(Completion {
@@ -258,13 +373,13 @@ impl Connector for GptConnector {
     fn health(&self) -> HealthReport {
         vendor_health(
             "gpt",
-            env_var("OPENAI_API_KEY").is_ok(),
+            token_present(&["OPENAI_API_KEY"]),
             "OpenAI chat completions. Base URL must be https, or http loopback.",
         )
     }
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError> {
         check_prompt(prompt)?;
-        let Some(key) = env_var("OPENAI_API_KEY").ok() else {
+        let Some(key) = first_env(&["OPENAI_API_KEY"]) else {
             return Ok(mock_completion("gpt", "openai", prompt));
         };
         if !live_enabled() {
@@ -272,12 +387,14 @@ impl Connector for GptConnector {
         }
         let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
         check_model(&model)?;
-        let base = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
+        let base =
+            std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
         let base = require_https_or_loopback(base.trim_end_matches('/'))?;
         let body = chat_body(&model, prompt);
+        let authorization = "Bearer ".to_owned() + &key;
         let text = send_json(
             &format!("{base}/chat/completions"),
-            &[("authorization", &format!("Bearer {key}"))],
+            &[("authorization", &authorization)],
             &body,
         )?;
         Ok(Completion {
@@ -296,15 +413,13 @@ impl Connector for GeminiConnector {
     fn health(&self) -> HealthReport {
         vendor_health(
             "gemini",
-            env_var("GEMINI_API_KEY").is_ok() || env_var("GOOGLE_API_KEY").is_ok(),
+            token_present(&["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
             "Gemini generateContent. The key is sent as the x-goog-api-key header, not the query string.",
         )
     }
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError> {
         check_prompt(prompt)?;
-        let key = env_var("GEMINI_API_KEY")
-            .ok()
-            .or_else(|| env_var("GOOGLE_API_KEY").ok());
+        let key = first_env(&["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
         let Some(key) = key else {
             return Ok(mock_completion("gemini", "gemini", prompt));
         };
@@ -400,9 +515,11 @@ fn run_claude_code(prompt: &str) -> Result<Completion, ConnectorError> {
 }
 
 fn claude_bin() -> Option<std::path::PathBuf> {
-    let configured = std::env::var("CLAUDE_CODE_BIN").ok();
+    let configured = first_env(&["CLAUDE_CODE_BIN"]);
     let name = configured.as_deref().unwrap_or("claude");
-    which(name)
+    let path = which(name)?;
+    let file_name = path.file_name().and_then(|part| part.to_str())?;
+    (file_name == "claude" || file_name == "claude.exe").then_some(path)
 }
 
 fn which(name: &str) -> Option<std::path::PathBuf> {
@@ -411,18 +528,18 @@ fn which(name: &str) -> Option<std::path::PathBuf> {
     }
     if name.contains('/') || name.contains('\\') {
         let path = std::path::PathBuf::from(name);
-        return path.is_file().then_some(path);
+        return executable_file(&path).then_some(path);
     }
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
         let candidate = dir.join(name);
-        if candidate.is_file() {
+        if executable_file(&candidate) {
             return Some(candidate);
         }
         #[cfg(windows)]
         {
             let exe = dir.join(format!("{name}.exe"));
-            if exe.is_file() {
+            if executable_file(&exe) {
                 return Some(exe);
             }
         }
@@ -430,23 +547,45 @@ fn which(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+fn executable_file(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return path
+            .metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn vendor_health(id: &str, token: bool, detail: &str) -> HealthReport {
     let mode = if !token {
         Mode::Mock
     } else if live_enabled() {
-        Mode::Live
+        Mode::Configured
     } else {
         Mode::TokenPresent
+    };
+    let detail = if !token {
+        format!("{detail} Offline mock mode: no credential is configured.")
+    } else if live_enabled() {
+        format!("{detail} Live calls are enabled, but authentication is not verified until a completion succeeds.")
+    } else {
+        format!("{detail} Credential present; live calls remain explicitly disabled until GEN_AUDIO_CONNECTOR_LIVE=1.")
     };
     HealthReport {
         connector_id: id.to_string(),
         mode,
-        authenticated: token && live_enabled(),
-        detail: if token && !live_enabled() {
-            format!("{detail} A credential is set, but live calls stay off until GEN_AUDIO_CONNECTOR_LIVE=1.")
-        } else {
-            detail.to_string()
-        },
+        // Possessing a token is not evidence that a remote service accepted it.
+        authenticated: false,
+        detail,
     }
 }
 
@@ -454,7 +593,7 @@ fn mock_completion(id: &str, model: &str, prompt: &str) -> Completion {
     Completion {
         connector_id: id.into(),
         text: format!(
-            "mock connector '{id}' did not call an API and this text is not model output. Prompt length: {}.",
+            "mock connector '{id}' did not invoke a provider and this text is not model output. Prompt length: {}.",
             prompt.chars().count()
         ),
         mock: true,
@@ -509,17 +648,28 @@ fn env_var(name: &str) -> Result<String, std::env::VarError> {
     std::env::var(name)
 }
 
+fn claude_code_enabled() -> bool {
+    env_var("GEN_AUDIO_CLAUDE_CODE_CLI")
+        .ok()
+        .is_some_and(|value| value.trim() == "1")
+}
+
 fn live_enabled() -> bool {
-    env_var("GEN_AUDIO_CONNECTOR_LIVE").ok().as_deref() == Some("1")
+    env_var("GEN_AUDIO_CONNECTOR_LIVE")
+        .ok()
+        .is_some_and(|value| value.trim() == "1")
 }
 
 fn token_present(names: &[&str]) -> bool {
-    names.iter().any(|name| env_var(name).ok().filter(|v| !v.is_empty()).is_some())
+    first_env(names).is_some()
 }
 
 fn first_env(names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| {
-        env_var(name).ok().filter(|value| !value.is_empty())
+        env_var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
     })
 }
 
@@ -546,7 +696,9 @@ fn check_model(model: &str) -> Result<(), ConnectorError> {
 
 fn header_value_ok(value: &str) -> Result<(), ConnectorError> {
     if value.is_empty() || value.chars().any(|ch| ch.is_control()) {
-        return Err(ConnectorError::new("header value contains control characters"));
+        return Err(ConnectorError::new(
+            "header value contains control characters",
+        ));
     }
     Ok(())
 }
@@ -570,7 +722,10 @@ fn parse_endpoint(url: &str) -> Result<(String, String, Option<u16>, String), St
     if url.len() < 8 || url.len() > 300 {
         return Err("endpoint length is out of range".into());
     }
-    if url.chars().any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '\\' | '@' | '?' | '#')) {
+    if url
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '\\' | '@' | '?' | '#'))
+    {
         return Err("endpoint contains credentials, whitespace, or a query string".into());
     }
     let (scheme, rest) = url
@@ -644,7 +799,10 @@ fn assert_public_destination(url: &str) -> Result<(), String> {
         }
         return Ok(());
     }
-    let allow_private = std::env::var("GEN_AUDIO_CONNECTOR_ALLOW_PRIVATE").ok().as_deref() == Some("1");
+    let allow_private = std::env::var("GEN_AUDIO_CONNECTOR_ALLOW_PRIVATE")
+        .ok()
+        .as_deref()
+        == Some("1");
     if allow_private {
         return Ok(());
     }
@@ -743,6 +901,7 @@ mod tests {
             "GOOGLE_API_KEY",
             "GEN_AUDIO_CONNECTOR_LIVE",
             "GEN_AUDIO_CLAUDE_CODE_CLI",
+            "CLAUDE_CODE_BIN",
         ]
         .into_iter()
         .map(|name| (name.to_string(), None))
@@ -765,18 +924,50 @@ mod tests {
     }
 
     #[test]
-    fn empty_overlay_matches_a_real_empty_environment_variable() {
-        // std::env::var returns Ok("") for a variable that is set and empty.
-        // gpt health uses that is_ok() check, so an empty key is TokenPresent
-        // and live stays off. Treating "" as absent would prove the wrong thing.
+    fn registry_rejects_duplicate_plugin_ids_and_identity_mismatches() {
+        let mut registry = ConnectorRegistry::new();
+        registry.register("mcp", local_mcp).unwrap();
+        assert!(registry.register("mcp", local_mcp).is_err());
+        assert!(registry.register("wrong", local_mcp).is_err());
+        assert!(default_registry().unwrap().validate().is_ok());
+        let ids: Vec<&str> = default_registry().unwrap().ids().collect();
+        assert_eq!(ids.len(), CONNECTOR_IDS.len());
+        assert!(CONNECTOR_IDS.iter().all(|expected| ids.contains(expected)));
+    }
+
+    #[test]
+    fn empty_and_whitespace_credentials_match_call_semantics() {
+        for value in [String::new(), "  \t".into()] {
+            let mut env = credentials_absent();
+            env.insert("ANTHROPIC_API_KEY".into(), Some(value.clone()));
+            env.insert("OPENAI_API_KEY".into(), Some(value.clone()));
+            env.insert("GEMINI_API_KEY".into(), Some(value));
+            let _env = bind_env(env);
+            for id in ["claude", "gpt", "gemini"] {
+                let health = health_one(id).unwrap();
+                assert_eq!(health.mode, Mode::Mock, "{id}");
+                assert!(!health.authenticated);
+                let done = complete_one(id, "hello").unwrap();
+                assert!(done.mock);
+            }
+        }
+    }
+
+    #[test]
+    fn claude_cli_health_tracks_switch_and_binary_not_api_key() {
         let mut env = credentials_absent();
-        env.insert("OPENAI_API_KEY".into(), Some(String::new()));
+        env.insert("GEN_AUDIO_CLAUDE_CODE_CLI".into(), Some("1".into()));
+        env.insert(
+            "CLAUDE_CODE_BIN".into(),
+            Some("definitely-missing-claude-binary".into()),
+        );
+        env.insert("ANTHROPIC_API_KEY".into(), Some("sk-ant-present".into()));
         let _env = bind_env(env);
-        let health = health_one("gpt").unwrap();
-        assert_eq!(health.mode, Mode::TokenPresent);
+        let health = health_one("claude").unwrap();
+        assert_eq!(health.mode, Mode::Misconfigured);
+        assert!(health.detail.contains("CLI"));
+        assert!(health.detail.contains("not used"));
         assert!(!health.authenticated);
-        let done = complete_one("gpt", "hello").unwrap();
-        assert!(done.mock);
     }
 
     #[test]
@@ -790,6 +981,62 @@ mod tests {
         let done = complete_one("gpt", "hello").unwrap();
         assert!(done.mock);
         assert!(!done.text.contains("sk-test"));
+    }
+
+    #[test]
+    fn claude_cli_requires_live_switch_but_ignores_api_key_health() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join(format!("claude-health-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let name = if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        };
+        let bin = root.join(name);
+        std::fs::write(&bin, b"test fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&bin).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&bin, permissions).unwrap();
+        }
+        let bin = bin.canonicalize().unwrap();
+        let mut env = credentials_absent();
+        env.insert("GEN_AUDIO_CLAUDE_CODE_CLI".into(), Some(" 1 ".into()));
+        env.insert(
+            "CLAUDE_CODE_BIN".into(),
+            Some(bin.to_string_lossy().into_owned()),
+        );
+        env.insert("ANTHROPIC_API_KEY".into(), Some(String::new()));
+        let _env = bind_env(env);
+        let health = health_one("claude").unwrap();
+        assert_eq!(health.mode, Mode::Configured);
+        assert!(health
+            .detail
+            .contains("disabled until GEN_AUDIO_CONNECTOR_LIVE=1"));
+        let done = complete_one("claude", "hello").unwrap();
+        assert!(done.mock);
+        assert_eq!(done.model, "claude-code-cli");
+        drop(_env);
+        std::fs::remove_file(&bin).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn live_health_is_configured_but_not_claimed_authenticated() {
+        let mut env = credentials_absent();
+        env.insert("OPENAI_API_KEY".into(), Some("sk-testtoken123456".into()));
+        env.insert("GEN_AUDIO_CONNECTOR_LIVE".into(), Some("1".into()));
+        let _env = bind_env(env);
+        let health = health_one("gpt").unwrap();
+        assert_eq!(health.mode, Mode::Configured);
+        assert!(!health.authenticated);
+        assert!(health.detail.contains("not verified"));
     }
 
     #[test]
@@ -807,6 +1054,8 @@ mod tests {
         assert!(check_model("gemini/flash").is_err());
         let args = claude_code_args("claude");
         assert_eq!(args[1], "-p");
-        assert!(!args.iter().any(|arg| arg.contains("ping") || arg.contains("sh -c")));
+        assert!(!args
+            .iter()
+            .any(|arg| arg.contains("ping") || arg.contains("sh -c")));
     }
 }

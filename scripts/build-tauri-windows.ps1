@@ -36,6 +36,8 @@ Set-StrictMode -Version 2.0
 
 $TauriCli = '@tauri-apps/cli@2.12.1'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'lib\runtime-config.ps1')
+$runtimeConfig = Read-GenAudioRuntimeConfig -RepoRoot $root
 $desktop = Join-Path $root 'apps\desktop'
 $srcTauri = Join-Path $desktop 'src-tauri'
 $releaseDir = Join-Path $root 'target\release'
@@ -125,7 +127,14 @@ try {
         $healthy = $false
         foreach ($attempt in 1..40) {
             try {
-                Invoke-WebRequest -Uri "http://$addr/health" -UseBasicParsing -TimeoutSec 2 | Out-Null
+                $health = Invoke-WebRequest -Uri "http://$addr/health" -UseBasicParsing -TimeoutSec 2 |
+                    Select-Object -ExpandProperty Content | ConvertFrom-Json
+                if ($health.service -ne 'gen-audio-mcp' -or $health.role -ne 'mcp' -or -not $health.stateless) {
+                    throw 'HTTP listener answered /health but is not the Gen-Audio stateless MCP service'
+                }
+                if ([int]$health.pid -ne $proc.Id) {
+                    throw "MCP health PID $($health.pid) does not match launched sidecar $($proc.Id)"
+                }
                 $healthy = $true
                 break
             } catch {
@@ -141,7 +150,14 @@ try {
         if ($init.result.serverInfo.name -ne 'gen-audio') { throw "initialize serverInfo.name was '$($init.result.serverInfo.name)', expected gen-audio" }
         Write-Step 'mcp handshake ok (2025-03-26, gen-audio)'
     } finally {
-        if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+        if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction Stop }
+        $descriptor = $runtimeConfig.mcpAddressFile
+        if (Test-Path -LiteralPath $descriptor) {
+            $lines = [IO.File]::ReadAllLines($descriptor)
+            if ($lines.Count -ge 2 -and $lines[1] -eq "$($proc.Id)") {
+                Remove-Item -LiteralPath $descriptor -Force -ErrorAction Stop
+            }
+        }
     }
 
     # Stage the sidecar where tauri externalBin expects it. Never copy a file

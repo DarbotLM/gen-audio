@@ -1767,7 +1767,7 @@ fn connector_section(tile: &str, rows: &[Value]) -> Option<Value> {
 }
 
 fn connector_mode_is_known(mode: &str) -> bool {
-    matches!(mode, "live" | "local" | "mock" | "token_present" | "misconfigured")
+    matches!(mode,     "live" | "configured" | "local" | "mock" | "token_present" | "misconfigured")
 }
 
 fn profile_section(person: &catalog::Persona, value: &Value) -> Value {

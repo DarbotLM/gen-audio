@@ -18,33 +18,35 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 $root = Split-Path -Parent $PSScriptRoot
-$models = Join-Path $root 'models'
-$runtime = Join-Path $root 'artifacts\runtime'
-$python = Join-Path $root '.venv\Scripts\python.exe'
-$ports = @{ Mcp = 8765; Node = 8002; Desktop = 8765; Preview = 1420 }
-if (-not $Port) { $Port = $ports[$Service] }
-$environment = @{
-    GEN_AUDIO_REPO = $root
-    GEN_AUDIO_PYTHON = $python
-    GEN_AUDIO_MODEL_DIR = $models
-    GEN_AUDIO_KOKORO_MODEL = Join-Path $models 'kokoro-v1.0.onnx'
-    GEN_AUDIO_KOKORO_VOICES = Join-Path $models 'voices-v1.0.bin'
-    GENAID_MODEL_BASE = $models
-    GEN_AUDIO_WORK_DIR = Join-Path $runtime 'mcp'
-    GEN_AUDIO_MCP_ADDR = $(if ($Service -in @('Mcp', 'Desktop')) { "127.0.0.1:$Port" } else { '127.0.0.1:8765' })
+. (Join-Path $PSScriptRoot 'lib\runtime-config.ps1')
+$configArgs = @{ RepoRoot = $root }
+if ($Port) {
+    switch ($Service) {
+        'Node' { $configArgs.NodePort = $Port }
+        { $_ -in @('Mcp', 'Desktop') } { $configArgs.McpPort = $Port }
+        'Preview' { $configArgs.PreviewPort = $Port }
+    }
 }
+$config = Read-GenAudioRuntimeConfig @configArgs
+$Port = [int]$config.ports[$Service]
+$runtime = $config.runtime
+$python = $config.python
+$environment = Get-GenAudioRuntimeEnvironment $config
+$environment.GEN_AUDIO_MCP_ADDR = "127.0.0.1:$($config.ports.Mcp)"
+if ($Service -eq 'Node') { $environment.GEN_AUDIO_NODE_PORT = "$Port" }
+if ($Service -eq 'Preview') { $environment.GEN_AUDIO_PREVIEW_PORT = "$Port" }
 $cwd = $root
 $commandArgs = @()
 switch ($Service) {
     'Mcp' {
-        $exe = Join-Path $root 'target\release\gen-audio-mcp.exe'
+        $exe = $config.mcpExecutable
         $commandArgs = @('--http', "127.0.0.1:$Port")
     }
     'Node' {
         $exe = $python
         $commandArgs = @('-c', "from gen_audio.node_http import serve_loopback; serve_loopback(port=$Port).serve_forever()")
     }
-    'Desktop' { $exe = Join-Path $root 'target\release\gen-audio.exe' }
+    'Desktop' { $exe = $config.desktopExecutable }
     'Preview' {
         $exe = 'npm.cmd'
         $cwd = Join-Path $root 'apps\desktop'

@@ -481,7 +481,7 @@ function bodyFor(card: ViewportCard, kind: string, body: Record<string, unknown>
     wrap.append(paragraph(String(body.tone ?? "")));
     wrap.append(paragraph(String(body.purpose ?? "")));
   } else if (kind === "ConnectorStatus") {
-    wrap.append(pill(String(body.mode), body.mode === "mock" || body.mode === "token_present"));
+    wrap.append(pill(String(body.mode), ["mock", "configured", "token_present", "misconfigured"].includes(String(body.mode))));
     wrap.append(paragraph(String(body.detail ?? "")));
     if (body.authenticated === true) wrap.append(paragraph("Authenticated: yes"));
     else wrap.append(paragraph("Authenticated: no"));

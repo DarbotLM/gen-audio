@@ -31,7 +31,9 @@ def _temp_repo(tmp_path: Path) -> Path:
     (repo / "scripts" / "lib").mkdir(parents=True)
     shutil.copy2(REPO / "scripts" / "test.ps1", repo / "scripts" / "test.ps1")
     shutil.copy2(REPO / "scripts" / "lib" / "devenv.ps1", repo / "scripts" / "lib" / "devenv.ps1")
-    (repo / ".gitattributes").write_bytes(b"*.json text eol=lf\n*.ps1 -text\n")
+    for script in (repo / "scripts" / "test.ps1", repo / "scripts" / "lib" / "devenv.ps1"):
+        script.write_bytes(script.read_bytes().replace(b"\r\n", b"\n"))
+    (repo / ".gitattributes").write_bytes(b"*.json text eol=lf\n*.ps1 text eol=lf\n*.cmd text eol=crlf\n*.bat text eol=crlf\n*.sh text eol=lf\n")
     (repo / "data.json").write_bytes(b'{\n  "a": 1\n}\n')
     _git(repo, "init", "-q")
     _git(repo, "add", ".")
@@ -76,7 +78,7 @@ def test_preflight_fix_for_a_crlf_index_is_renormalize_and_commit_per_file(tmp_p
     (repo / ".gitattributes").write_bytes(b"*.ps1 -text\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "crlf in the index")
-    (repo / ".gitattributes").write_bytes(b"*.json text eol=lf\n*.ps1 -text\n")
+    (repo / ".gitattributes").write_bytes(b"*.json text eol=lf\n*.ps1 text eol=lf\n*.cmd text eol=crlf\n*.bat text eol=crlf\n*.sh text eol=lf\n")
     _git(repo, "add", ".gitattributes")
     _git(repo, "commit", "-q", "-m", "eol=lf rule")
     out = _run(repo)
@@ -173,8 +175,9 @@ def _stub_cargo(tmp_path: Path) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "cargo").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    (bin_dir / "cargo").chmod(0o755)
-    (bin_dir / "cargo.cmd").write_text("@exit /b 0\r\n", encoding="utf-8")
+    if os.name != "nt":
+        (bin_dir / "cargo").chmod(0o755)
+    (bin_dir / "cargo.cmd").write_bytes(b"@exit /b 0\r\n")
     return {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}", "GEN_AUDIO_PYTHON": sys.executable}
 
 
@@ -245,8 +248,9 @@ def _stub_npm_and_gate(tmp_path: Path, *, fail_gate: bool) -> dict[str, str]:
         f'>> "{calls}" echo PYTHONPATH=%PYTHONPATH%\r\nexit /b {gate_exit}\r\n',
         encoding="utf-8",
     )
-    for name in ("npm", "npx", "python3"):
-        (bin_dir / name).chmod(0o755)
+    if os.name != "nt":
+        for name in ("npm", "npx", "python3"):
+            (bin_dir / name).chmod(0o755)
     return {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
 
 

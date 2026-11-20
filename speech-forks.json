@@ -1,0 +1,5 @@
+{
+  "kokoro": "https://github.com/DarbotLM/kokoro/commit/af3f19bff5ecc3cdba4a7be3cbb242ef59f632da",
+  "kokoro-onnx": "https://github.com/DarbotLM/kokoro-onnx/commit/40906b172c7cecff3713f8ecae2e5c9a12687717",
+  "misaki": "https://github.com/DarbotLM/misaki/commit/71ce0f636d5ea3ce58dd9b94e35a99f519f2197c"
+}

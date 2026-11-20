@@ -64,7 +64,7 @@ Reference-wav languages in this commit are `en`, `zh`, and `in` (`in-Samuel_man.
 
 ### Kokoro (PyTorch) — `kokoro`
 
-Schema: `schemas/voices/frameworks/kokoro.v1.schema.json`. Engine id: `kokoro_dayour` (the dayour/kokoro fork of hexgrad/kokoro). Wired to `KPipeline(lang_code, repo_id="hexgrad/Kokoro-82M", device="cpu")`. The voice argument is the local `.pt` path when that file is in the library. A weighted blend is the summed tensor `Σ wᵢ·packᵢ`, not `KPipeline.load_voice`'s equal-weight mean. Misaki is assigned to `pipeline.g2p` after `custom_entries` are written into `lexicon.golds`. `prepare` stays non-executable until the `kokoro` and `misaki` packages are installed and either the packs are on disk or `GEN_AUDIO_ALLOW_HF_DOWNLOAD=1`. Weights are not in this repo.
+Schema: `schemas/voices/frameworks/kokoro.v1.schema.json`. Engine id: `kokoro_dayour` (the DarbotLM/kokoro fork of hexgrad/kokoro). Wired to `KPipeline(lang_code, repo_id="hexgrad/Kokoro-82M", device="cpu")`. The voice argument is the local `.pt` path when that file is in the library. A weighted blend is the summed tensor `Σ wᵢ·packᵢ`, not `KPipeline.load_voice`'s equal-weight mean. Misaki is assigned to `pipeline.g2p` after `custom_entries` are written into `lexicon.golds`. `prepare` stays non-executable until the `kokoro` and `misaki` packages are installed and either the packs are on disk or `GEN_AUDIO_ALLOW_HF_DOWNLOAD=1`. Weights are not in this repo.
 
 A pack id is `<lang><gender>_<name>`:
 

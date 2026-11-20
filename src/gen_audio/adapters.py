@@ -145,7 +145,7 @@ def _missing_kokoro_torch() -> list[str]:
 
 
 def _synth_kokoro_torch(turns: list[Turn], cast: CastMap, output: Path) -> dict:
-    """Run dayour/kokoro ``KPipeline`` on CPU. Misaki is assigned to ``pipeline.g2p``."""
+    """Run DarbotLM/kokoro ``KPipeline`` on CPU. Misaki is assigned to ``pipeline.g2p``."""
     from gen_audio.voices.errors import VoiceError
     from gen_audio.voices.model import g2p_config_path, load_g2p
     from gen_audio.voices.runtime import run_kokoro_pipeline

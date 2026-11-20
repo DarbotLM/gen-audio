@@ -359,6 +359,26 @@ function Install-ModelSet {
     }
 }
 
+function Install-SpeechForkSet {
+    # The DarbotLM forks are private, so they stay out of the public uv.lock.
+    # They replace the locked PyPI kokoro-onnx in place (same version) and add
+    # the kokoro and misaki runtimes that the kokoro_dayour engine imports.
+    $pins = Get-Content -LiteralPath (Join-Path $RepoRoot 'speech-forks.json') -Raw | ConvertFrom-Json
+    $requirements = @()
+    foreach ($entry in $pins.PSObject.Properties) {
+        if ($entry.Value -notmatch '^https://github\.com/(DarbotLM/(?:kokoro|kokoro-onnx|misaki))/commit/([a-f0-9]{40})$') {
+            throw "Invalid speech fork reference for $($entry.Name): $($entry.Value)"
+        }
+        $extra = if ($entry.Name -eq 'misaki') { '[en]' } else { '' }
+        $requirements += "$($entry.Name)$extra @ git+https://github.com/$($Matches[1]).git@$($Matches[2])"
+    }
+    Write-ToolboxLog 'STEP' 'Installing the pinned DarbotLM speech forks (kokoro, kokoro-onnx, misaki).'
+    $python = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    $arguments = @('-m', 'pip', 'install', '--disable-pip-version-check', '--force-reinstall', '--no-deps') + $requirements
+    Invoke-External $python $arguments $RepoRoot
+    $runtime = @('-m', 'pip', 'install', '--disable-pip-version-check') + ($requirements | Where-Object { $_ -notmatch '^kokoro-onnx ' })
+    Invoke-External $python $runtime $RepoRoot
+}
 function Build-Framework {
     Install-DependencySet
     Write-ToolboxLog 'STEP' 'Installing and building the full Gen-Audio framework.'
@@ -417,6 +437,7 @@ function Build-Framework {
         'sync', '--frozen', '--all-extras', '--offline',
         '--no-install-project', '--inexact'
     ) $RepoRoot
+    Install-SpeechForkSet
     Invoke-External $python @('-m', 'pip', 'check') $RepoRoot
     Invoke-External (Get-Tool @('npm.cmd')) @('ci') (Join-Path $RepoRoot 'apps\desktop')
     Invoke-External (Get-Tool @('npm.cmd')) @('run', 'build') (Join-Path $RepoRoot 'apps\desktop')

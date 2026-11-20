@@ -62,6 +62,8 @@ Connector environment variables, mock behavior, and the live flag are in [docs/C
 
 The installable package is still `gen_audio` (`pip install -e .`). It turns a two-speaker script into a WAV with [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) when you supply model files, then runs the 24 kHz publish chain, draws spectrogram PNGs, and can run the cube-revision sketch.
 
+The speech runtimes come from the DarbotLM forks pinned in `speech-forks.json`: [DarbotLM/kokoro-onnx](https://github.com/DarbotLM/kokoro-onnx), [DarbotLM/kokoro](https://github.com/DarbotLM/kokoro) and [DarbotLM/misaki](https://github.com/DarbotLM/misaki), which add Python 3.14 support. Those repositories are private, so `uv.lock` keeps the PyPI kokoro-onnx of the same version, and `scripts/toolbox.ps1 -Step Build` installs the pinned fork commits over it with your GitHub credentials.
+
 ## What actually runs
 
 | Piece | Status |

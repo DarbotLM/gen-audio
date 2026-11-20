@@ -303,7 +303,7 @@ through `src`.
     `kind` becomes `fields.view`. `viewport.example.json` keeps `id` and gains
     `uid` alongside it, and it still validates against
     `card-viewport.schema.json`.
-  - The misaki clip's voice model is `kokoro_dayour` (dayour/kokoro
+  - The misaki clip's voice model is `kokoro_dayour` (DarbotLM/kokoro
     `KPipeline.generate_from_tokens`), with `provenance.g2p_model` = misaki.
   - Cubes older than rev 2 store no `bin_frames`, so it is inferred as
     `floor(duration·sr / time_bins)` and flagged in

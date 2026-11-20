@@ -34,10 +34,18 @@ fn code<T>(result: Result<T, gen_audio_core::asset::AssetError>) -> Value {
 fn validator() -> jsonschema::Validator {
     let card = json(CARD_SCHEMA);
     let profile = json(PROFILE_SCHEMA);
+    let card_id = card["$id"].as_str().unwrap().to_owned();
+    let profile_id = profile["$id"].as_str().unwrap().to_owned();
+    let registry = jsonschema::Registry::new()
+        .add(card_id, card)
+        .expect("card schema registers")
+        .add(profile_id, profile)
+        .expect("profile schema registers")
+        .prepare()
+        .expect("registry prepares");
     jsonschema::options()
         .with_draft(jsonschema::Draft::Draft202012)
-        .with_resource(card["$id"].as_str().unwrap(), jsonschema::Resource::from_contents(card.clone()).unwrap())
-        .with_resource(profile["$id"].as_str().unwrap(), jsonschema::Resource::from_contents(profile.clone()).unwrap())
+        .with_registry(&registry)
         .build(&json(SCHEMA))
         .expect("asset-object.schema.json compiles")
 }
@@ -184,7 +192,7 @@ fn library_catalog_is_valid_and_pinned() {
     validate_set(&assets).expect("assets.json is a valid set");
     let schema = validator();
     for asset in &assets {
-        let errors: Vec<String> = schema.iter_errors(asset).map(|e| format!("{e} at {}", e.instance_path)).collect();
+        let errors: Vec<String> = schema.iter_errors(asset).map(|e| format!("{e} at {}", e.instance_path())).collect();
         assert!(errors.is_empty(), "{} fails the schema: {errors:?}", asset["uid"]);
         assert_eq!(glyph_from_uid(asset["uid"].as_str().unwrap()).unwrap(), asset["display"]["glyph"]);
     }

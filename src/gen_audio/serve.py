@@ -9,6 +9,8 @@ from __future__ import annotations
 SERVICE_NAME = "genaid-audio"
 DEFAULT_PORT = 8002
 ROUTE_PREFIX = "/genaid-audio"
+AGENTYANKERS_FORMAT_PATH = "/agentyankers"
+AGENTYANKERS_EPISODE_PATH = "/agentyankers/episode"
 # Shared gateway address. It is one Power Table row, not a substitute for
 # each node's own base URL.
 SHARED_GATEWAY_HOST = "10.1.8.70"
@@ -30,6 +32,15 @@ def health_url(host: str, port: int = DEFAULT_PORT, route_prefix: str = ROUTE_PR
 def ready_url(host: str, port: int = DEFAULT_PORT, route_prefix: str = ROUTE_PREFIX) -> str:
     """Readiness URL. Liveness stays on ``/health`` when the model is unloaded."""
     return node_base_url(host, port, route_prefix) + "/ready"
+
+
+def agentyankers_episode_url(
+    host: str,
+    port: int = DEFAULT_PORT,
+    route_prefix: str = ROUTE_PREFIX,
+) -> str:
+    """Episode route. POST a rundown here to dry-run or render."""
+    return node_base_url(host, port, route_prefix) + AGENTYANKERS_EPISODE_PATH
 
 
 def health_payload() -> dict[str, str]:

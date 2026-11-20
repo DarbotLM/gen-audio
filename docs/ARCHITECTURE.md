@@ -15,9 +15,10 @@ The same floor applies to the spectrogram, the genaid-audio URL helpers, podcast
 | `kokoro_onnx` | waveform synth | `KokoroOnnxSynthesizer` calls `kokoro_onnx.Kokoro.create` per turn. You pass the ONNX file and the voices file. |
 | `kokoro_dayour` | waveform synth | dayour/kokoro `KPipeline` on CPU when the package and a local pack, or `GEN_AUDIO_ALLOW_HF_DOWNLOAD=1`, are present. Misaki is assigned to `pipeline.g2p`. |
 | `misaki` | grapheme-to-phoneme | Kokoro's G2P library (hexgrad/misaki). Not a waveform synth. kokoro-onnx phonemizes inside its own dependency tree. This package does not import misaki. |
-| `vibevoice` | waveform synth | Compare-list slot for VibeVoice. No adapter. |
-| `magpie` | waveform synth | Compare-list slot for Magpie TTS. No adapter. |
-| `pocket_tts` | waveform synth | Compare-list slot for Kyutai Pocket TTS, named as the CPU stand-in when a Magpie render is unavailable. No adapter. |
+| `vibevoice` | waveform synth | Adapter calls the local VibeVoice processor when `GEN_AUDIO_VIBEVOICE_MODEL` is set. Weights stay on disk. |
+| `magpie` | waveform synth | Compare-list slot for Magpie TTS. The synthesize path stays refused until a measured run. |
+| `pocket_tts` | waveform synth | Compare-list slot for Kyutai Pocket TTS, named as the CPU stand-in when a Magpie render is unavailable. |
+| `agentyankers` | podcast format | Rundown mix: VibeVoice commentary, laugh and stinger cues, a bed, spectrogram, and cube revision. Live calls stay in `genaid_audio.agentyankers`. |
 
 `gen_audio.compare.score_wav` reads a finished WAV and records inv-HDR, BW95, and clip fraction. An unregistered engine id is allowed and marked `"registered": false`. The score file does not sort engines or assign a quality rating.
 
@@ -129,6 +130,7 @@ Do not point the artifact directory at a folder you then commit. Generated audio
 | `compare.py` | Score existing files |
 | `engines.py` | Compare-list text |
 | `serve.py` | Per-node URL builder and health JSON |
+| `agentyankers/` | AgentYankers rundown mix: VibeVoice commentary, beds, spectrogram, cube revision, optional `genaid_audio.agentyankers` import |
 | `audio_io.py` | WAV read/write, mono float |
 | `artifacts.py` | Copy out of scratch |
 | `cli/` | argparse entry points used by `scripts/` |

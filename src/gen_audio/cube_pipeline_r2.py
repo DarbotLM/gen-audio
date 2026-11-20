@@ -175,13 +175,18 @@ def layer_stats(layer: np.ndarray) -> dict:
     """PR #4 ``_layer_stats`` (pipeline.py L397-L406), over the flattened grid layer."""
     flat = layer.reshape(-1)
     return {
-        "mean": float(np.mean(flat)),
-        "std": float(np.std(flat)),
-        "p50": float(np.percentile(flat, 50)),
-        "p90": float(np.percentile(flat, 90)),
+        "mean": _stable_float(np.mean(flat)),
+        "std": _stable_float(np.std(flat)),
+        "p50": _stable_float(np.percentile(flat, 50)),
+        "p90": _stable_float(np.percentile(flat, 90)),
         "active_frac": float(np.mean(flat > 0.2)),
         "shape": [int(layer.shape[0]), int(layer.shape[1])],
     }
+
+
+def _stable_float(value: object) -> float:
+    """Canonicalize insignificant FFT/BLAS tail bits in serialized metrics."""
+    return float(f"{float(value):.15g}")
 
 
 def cube_json_name(stem: str) -> str:
@@ -242,7 +247,7 @@ def pipeline_r2_cube(
         "n_fft": params.n_fft,
         "hop": params.hop,
         "inv_hdr": measure(y, sample_rate).inv_hdr,
-        "layer_score": layer_score(layers),
+        "layer_score": _stable_float(layer_score(layers)),
         "n_points": len(points),
         "n_points_source": int(len(x)),
         "n_points_source_per_layer": counts,

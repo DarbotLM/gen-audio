@@ -226,22 +226,41 @@ try {
     # Every gen-audio-desktop build-script output is checked, whatever its
     # mtime (a no-op rebuild does not rewrite it; the fingerprint gate below
     # allows only one desktop configuration).
-    $outputs = @(Get-ChildItem -Path (Join-Path $releaseDir 'build') -Filter 'output' -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.Directory.Name -like 'gen-audio-desktop-*' })
+    $buildDir = Join-Path $releaseDir 'build'
+    $desktopBuildRoots = @(Get-ChildItem -Path $buildDir -Directory -Filter 'gen-audio-desktop-*' -ErrorAction SilentlyContinue)
+    $nestedDesktopBuildRoot = Join-Path $buildDir 'gen-audio-desktop'
+    if (Test-Path -LiteralPath $nestedDesktopBuildRoot -PathType Container) {
+        $desktopBuildRoots += Get-Item -LiteralPath $nestedDesktopBuildRoot
+    }
+    $outputs = @($desktopBuildRoots | ForEach-Object {
+        Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'output' -or $_.Name -like 'output-*' }
+    } | Sort-Object -Property FullName -Unique)
+    if ($outputs.Count -eq 0) {
+        throw 'no gen-audio-desktop build output files were found under target\release\build'
+    }
     foreach ($output in $outputs) {
         if (Select-String -LiteralPath $output.FullName -Pattern 'cargo:rustc-cfg=dev' -SimpleMatch -Quiet) {
             throw "dev build detected ($($output.FullName) has cargo:rustc-cfg=dev); this exe would load http://localhost:1420"
         }
     }
     Write-Step "no dev cfg in gen-audio-desktop build-script output ($($outputs.Count) checked)"
-    # Fingerprint gate: one desktop lib fingerprint in target\release. More than
-    # one means the desktop crate was built under a second configuration
-    # (bare cargo, another CLI, other features) and the cache is thrashing.
-    $fingerprints = @(Get-ChildItem -Path (Join-Path $releaseDir '.fingerprint') -Directory -Filter 'gen-audio-desktop-*' -ErrorAction SilentlyContinue |
-            Where-Object { @(Get-ChildItem -LiteralPath $_.FullName -Filter 'lib-gen_audio_desktop_lib*' -ErrorAction SilentlyContinue).Count -gt 0 })
-    Write-Step "gen-audio-desktop lib fingerprints: $($fingerprints.Count) ($(($fingerprints | ForEach-Object { $_.Name }) -join ', '))"
+    # Fingerprint gate: one desktop lib fingerprint in target\release. Current
+    # Cargo nests fingerprints under build/<package>/<hash>; older Cargo placed
+    # them under .fingerprint. More than one means the crate was built under a
+    # second configuration and the cache is thrashing.
+    $fingerprintCandidates = @(
+        Get-ChildItem -Path (Join-Path $releaseDir '.fingerprint') -Directory -Filter 'gen-audio-desktop-*' -ErrorAction SilentlyContinue
+    )
+    foreach ($desktopBuildRoot in $desktopBuildRoots) {
+        $fingerprintCandidates += @(Get-ChildItem -LiteralPath $desktopBuildRoot.FullName -Directory -Filter 'fingerprint' -Recurse -ErrorAction SilentlyContinue)
+    }
+    $fingerprints = @($fingerprintCandidates |
+            Where-Object { @(Get-ChildItem -LiteralPath $_.FullName -File -Filter 'lib-gen_audio_desktop_lib*' -ErrorAction SilentlyContinue).Count -gt 0 } |
+            Sort-Object -Property FullName -Unique)
+    Write-Step "gen-audio-desktop lib fingerprints: $($fingerprints.Count) ($(($fingerprints | ForEach-Object { $_.FullName }) -join ', '))"
     if ($fingerprints.Count -ne 1) {
-        throw "expected exactly one gen-audio-desktop lib fingerprint under target\release\.fingerprint, found $($fingerprints.Count)"
+        throw "expected exactly one gen-audio-desktop lib fingerprint under target\release, found $($fingerprints.Count)"
     }
     $exe = Assert-BuildOutput -LiteralPath $exePath -What 'target\release\gen-audio.exe' -Before $before.exe
     Write-Step "exe $($exe.Path) sha256 $($exe.Sha256) ($($exe.State))"

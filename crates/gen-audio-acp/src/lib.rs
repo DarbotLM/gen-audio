@@ -310,15 +310,7 @@ fn read_configured_addr() -> Option<String> {
 fn raw_desktop_addr() -> Option<String> {
     #[cfg(test)]
     {
-        let overridden = DESKTOP_ADDR.with(|slot| slot.borrow().clone());
-        if overridden.is_some() {
-            return overridden;
-        }
-        // GEN_AUDIO_MCP_ADDR is process-global. Tests that swap it hold this
-        // lock across the swap and the read, so a parallel test cannot observe
-        // the temporary non-loopback value.
-        let _guard = mcp_addr_env_lock();
-        return read_configured_addr();
+        return DESKTOP_ADDR.with(|slot| slot.borrow().clone());
     }
     #[cfg(not(test))]
     read_configured_addr()

@@ -23,8 +23,8 @@ param(
     [string]$CheckoutPath,
     [string]$RepoUrl = 'https://github.com/darbotlabs/gen-audio.git',
     [string]$RepoRef = 'main',
-    [ValidatePattern('^24\.\d+\.\d+$')]
-    [string]$NodeVersion = '24.14.1',
+    [ValidatePattern('^26\.\d+\.\d+$')]
+    [string]$NodeVersion = '26.13.0',
     [int]$NodePort = 8002,
     [int]$McpPort = 8765,
     [int]$PreviewPort = 1420,
@@ -235,7 +235,7 @@ function Install-Node {
     $node = Get-Tool @('node.exe')
     if ($node) {
         $actual = ((& $node --version) -replace '^v', '').Trim()
-        if ($actual -match '^24\.\d+\.\d+$' -and [version]$actual -ge [version]$NodeVersion) {
+        if ($actual -match '^26\.\d+\.\d+$' -and [version]$actual -ge [version]$NodeVersion) {
             Write-ToolboxLog 'OK' "Node $actual -> $node"
             return $node
         }

@@ -21,7 +21,7 @@ Use the currently mounted drive when `G:` is unavailable. For this node, pass
 The `Node` path:
 
 1. Clones the selected ref when needed and preserves an existing checkout.
-2. Installs Node 24, `uv`, Python 3.14, Git, FFmpeg, Rust, WebView2, and the
+2. Installs Node 26, `uv`, Python 3.14, Git, FFmpeg, Rust, WebView2, and the
    Visual Studio C++ build tools.
 3. Runs `uv sync --frozen --all-extras`, installs the desktop npm lockfile, and
    builds the MCP, ACP, and harness Rust crates.

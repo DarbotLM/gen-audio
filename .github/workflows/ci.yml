@@ -78,12 +78,13 @@ jobs:
       # target/debug/gen-audio-mcp does not exist until it is built here (debug
       # profile, the path the cp below reads).
       - name: Build MCP sidecar binary (debug)
-        run: cargo build -p gen-audio-mcp
+        run: cargo build -p gen-audio-mcp -p gen-audio-acp
       - name: Stage MCP sidecar so desktop config can see externalBin
         run: |
           triple="$(rustc -vV | sed -n 's/^host: //p')"
           mkdir -p apps/desktop/src-tauri/binaries
           cp "target/debug/gen-audio-mcp" "apps/desktop/src-tauri/binaries/gen-audio-mcp-${triple}"
+          cp "target/debug/gen-audio-acp" "apps/desktop/src-tauri/binaries/gen-audio-acp-${triple}"
       # cargo check only typechecks. The spawn-failure arm in lib.rs needs a
       # real run. xvfb covers a gtk test that wants a display.
       - name: Test the desktop crate

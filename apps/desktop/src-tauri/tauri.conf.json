@@ -37,7 +37,8 @@
       "dmg"
     ],
     "externalBin": [
-      "binaries/gen-audio-mcp"
+      "binaries/gen-audio-mcp",
+      "binaries/gen-audio-acp"
     ],
     "icon": [
       "icons/32x32.png",

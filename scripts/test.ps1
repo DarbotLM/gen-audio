@@ -386,11 +386,12 @@ Invoke-Step 'Cargo' {
     if (Test-IsWindowsHost) {
         # tauri-build checks that the externalBin sidecar exists; stage a debug one if none is there.
         $triple = ((& rustc -vV) | Select-String -Pattern '^host: ').ToString().Split(':', 2)[1].Trim()
-        $staged = Join-Path $root "apps\desktop\src-tauri\binaries\gen-audio-mcp-$triple.exe"
-        if (-not (Test-Path -LiteralPath $staged)) {
-            if ((Invoke-Logged -Log $log -File 'cargo' -Arguments @('build', '-p', 'gen-audio-mcp')) -ne 0) { throw 'cargo build -p gen-audio-mcp failed' }
+        foreach ($bin in 'gen-audio-mcp', 'gen-audio-acp') {
+            $staged = Join-Path $root "apps\desktop\src-tauri\binaries\$bin-$triple.exe"
+            if (Test-Path -LiteralPath $staged) { continue }
+            if ((Invoke-Logged -Log $log -File 'cargo' -Arguments @('build', '-p', $bin)) -ne 0) { throw "cargo build -p $bin failed" }
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $staged) | Out-Null
-            Copy-Item -LiteralPath (Join-Path $root 'target\debug\gen-audio-mcp.exe') -Destination $staged
+            Copy-Item -LiteralPath (Join-Path $root "target\debug\$bin.exe") -Destination $staged
         }
     } else {
         $cargoArgs += @('--exclude', 'gen-audio-desktop')

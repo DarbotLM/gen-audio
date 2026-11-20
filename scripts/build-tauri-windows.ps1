@@ -187,6 +187,13 @@ try {
     $stagedHash = Get-Sha256 -LiteralPath $staged
     if ($stagedHash -ne $sidecarHash) { throw "staged sidecar $staged has sha256 $stagedHash, but cargo's binary has $sidecarHash" }
     Write-Step "staged sidecar $staged (sha256 $stagedHash, same bytes as cargo's binary)"
+    # gen-audio-acp ships beside the MCP sidecar so the NSIS/MSI installs carry it too.
+    $stagedAcp = Join-Path $binDir "gen-audio-acp-$triple.exe"
+    if ([System.IO.Path]::GetFullPath($stagedAcp) -eq [System.IO.Path]::GetFullPath($acp.FullName)) { throw "refusing to copy $stagedAcp onto itself" }
+    Copy-Item -LiteralPath $acp.FullName -Destination $stagedAcp -Force
+    $acpHash = Get-Sha256 -LiteralPath $acp.FullName
+    if ((Get-Sha256 -LiteralPath $stagedAcp) -ne $acpHash) { throw "staged $stagedAcp does not match cargo's gen-audio-acp ($acpHash)" }
+    Write-Step "staged sidecar $stagedAcp (sha256 $acpHash)"
 
     Write-Step 'frontend dependencies (npm ci)'
     Push-Location $desktop

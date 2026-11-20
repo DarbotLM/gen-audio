@@ -704,21 +704,25 @@ fn send_json(url: &str, headers: &[(&str, &str)], body: &Value) -> Result<String
     for (_, value) in headers {
         header_value_ok(value)?;
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(8))
-        .timeout_read(Duration::from_secs(25))
-        .timeout_write(Duration::from_secs(8))
-        .redirects(0)
-        .build();
-    let mut request = agent.request("POST", url);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(8)))
+        .timeout_send_request(Some(Duration::from_secs(8)))
+        .timeout_send_body(Some(Duration::from_secs(8)))
+        .timeout_recv_response(Some(Duration::from_secs(25)))
+        .timeout_recv_body(Some(Duration::from_secs(25)))
+        .max_redirects(0)
+        .build()
+        .into();
+    let mut request = agent.post(url);
     for (name, value) in headers {
-        request = request.set(name, value);
+        request = request.header(*name, *value);
     }
     let response = request
-        .send_json(body.clone())
+        .send_json(body)
         .map_err(|err| ConnectorError::new(format!("vendor request failed: {err}")))?;
     let text = response
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|err| ConnectorError::new(format!("vendor response: {err}")))?;
     Ok(redact_secrets(&tail(&text)))
 }

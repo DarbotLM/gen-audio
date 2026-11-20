@@ -577,14 +577,16 @@ fn serve_health(args: &Value) -> Result<Value, (i32, String)> {
             "note": "URL only. /health is liveness. /ready is readiness. This is not a live genaid-audio probe."
         }));
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(2))
-        .timeout_read(std::time::Duration::from_secs(2))
-        .redirects(0)
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(2)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(2)))
+        .timeout_recv_body(Some(std::time::Duration::from_secs(2)))
+        .max_redirects(0)
+        .build()
+        .into();
     match agent.get(&health).call() {
         Ok(response) => {
-            let body = response.into_string().unwrap_or_default();
+            let body = response.into_body().read_to_string().unwrap_or_default();
             let clipped: String = body.chars().take(512).collect();
             let parsed: Value = serde_json::from_str(&clipped).unwrap_or(Value::Null);
             let service = parsed.get("service").and_then(Value::as_str);

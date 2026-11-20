@@ -4,7 +4,9 @@ Release-build Gen-Audio for Windows. This is the only supported build path.
 
 .DESCRIPTION
 -Mode Full (default): NSIS and MSI installers that contain gen-audio.exe (tray
-app) and the gen-audio-mcp sidecar.
+app) and the gen-audio-mcp sidecar, plus an MSIX and a tools NuGet package of
+the same binaries (scripts\pack-windows-msix-nuget.ps1, unsigned unless
+-CertificateThumbprint is passed).
 -Mode NoBundle: `tauri build --no-bundle`. Same release exe with the embedded
 frontendDist, no installers. Faster, for local checks.
 
@@ -27,7 +29,8 @@ pwsh -NoProfile -File scripts/build-tauri-windows.ps1 -Mode NoBundle
 [CmdletBinding()]
 param(
     [ValidateSet('Full', 'NoBundle')]
-    [string]$Mode = 'Full'
+    [string]$Mode = 'Full',
+    [string]$CertificateThumbprint
 )
 
 $ErrorActionPreference = 'Stop'
@@ -274,6 +277,10 @@ try {
             $built = Assert-BuildOutput -LiteralPath $installer -What "$kind installer" -Before $before[$installer]
             Write-Output "INSTALLER path=$($built.Path) size=$($built.Length) sha256=$($built.Sha256) state=$($built.State)"
         }
+        # MSIX and NuGet carry the same exe and sidecar as the installers.
+        $packArgs = @{}
+        if ($CertificateThumbprint) { $packArgs.CertificateThumbprint = $CertificateThumbprint }
+        & (Join-Path $PSScriptRoot 'pack-windows-msix-nuget.ps1') @packArgs
     }
 
     Write-Output "BUILD_OK mode=$Mode exe=$($exe.Path) size=$($exe.Length) sha256=$($exe.Sha256) state=$($exe.State) log=$buildLog"

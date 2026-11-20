@@ -62,6 +62,16 @@ if ($Check) {
     } | ConvertTo-Json -Depth 5
     return
 }
+# The desktop app spawns its own sidecar; every other service binds $Port. Fail with
+# the owner named instead of a bare bind error deep in a log.
+if ($Service -ne 'Desktop') {
+    $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($listener) {
+        $owner = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+        $name = if ($owner) { $owner.ProcessName } else { 'unknown' }
+        throw "Port $Port is already in use by PID $($listener.OwningProcess) ($name). Stop it or pass -Port <free port>."
+    }
+}
 if ($Service -ne 'Preview') {
     foreach ($file in @($exe, $python, $environment.GEN_AUDIO_KOKORO_MODEL, $environment.GEN_AUDIO_KOKORO_VOICES)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {

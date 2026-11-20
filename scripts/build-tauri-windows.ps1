@@ -37,7 +37,9 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'lib\devenv.ps1')
 
-$TauriCli = '@tauri-apps/cli@2.12.1'
+# The tauri CLI is a locked devDependency of apps/desktop (installed by npm ci),
+# so the build never fetches it ad hoc from whatever registry npm is pointed at.
+$TauriCli = 'tauri'
 $root = Split-Path -Parent $PSScriptRoot
 $desktop = Join-Path $root 'apps\desktop'
 $srcTauri = Join-Path $desktop 'src-tauri'
@@ -189,7 +191,7 @@ try {
 
     # tauri build runs beforeBuildCommand (npm run build) in apps/desktop, so
     # dist is rebuilt before cargo compiles the WebView.
-    $tauriArgs = @('--yes', $TauriCli, 'build')
+    $tauriArgs = @('--no', '--', $TauriCli, 'build')
     if ($Mode -eq 'Full') { $tauriArgs += @('--bundles', 'nsis,msi') } else { $tauriArgs += '--no-bundle' }
     Write-Step "npx $($tauriArgs -join ' ')"
     Push-Location $srcTauri

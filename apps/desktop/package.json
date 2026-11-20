@@ -13,9 +13,10 @@
     "test": "node --import tsx --test tests/*.test.ts src/clock-bind.test.ts"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.12.4"
+    "@tauri-apps/api": "^2.12.5"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "2.12.6",
     "ajv": "^8.20.0",
     "tsx": "^4.23.15",
     "typescript": "~7.0.2",

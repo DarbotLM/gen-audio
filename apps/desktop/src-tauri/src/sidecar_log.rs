@@ -633,7 +633,8 @@ mod tests {
         log.write_line("after recovery").unwrap();
         assert_eq!(log.dropped(), 0, "the marker reported them");
         let current = fs::read_to_string(log_path(&dir, 0)).unwrap();
-        let marker = current.lines().find(|line| line.contains("sidecar log dropped 3 line(s)")).unwrap_or_else(|| panic!("no drop marker in {current:?}"));
+        let retained = log_text(&dir);
+        let marker = retained.lines().find(|line| line.contains("sidecar log dropped 3 line(s)")).unwrap_or_else(|| panic!("no drop marker in {retained:?}"));
         assert!(marker.contains("rotate failed"), "{marker}");
         assert!(current.ends_with("after recovery\n"), "{current:?}");
         let _ = fs::remove_dir_all(&dir);

@@ -186,7 +186,7 @@ def test_regen_diffs_the_synth_sidecars_like_ci(tmp_path):
     repo = _temp_repo(tmp_path)
     library = repo / "apps" / "desktop" / "public" / "library"
     library.mkdir(parents=True)
-    (library / "a.synth.json").write_text('{\n  "engine": "x"\n}\n', encoding="utf-8")
+    (library / "a.synth.json").write_bytes(b'{\n  "engine": "x"\n}\n')
     generator = repo / "scripts" / "cube_revision.py"
     generator.write_text("import sys\n", encoding="utf-8")
     _git(repo, "add", ".")
@@ -201,7 +201,7 @@ def test_regen_diffs_the_synth_sidecars_like_ci(tmp_path):
     generator.write_text(
         "from pathlib import Path\n"
         "p = Path('apps/desktop/public/library/a.synth.json')\n"
-        "p.write_text(p.read_text(encoding='utf-8').replace('\"x\"', '\"y\"'), encoding='utf-8')\n",
+        "p.write_bytes(p.read_bytes().replace(b'\"x\"', b'\"y\"'))\n",
         encoding="utf-8",
     )
     _git(repo, "add", ".")
@@ -235,6 +235,14 @@ def _stub_npm_and_gate(tmp_path: Path, *, fail_gate: bool) -> dict[str, str]:
         f"printf '%s\\n' \"python3 $*\" >> '{calls}'\n"
         f"printf '%s\\n' \"PYTHONPATH=$PYTHONPATH\" >> '{calls}'\n"
         f"{fail}\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "npm.cmd").write_text(f'@echo off\r\n>> "{calls}" echo npm %*\r\nexit /b 0\r\n', encoding="utf-8")
+    (bin_dir / "npx.cmd").write_text(f'@echo off\r\n>> "{calls}" echo npx %*\r\nexit /b 0\r\n', encoding="utf-8")
+    gate_exit = 1 if fail_gate else 0
+    (bin_dir / "python3.cmd").write_text(
+        f'@echo off\r\n>> "{calls}" echo python3 %*\r\n'
+        f'>> "{calls}" echo PYTHONPATH=%PYTHONPATH%\r\nexit /b {gate_exit}\r\n',
         encoding="utf-8",
     )
     for name in ("npm", "npx", "python3"):

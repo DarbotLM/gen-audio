@@ -94,6 +94,20 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+For a complete Windows node, use the one-command bootstrap from the
+[node runbook](docs/NODE_RUNBOOK.md):
+
+```powershell
+$toolbox = Join-Path $env:TEMP 'gen-audio-toolbox.ps1'
+Invoke-WebRequest `
+  -Uri 'https://raw.githubusercontent.com/darbotlabs/gen-audio/main/scripts/toolbox.ps1' `
+  -OutFile $toolbox
+pwsh -NoProfile -File $toolbox -Step Node -RepoRoot 'G:\gen-audio'
+```
+
+It installs all extras, stages the model files, builds the native services,
+runs the locked gate, launches Node/MCP/preview, and verifies their health.
+
 `soundfile` needs the system `libsndfile` library (`libsndfile1` on Debian/Ubuntu).
 
 The synthesizer extra is separate, and it still needs the ONNX model and the voices file on disk:
@@ -222,10 +236,11 @@ Health: `http://<node>:8002/genaid-audio/health`
 
 ## Scripts
 
-Windows tooling has five entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend these with a parameter instead of adding a new script: `scripts/test.ps1` fails on any other `*.ps1`, `*.bat`, `*.cmd` or `*.py` outside the allowlist, including untracked and gitignored files such as anything under `artifacts/`.
+Windows tooling has six entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend these with a parameter instead of adding a new script: `scripts/test.ps1` fails on any other `*.ps1`, `*.bat`, `*.cmd` or `*.py` outside the allowlist, including untracked and gitignored files such as anything under `artifacts/`.
 
 | Entry point | What it does |
 |---|---|
+| `scripts\toolbox.ps1 -Step Node -RepoRoot <path>` | Fresh-node bootstrap: clone or preserve the checkout, install the complete framework and model files, build, test, persist local configuration, launch Node/MCP/preview, and verify health. |
 | `scripts\run.ps1 -Service Mcp\|Node\|Desktop\|Preview [-Port n] [-Check]` | Launches against checkout-local `models/`, `.venv/` and `artifacts/runtime/`. Native desktop children inherit the same configuration. `-Check` prints the launch plan without side effects. |
 | `scripts\build-tauri-windows.ps1 [-Mode Full\|NoBundle]` | The only build path. Imports the MSVC environment (`Import-VsDevEnv`), then fails unless every library WAV in `schemas/asset-object/media.lock.json` is staged with the locked sha256 and byte count (they are gitignored and the release embeds them), builds and handshakes `gen-audio-mcp` (fresh means cargo's own fingerprint verdict from `--message-format=json` plus a sha256 check of the staged copy, never the file mtime), stages it for `externalBin`, runs `npm ci`, then the pinned tauri CLI (`@tauri-apps/cli@2.12.1`). `Full` (default) makes NSIS and MSI. `NoBundle` runs `tauri build --no-bundle`, which still embeds `frontendDist`. It judges `dist`, `gen-audio.exe` and the installers by content, never mtime: each must exist after the build and is reported by sha256 as `rebuilt` or `unchanged` (a no-op rebuild is not stale), `dist` must hold every `apps/desktop/public` file byte for byte, and the installers are the ones for this `tauri.conf.json` version. It also checks that `dist/index.html` has the header markers, that the build is not a dev build (`cargo:rustc-cfg=dev`, which would load `localhost:1420`), and that `target\release` holds one `gen-audio-desktop` fingerprint. It prints one `BUILD_OK` line, and only on success. Every run, failed ones included, saves its full transcript (native tool output too) to `target/logs/build-<sha>-<timestamp>.log`; the first line `BUILD_LOG`, `BUILD_OK ... log=` and `BUILD_FAIL log=` name it. |
 | `scripts\test.ps1 [-Tag name] [-Skip Pssa,Sprawl,Regen,Cargo,Npm,Python] [-SprawlExclude path] [-FromLock \| -WithWav]` | An EOL preflight first (`git ls-files --eol`: a tracked file with `eol=lf` in `.gitattributes` but CRLF in the working copy fails the run, is listed, and the fix is printed; nothing is rewritten), then PSScriptAnalyzer 1.24.0 with `PSScriptAnalyzerSettings.psd1` (any finding fails), the sprawl gate, a regen check (reruns the `build_assets` and `asset_vectors` examples and `cube_revision.py manifest`, then `git diff --exit-code` over `assets.json`, `manifest.json`, `assets.dev.json`, `media.lock.json`, `fixtures_v1.json`, `v1.json` and `viewport.{example,release}.json`; a missing gitignored library WAV fails the step, and `-FromLock` (CI) takes the WAV facts from `schemas/asset-object/media.lock.json`; PNGs are checked by pixels in pytest because zlib-ng makes their bytes vary), `cargo test --workspace`, `npm test` and `tsc --noEmit` in `apps/desktop`, and `pytest`. `-WithWav` is the merge check that the PR template requires. It first proves the staged WAVs are the `media.lock.json` bytes (Wavs step), then runs pytest with `GEN_AUDIO_REQUIRE_WAVS=1`, so a WAV test that would skip fails instead: the byte-for-byte cube regeneration, inv_hdr and strip tests must run. Prints a `TEST_SUMMARY` line. Logs go to `artifacts/test-logs/`. |

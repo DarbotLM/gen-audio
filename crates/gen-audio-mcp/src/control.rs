@@ -762,8 +762,20 @@ fn face_renders_section(face_id: &str, section: &str) -> bool {
     )
 }
 
+#[cfg(test)]
+static TEST_STDERR_CAPTURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 fn write_stderr_line(line: &str) {
+    #[cfg(any(unix, test))]
     let text = format!("{line}\n");
+    #[cfg(test)]
+    {
+        let mut capture = TEST_STDERR_CAPTURE.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(content) = capture.as_mut() {
+            content.push_str(&text);
+            return;
+        }
+    }
     #[cfg(unix)]
     {
         extern "C" {
@@ -2485,35 +2497,19 @@ mod tests {
         use std::sync::Mutex;
         static LOCK: Mutex<()> = Mutex::new(());
         let _guard = LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
-        extern "C" {
-            fn pipe(fds: *mut i32) -> i32;
-            fn dup(fd: i32) -> i32;
-            fn dup2(old: i32, new: i32) -> i32;
-            fn close(fd: i32) -> i32;
-            fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
+        {
+            let mut capture = super::TEST_STDERR_CAPTURE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            assert!(capture.replace(String::new()).is_none(), "nested stderr capture");
         }
-        let mut fds = [0i32; 2];
-        assert_eq!(unsafe { pipe(fds.as_mut_ptr()) }, 0, "pipe");
-        let saved = unsafe { dup(2) };
-        assert!(saved >= 0, "dup");
-        assert_eq!(unsafe { dup2(fds[1], 2) }, 2, "dup2");
         let value = f();
-        assert_eq!(unsafe { dup2(saved, 2) }, 2, "restore");
-        unsafe {
-            close(fds[1]);
-            close(saved);
-        }
-        let mut buf = Vec::new();
-        let mut tmp = [0u8; 1024];
-        loop {
-            let n = unsafe { read(fds[0], tmp.as_mut_ptr() as *mut std::ffi::c_void, tmp.len()) };
-            if n <= 0 {
-                break;
-            }
-            buf.extend_from_slice(&tmp[..n as usize]);
-        }
-        unsafe { close(fds[0]) };
-        (value, String::from_utf8_lossy(&buf).into_owned())
+        let captured = super::TEST_STDERR_CAPTURE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+            .expect("stderr capture");
+        (value, captured)
     }
 
     /// Stateless half of the ui_cube contract (the stateful round trip, with

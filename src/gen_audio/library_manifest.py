@@ -437,7 +437,7 @@ def sync_synth_sidecars(library: Path, repo_root: Path | None = None, work_dirs:
                 raise FileNotFoundError(f"{path.name}: {label} ({source}) is not on this machine, so its sha256 can't be recorded; run the sync where it is") from exc
         if facts:
             labelled["outside_repo"] = dict(sorted(facts.items()))
-        path.write_text(render(labelled), encoding="utf-8")
+        path.write_bytes(render(labelled).encode("utf-8"))
         changed.append(path.name)
     return changed
 
@@ -522,8 +522,9 @@ def sync_manifest(manifest_path: Path | str, library_dir: Path | str | None = No
         if block != before:
             changed.append(str(clip.get("id")))
     text = render(manifest)
-    if text != manifest_path.read_text(encoding="utf-8"):
-        manifest_path.write_text(text, encoding="utf-8")
+    payload = text.encode("utf-8")
+    if payload != manifest_path.read_bytes():
+        manifest_path.write_bytes(payload)
     return changed + sync_synth_sidecars(library, work_dirs=work_dirs)
 
 
@@ -586,6 +587,7 @@ def record_generator_commits(manifest_path: Path | str, repo: Path | str, librar
         if block.get("generator_commit") != current:
             changed.append(str(clip.get("id")))
     text = render(manifest)
-    if text != manifest_path.read_text(encoding="utf-8"):
-        manifest_path.write_text(text, encoding="utf-8")
+    payload = text.encode("utf-8")
+    if payload != manifest_path.read_bytes():
+        manifest_path.write_bytes(payload)
     return changed

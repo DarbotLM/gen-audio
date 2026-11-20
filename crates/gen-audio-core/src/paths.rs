@@ -309,7 +309,32 @@ fn log_stderr(line: &str) {
     {
         let _ = unsafe { write(2, text.as_ptr() as *const std::ffi::c_void, text.len()) };
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetStdHandle(id: u32) -> *mut std::ffi::c_void;
+            fn WriteFile(
+                handle: *mut std::ffi::c_void,
+                buffer: *const u8,
+                bytes_to_write: u32,
+                bytes_written: *mut u32,
+                overlapped: *mut std::ffi::c_void,
+            ) -> i32;
+        }
+        const STD_ERROR_HANDLE: u32 = (-12i32) as u32;
+        let mut written = 0u32;
+        let _ = unsafe {
+            WriteFile(
+                GetStdHandle(STD_ERROR_HANDLE),
+                text.as_ptr(),
+                text.len() as u32,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+    }
+    #[cfg(all(not(unix), not(windows)))]
     {
         eprintln!("{line}");
     }

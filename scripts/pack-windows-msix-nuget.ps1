@@ -34,7 +34,7 @@ $bundleDir = Join-Path $releaseDir 'bundle'
 $conf = Get-Content -Raw -LiteralPath (Join-Path $root 'apps\desktop\src-tauri\tauri.conf.json') | ConvertFrom-Json
 $version = [string]$conf.version
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "tauri.conf.json version '$version' is not major.minor.patch" }
-$binaries = @('gen-audio.exe', 'gen-audio-mcp.exe') | ForEach-Object {
+$binaries = @('gen-audio.exe', 'gen-audio-mcp.exe', 'gen-audio-acp.exe') | ForEach-Object {
     $p = Join-Path $releaseDir $_
     if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "$p is missing; run scripts\build-tauri-windows.ps1 -Mode Full first" }
     Get-Item -LiteralPath $p
@@ -150,7 +150,7 @@ $nuspec = @"
     <version>$version</version>
     <title>Gen-Audio</title>
     <authors>Darbot Labs</authors>
-    <description>$(& $esc 'Darbot Gen-Audio desktop for Windows x64. tools/ holds gen-audio.exe and the gen-audio-mcp sidecar, the same binaries as the NSIS, MSI and MSIX packages.')</description>
+    <description>$(& $esc 'Darbot Gen-Audio desktop for Windows x64. tools/ holds gen-audio.exe, the gen-audio-mcp sidecar and the gen-audio-acp agent; the MSIX carries the same binaries.')</description>
     <projectUrl>https://github.com/darbotlabs/gen-audio</projectUrl>
     <license type="expression">MIT</license>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>

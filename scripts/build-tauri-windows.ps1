@@ -149,6 +149,33 @@ try {
         if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
     }
 
+    # The ACP agent (stdio JSON-RPC) ships beside the app in the MSIX and NuGet
+    # packages, so a Full build must produce it and prove it answers initialize.
+    Write-Step 'build gen-audio-acp agent'
+    $acpArtifact = Invoke-CargoBinBuild -Package gen-audio-acp -Bin gen-audio-acp -ExtraArgs @('--release')
+    $acp = Get-Item -LiteralPath $acpArtifact.Executable
+    $psi = New-Object System.Diagnostics.ProcessStartInfo $acp.FullName
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.WorkingDirectory = $root
+    $acpProc = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $acpProc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}')
+        $acpProc.StandardInput.Flush()
+        $line = $acpProc.StandardOutput.ReadLineAsync()
+        if (-not $line.Wait(15000)) { throw 'gen-audio-acp did not answer initialize within 15 s' }
+        $acpInit = $line.Result | ConvertFrom-Json
+        if ($acpInit.result.protocolVersion -ne 1) { throw "gen-audio-acp negotiated protocolVersion '$($acpInit.result.protocolVersion)', expected 1" }
+        if ($acpInit.result.agentInfo.name -ne 'gen-audio') { throw "gen-audio-acp agentInfo.name was '$($acpInit.result.agentInfo.name)', expected gen-audio" }
+        $acpProc.StandardInput.Close()
+        if (-not $acpProc.WaitForExit(5000)) { throw 'gen-audio-acp did not exit when stdin closed' }
+    } finally {
+        if (-not $acpProc.HasExited) { $acpProc.Kill() }
+    }
+    Write-Step "acp $($acp.FullName) sha256 $(Get-Sha256 -LiteralPath $acp.FullName); initialize ok (protocol 1, gen-audio)"
+
     # Stage the sidecar where tauri externalBin expects it. Never copy a file
     # onto itself (the old script copied target\release\gen-audio-mcp.exe onto
     # the same path and failed).

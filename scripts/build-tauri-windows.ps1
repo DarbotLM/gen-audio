@@ -217,6 +217,9 @@ try {
     $indexPath = Join-Path $desktop 'dist\index.html'
     $exePath = Join-Path $releaseDir 'gen-audio.exe'
     $before = @{ index = Get-OutputFingerprint -LiteralPath $indexPath; exe = Get-OutputFingerprint -LiteralPath $exePath }
+# Fingerprints older than this run belong to an earlier dependency graph (for example
+# before a crate upgrade). Cargo never deletes them, so the gate below ignores them.
+$buildStartedUtc = (Get-Date).ToUniversalTime().AddSeconds(-2)
     foreach ($kind in 'nsis', 'msi') {
         foreach ($old in @(Get-ChildItem -Path (Join-Path $releaseDir "bundle\$kind") -Filter $installerGlob[$kind] -ErrorAction SilentlyContinue)) {
             $before[$old.FullName] = Get-OutputFingerprint -LiteralPath $old.FullName
@@ -294,9 +297,15 @@ try {
     foreach ($desktopBuildRoot in $desktopBuildRoots) {
         $fingerprintCandidates += @(Get-ChildItem -LiteralPath $desktopBuildRoot.FullName -Directory -Filter 'fingerprint' -Recurse -ErrorAction SilentlyContinue)
     }
-    $fingerprints = @($fingerprintCandidates |
+    $libFingerprints = @($fingerprintCandidates |
             Where-Object { @(Get-ChildItem -LiteralPath $_.FullName -File -Filter 'lib-gen_audio_desktop_lib*' -ErrorAction SilentlyContinue).Count -gt 0 } |
             Sort-Object -Property FullName -Unique)
+    $fingerprints = @($libFingerprints | Where-Object {
+            @(Get-ChildItem -LiteralPath $_.FullName -File -Filter 'lib-gen_audio_desktop_lib*' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTimeUtc -ge $buildStartedUtc }).Count -gt 0 })
+    # A fresh crate is not rewritten; then the newest existing fingerprint is the one in use.
+    if ($fingerprints.Count -eq 0) { $fingerprints = @($libFingerprints | Sort-Object -Property LastWriteTimeUtc | Select-Object -Last 1) }
+    if ($libFingerprints.Count -gt $fingerprints.Count) { Write-Step "ignored $($libFingerprints.Count - $fingerprints.Count) stale gen-audio-desktop fingerprint(s) from an earlier dependency graph" }
     Write-Step "gen-audio-desktop lib fingerprints: $($fingerprints.Count) ($(($fingerprints | ForEach-Object { $_.FullName }) -join ', '))"
     if ($fingerprints.Count -ne 1) {
         throw "expected exactly one gen-audio-desktop lib fingerprint under target\release, found $($fingerprints.Count)"

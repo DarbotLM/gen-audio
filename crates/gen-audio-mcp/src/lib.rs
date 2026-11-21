@@ -208,7 +208,7 @@ fn initialize_result(params: &Value) -> Result<Value, (i32, String)> {
         "protocolVersion": requested,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "gen-audio", "version": "0.1.0"},
-        "instructions": "Stateless Gen-Audio MCP. initialize stores no session. UI tools queue a loopback command and do not write speech. Agent ids are personas (anton, alice, khortana, rocky, and the rest of the catalog), not connector ids. Voice ids are TTS models (kokoro_onnx, kokoro_dayour, misaki, vibevoice, magpie, pocket_tts). af_heart is a Kokoro pack ref, not a Voice id. GET /health is liveness. GET /ready means this listener is up, not that a model is loaded. GET /control/stream is a short stateless SSE snapshot."
+        "instructions": "Stateless Gen-Audio MCP. initialize stores no session. UI tools queue a loopback command and do not write speech. Agent ids are personas (anton, alice, khortana, rocky, and the rest of the catalog), not connector ids. Voice ids are TTS models (kokoro_onnx, kokoro_dayour, misaki, vibevoice, vibevoice_realtime, magpie, pocket_tts). af_heart is a Kokoro pack ref, not a Voice id. GET /health is liveness. GET /ready means this listener is up, not that a model is loaded. GET /control/stream is a short stateless SSE snapshot."
     }))
 }
 

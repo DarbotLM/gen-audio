@@ -62,12 +62,12 @@ def test_node_urls_keep_prefix_and_shared_gateway_is_its_own_row():
         node_base_url("10.1.8.21:8002")
 
 
-def test_compare_marks_external_engine_and_unknown_id(tmp_path: Path):
+def test_compare_marks_implemented_engine_and_unknown_id(tmp_path: Path):
     wav = tmp_path / "take.wav"
     _tone(wav)
     known = score_wav("pocket_tts", wav)
     assert known["registered"] is True
-    assert known["engine_status"] == "external"
+    assert known["engine_status"] == "implemented"
     assert get_engine("kokoro_onnx").status == "implemented"
     assert "misaki" in ENGINES
     assert ENGINES["misaki"].kind == "g2p"

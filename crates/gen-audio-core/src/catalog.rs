@@ -193,6 +193,15 @@ const VOICE_MODELS: &[VoiceModel] = &[
         offline_reason: Some("G2P only, used offline for the misaki\u{2192}kokoro clip; no in-app adapter"),
     },
     VoiceModel {
+        id: "vibevoice_realtime",
+        label: "VibeVoice Realtime 0.5B",
+        waveform: true,
+        synth_adapter: true,
+        unavailable: false,
+        note: "Uses the configured DLM Speech worker. Alice and Frank select stock presets.",
+        offline_reason: None,
+    },
+    VoiceModel {
         id: "vibevoice",
         label: "VibeVoice (unavailable)",
         waveform: true,

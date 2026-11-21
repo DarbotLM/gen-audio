@@ -9,13 +9,18 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
-from dataclasses import dataclass
+import subprocess
+from dataclasses import dataclass, replace
+from math import gcd
+from tempfile import TemporaryDirectory
 from pathlib import Path
 
 import numpy as np
 
-from gen_audio.audio_io import write_wav
-from gen_audio.cast import CastMap, Turn, resolve_turn
+from gen_audio.audio_io import as_mono, read_wav, write_wav
+from gen_audio.cast import CastMap, Turn, assignment_framework, resolve_turn
+from gen_audio.guards import enforce_text_limit
+from gen_audio.speakers import concatenate_turns, roster
 
 
 class EngineRefusal(RuntimeError):
@@ -72,21 +77,26 @@ def synthesize(engine: str, turns: list[Turn], cast: CastMap, output: Path) -> d
         raise EngineRefusal(engine, found.missing)
     if cast.engine != engine:
         raise EngineRefusal(engine, [f"cast map engine is {cast.engine}, not {engine}"])
+    if engine == "adaptive":
+        return _synth_adaptive(turns, cast, output)
     if engine == "kokoro_onnx":
         return _synth_kokoro(turns, cast, output)
     if engine == "kokoro_dayour":
         return _synth_kokoro_torch(turns, cast, output)
     if engine == "vibevoice":
         return _synth_vibevoice(turns, cast, output)
-    if engine in {"pocket_tts", "magpie"}:
-        raise EngineRefusal(
-            engine,
-            [f"{engine} is experimental and is not enabled until a measured run proves it"],
-        )
+    if engine in {"vibevoice_realtime", "livevoice"}:
+        return _synth_vibevoice_realtime(turns, cast, output)
+    if engine == "pocket_tts":
+        return _synth_pocket(turns, cast, output)
+    if engine == "magpie":
+        return _synth_magpie(turns, cast, output)
     raise EngineRefusal(engine, [f"no adapter is registered for {engine}"])
 
 
 def _missing(engine: str) -> list[str]:
+    if engine == "adaptive":
+        return []  # Individual voice engines are checked against the cast before rendering.
     if engine == "kokoro_onnx":
         return _missing_kokoro()
     if engine == "pocket_tts":
@@ -95,6 +105,14 @@ def _missing(engine: str) -> list[str]:
         return _missing_vibevoice()
     if engine == "magpie":
         return _missing_magpie()
+    if engine in {"vibevoice_realtime", "livevoice"}:
+        from gen_audio.speech_client import check_vibevoice_provider
+
+        try:
+            check_vibevoice_provider()
+        except (OSError, ValueError) as exc:
+            return [str(exc)]
+        return []
     if engine == "misaki":
         return ["misaki is a grapheme-to-phoneme library and does not emit a waveform"]
     if engine == "kokoro_dayour":
@@ -215,9 +233,6 @@ def _missing_pocket() -> list[str]:
     missing: list[str] = []
     if not _module_present("pocket_tts"):
         missing.append("pocket-tts package is not installed")
-    if shutil.which("ffmpeg") is None:
-        # pocket-tts audio prompts are wav; ffmpeg is not required to import.
-        pass
     return missing
 
 
@@ -279,20 +294,29 @@ def _missing_vibevoice() -> list[str]:
         missing.append("PyTorch is not installed")
     if not _module_present("vibevoice"):
         missing.append("vibevoice package is not installed")
-    model = os.environ.get("GEN_AUDIO_VIBEVOICE_MODEL", "").strip()
+    try:
+        profile = vibevoice_profile()
+    except EngineRefusal as exc:
+        return missing + exc.missing
+    model_env = profile["local_env"]
+    model = os.environ.get(model_env, "").strip()
     if not model:
-        missing.append("GEN_AUDIO_VIBEVOICE_MODEL is unset (expected a local VibeVoice-1.5B directory)")
-    elif not Path(model).exists():
-        missing.append("VibeVoice-1.5B weights are not present at GEN_AUDIO_VIBEVOICE_MODEL")
+        missing.append(f"{model_env} is unset (expected a local VibeVoice model directory)")
+    elif not Path(model).is_dir():
+        missing.append(f"VibeVoice weights are not present at {model_env}")
     device = _vibevoice_device()
     if device.lower().startswith("cuda") and _module_present("torch") and not _cuda_available():
         missing.append(f"GEN_AUDIO_VIBEVOICE_DEVICE is {device} and CUDA is not available")
-    if os.environ.get("GEN_AUDIO_VIBEVOICE_SIZE", "1.5B").strip() == "7B" and not _cuda_available():
+    if profile["device_policy"] == "gpu" and not device.lower().startswith("cuda"):
         missing.append("VibeVoice 7B is GPU-only")
     return missing
 
 
 def _missing_magpie() -> list[str]:
+    if _nemo_speech():
+        return []
+    if os.environ.get("GEN_AUDIO_NEMO_SPEECH"):
+        return ["GEN_AUDIO_NEMO_SPEECH does not point to an executable"]
     missing: list[str] = []
     if not _module_present("torch"):
         missing.append("PyTorch is not installed")
@@ -349,24 +373,16 @@ def _synth_pocket(turns: list[Turn], cast: CastMap, output: Path) -> dict:
         model = TTSModel.load_model()
     except Exception as exc:
         raise EngineRefusal("pocket_tts", [f"Pocket TTS model failed to load: {exc}"]) from exc
-    pieces: list[np.ndarray] = []
-    sample_rate = int(getattr(model, "sample_rate", 24000))
-    for turn in turns:
-        voice = resolve_turn(turn, cast)
-        state = _pocket_voice_state(model, voice.voice)
-        audio = model.generate_audio(state, turn.text)
-        samples = _as_float_mono("pocket_tts", audio)
-        pieces.append(samples)
-        gap = int(0.15 * sample_rate)
-        if gap:
-            pieces.append(np.zeros(gap, dtype=np.float32))
-    if pieces and pieces[-1].size and np.all(pieces[-1] == 0):
-        pieces.pop()
-    if not pieces:
-        raise EngineRefusal("pocket_tts", ["Pocket TTS produced no samples"])
-    joined = np.concatenate(pieces).astype(np.float32)
-    write_wav(output, joined, sample_rate, subtype="FLOAT")
-    return {"engine": "pocket_tts", "sample_rate": sample_rate, "samples": int(joined.size), "turns": len(turns)}
+    rate = int(model.sample_rate)
+    voice_states = {}
+
+    def render(turn, voice):
+        if voice.voice not in voice_states:
+            voice_states[voice.voice] = _pocket_voice_state(model, voice.voice)
+        audio = model.generate_audio(voice_states[voice.voice], turn.text)
+        return _as_float_mono("pocket_tts", audio), rate
+
+    return _render_turns("pocket_tts", turns, cast, output, render)
 
 
 def _pocket_voice_state(model, voice: str):
@@ -470,7 +486,7 @@ def _synth_vibevoice(turns: list[Turn], cast: CastMap, output: Path) -> dict:
     model_dir = os.environ.get(profile["local_env"], "").strip()
     if profile["device_policy"] == "gpu" and not _cuda_available():
         raise EngineRefusal("vibevoice", ["VibeVoice 7B is GPU-only"])
-    device = "cpu" if profile["device_policy"] == "cpu" else _vibevoice_device()
+    device = _vibevoice_device()
     try:
         from vibevoice.modular.modeling_vibevoice_inference import (
             VibeVoiceForConditionalGenerationInference,
@@ -490,14 +506,15 @@ def _synth_vibevoice(turns: list[Turn], cast: CastMap, output: Path) -> dict:
         model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_dir, **load_kwargs)
         if device != "cpu":
             model = model.to(device)
-        script = "\n".join(f"Speaker {turn.speaker_id}: {turn.text}" for turn in turns)
+        speaker_numbers: dict[str, int] = {}
+        lines = []
         wavs = []
-        seen: set[str] = set()
         for turn in turns:
-            if turn.speaker_id in seen:
-                continue
-            seen.add(turn.speaker_id)
-            wavs.append(_load_vibevoice_prompt(turn, cast))
+            if turn.speaker_id not in speaker_numbers:
+                speaker_numbers[turn.speaker_id] = len(wavs) + 1
+                wavs.append(_load_vibevoice_prompt(turn, cast))
+            lines.append(f"Speaker {speaker_numbers[turn.speaker_id]}: {turn.text}")
+        script = "\n".join(lines)
         plan = vibevoice_call_plan(profile, script, wavs)
         inputs = processor(**plan["processor"])
         moved = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
@@ -532,43 +549,69 @@ def _load_vibevoice_prompt(turn: Turn, cast: CastMap):
             candidate = Path(library) / "_hf_vibevoice_samples" / "voices" / f"{assignment.voice}.wav"
     if not candidate.is_file():
         raise EngineRefusal("vibevoice", [f"reference wav for {assignment.voice} was not found"])
-    audio, _rate = read_wav(candidate)
-    return audio
+    audio, rate = read_wav(candidate)
+    return _normalize_audio(audio, rate, 24000)
+
+
+def _nemo_speech() -> str | None:
+    configured = os.environ.get("GEN_AUDIO_NEMO_SPEECH", "").strip()
+    return shutil.which(configured or "nemo-speech")
 
 
 def _synth_magpie(turns: list[Turn], cast: CastMap, output: Path) -> dict:
-    """Run Magpie TTS when NeMo or magpie_tts, CUDA, and weights are present."""
-    import torch
+    """Run Magpie with the native GGUF/NanoCodec runtime or a configured GPU model."""
+    binary = _nemo_speech()
+    if binary:
+        with TemporaryDirectory(prefix="gen-audio-magpie-") as temporary:
+            prompt = Path(temporary) / "input.txt"
+            wav = Path(temporary) / "speech.wav"
 
-    model_dir = os.environ.get("GEN_AUDIO_MAGPIE_MODEL", "").strip()
-    if not torch.cuda.is_available():
-        raise EngineRefusal("magpie", ["CUDA GPU is not available (torch.cuda.is_available() is false)"])
+            def render(turn, voice):
+                prompt.write_text(turn.text, encoding="utf-8")
+                args = [
+                    binary, "synthesize", "--input", str(prompt), "--output", str(wav),
+                    "--voice", voice.voice, "--language", voice.lang, "--force",
+                ]
+                try:
+                    result = subprocess.run(args, capture_output=True, timeout=300, check=False)
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError("NeMo Speech timed out") from exc
+                if result.returncode != 0:
+                    detail = result.stderr.decode("utf-8", errors="replace").strip()
+                    raise RuntimeError(f"NeMo Speech exited {result.returncode}: {detail[-500:]}")
+                return read_wav(wav)
+
+            return _render_turns("magpie", turns, cast, output, render)
+
+    model_path = os.environ["GEN_AUDIO_MAGPIE_MODEL"].strip()
     try:
         if _module_present("magpie_tts"):
             import magpie_tts
 
-            model = magpie_tts.load(model_dir)
-            pieces = []
-            rate = 24000
-            for turn in turns:
-                voice = resolve_turn(turn, cast)
-                audio, rate = model.synthesize(turn.text, voice=voice.voice)
-                pieces.append(_as_float_mono("magpie", audio))
-            joined = np.concatenate(pieces)
-            write_wav(output, joined, int(rate), subtype="FLOAT")
-            return {"engine": "magpie", "sample_rate": int(rate), "samples": int(joined.size), "turns": len(turns)}
-        from nemo.collections.tts.models import MagpieTTSModel
+            model = magpie_tts.load(model_path)
 
-        model = MagpieTTSModel.restore_from(model_dir).cuda()
-        pieces = []
-        rate = int(getattr(model, "sample_rate", 22050))
-        for turn in turns:
-            voice = resolve_turn(turn, cast)
-            audio, rate = model.do_tts(turn.text, speaker=voice.voice)
-            pieces.append(_as_float_mono("magpie", audio))
-        joined = np.concatenate(pieces)
-        write_wav(output, joined, int(rate), subtype="FLOAT")
-        return {"engine": "magpie", "sample_rate": int(rate), "samples": int(joined.size), "turns": len(turns)}
+            def render(turn, voice):
+                audio, rate = model.synthesize(turn.text, voice=voice.voice)
+                return _as_float_mono("magpie", audio), int(rate)
+        else:
+            from nemo.collections.tts.models import MagpieTTSModel
+
+            model = MagpieTTSModel.restore_from(model_path).cuda().eval()
+            rates = model.cfg
+            rate = int(rates.get("sample_rate", 22050))
+            speaker_ids = {"aria": 0, "jason": 1, "john": 2, "leo": 3, "sofia": 4}
+
+            def render(turn, voice):
+                speaker = speaker_ids.get(voice.voice.lower())
+                if speaker is None:
+                    raise ValueError(f"unknown Magpie voice: {voice.voice}")
+                audio, length = model.do_tts(
+                    turn.text, language=voice.lang.split("-")[0], apply_TN=False,
+                    speaker_index=speaker,
+                )
+                return _as_float_mono("magpie", audio)[:int(length)], rate
+
+        return _render_turns("magpie", turns, cast, output, render)
     except EngineRefusal:
         raise
     except Exception as exc:
@@ -577,8 +620,89 @@ def _synth_magpie(turns: list[Turn], cast: CastMap, output: Path) -> dict:
 
 def _as_float_mono(engine: str, audio) -> np.ndarray:
     if hasattr(audio, "detach"):
-        audio = audio.detach().cpu().numpy()
-    values = np.asarray(audio, dtype=np.float32).reshape(-1)
+        audio = audio.detach().float().cpu().numpy()
+    values = as_mono(np.asarray(audio)).astype(np.float32)
     if values.size == 0:
         raise EngineRefusal(engine, [f"{engine} returned an empty buffer"])
-    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+    return values
+
+
+def _normalize_audio(audio: np.ndarray, rate: int, target_rate: int) -> np.ndarray:
+    """Convert a model's native audio to the sample clock used by the render."""
+    if rate <= 0 or target_rate <= 0:
+        raise ValueError("sample rates must be positive")
+    values = as_mono(audio)
+    if values.size == 0:
+        raise ValueError("speech response contains no audio")
+    if rate != target_rate:
+        from scipy.signal import resample_poly
+
+        factor = gcd(rate, target_rate)
+        values = resample_poly(values, target_rate // factor, rate // factor)
+    return values.astype(np.float32)
+
+
+def _render_turns(engine, turns, cast, output, render) -> dict:
+    speakers, indexes = roster(turns, cast)
+    rate = 24000
+    pieces = []
+    for turn in turns:
+        try:
+            enforce_text_limit(turn.text, "segment")
+            audio, actual_rate = render(turn, resolve_turn(turn, cast))
+            samples = _normalize_audio(audio, actual_rate, rate)
+        except (ValueError, OSError, RuntimeError) as exc:
+            raise EngineRefusal(engine, [f"speaker {turn.speaker_id}, line {turn.line}: {exc}"]) from exc
+        pieces.append((indexes[turn.speaker_id], samples))
+    joined, segments = concatenate_turns(pieces, rate, np.zeros(int(0.15 * rate), dtype=np.float32))
+    write_wav(output, joined, rate, subtype="FLOAT")
+    return {
+        "engine": engine,
+        "sample_rate": rate,
+        "samples": int(joined.size),
+        "turns": len(turns),
+        "speech": {
+            "speakers": speakers,
+            "segments": [
+                {"speaker_idx": s.speaker_idx, "start_sample": s.start_sample, "end_sample": s.end_sample}
+                for s in segments
+            ],
+            "sample_rate": rate,
+        },
+    }
+
+
+def _synth_vibevoice_realtime(turns: list[Turn], cast: CastMap, output: Path) -> dict:
+    from gen_audio.speech_client import vibevoice_realtime
+
+    return _render_turns(cast.engine, turns, cast, output,
+                         lambda turn, voice: vibevoice_realtime(turn.text, voice.voice))
+
+
+def _synth_adaptive(turns: list[Turn], cast: CastMap, output: Path) -> dict:
+    """Render a mixed cast using each speaker's engine and a shared WAV clock."""
+    backends = {
+        turn.speaker_id: assignment_framework(resolve_turn(turn, cast), cast) for turn in turns
+    }
+    for engine in dict.fromkeys(backends.values()):
+        if engine == "adaptive":
+            raise EngineRefusal("adaptive", ["each speaker must declare a synthesis framework"])
+        status = probe(engine)
+        if not status.available:
+            raise EngineRefusal("adaptive", [f"{engine}: {gap}" for gap in status.missing])
+
+    with TemporaryDirectory(prefix="gen-audio-adaptive-") as temporary:
+        wav = Path(temporary) / "turn.wav"
+
+        def render(turn, voice):
+            engine = backends[turn.speaker_id]
+            plan = replace(cast, engine=engine, speakers={turn.speaker_id: voice})
+            synthesize(engine, [turn], plan, wav)
+            return read_wav(wav)
+
+        result = _render_turns("adaptive", turns, cast, output, render)
+    speakers, indexes = roster(turns, cast)
+    for speaker_id, engine in backends.items():
+        speakers[indexes[speaker_id]]["engine"] = engine
+    result["speech"]["speakers"] = speakers
+    return result

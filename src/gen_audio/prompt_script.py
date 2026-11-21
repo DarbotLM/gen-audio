@@ -39,7 +39,16 @@ def _personas_from_catalog(text: str) -> dict[str, dict[str, str]]:
         for ref in refs:
             if ref.startswith("kokoro-pack:"):
                 kokoro = ref.split(":", 1)[1]
-        found[id_match.group(1)] = {"name": name_match.group(1), "kokoro_onnx": kokoro}
+        persona_id = id_match.group(1)
+        found[persona_id] = {"name": name_match.group(1), "kokoro_onnx": kokoro, "kokoro_dayour": kokoro}
+        # These are stock synthesis recipes. They are not recordings of the personas.
+        if persona_id in {"alice", "frank"}:
+            found[persona_id]["vibevoice_realtime"] = {
+                "alice": "en-Emma_woman", "frank": "en-Frank_man"
+            }[persona_id]
+            found[persona_id]["vibevoice"] = {
+                "alice": "en-Alice_woman", "frank": "en-Frank_man"
+            }[persona_id]
     if len(found) < 9:
         raise RuntimeError(f"Rust catalog parser found {len(found)} personas")
     return found
@@ -50,6 +59,8 @@ PERSONAS: dict[str, dict[str, str]] = _personas_from_catalog(_catalog_path().rea
 
 ENGINE_LANG = {
     "kokoro_onnx": "en-us",
+    "kokoro_dayour": "en-us",
+    "vibevoice_realtime": "en",
     "pocket_tts": "en",
     "vibevoice": "en",
     "magpie": "en",

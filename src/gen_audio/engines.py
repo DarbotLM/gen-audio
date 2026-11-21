@@ -1,9 +1,6 @@
-"""Named engines for compare notes.
+"""Engine capabilities for the Python SDK and waveform comparisons.
 
-``kokoro_onnx`` is the compare-list engine this package runs without optional
-weights. ``kokoro_dayour`` and ``vibevoice`` have adapters that refuse until
-the local runtime and weights exist. The other rows label WAVs rendered
-somewhere else. This module does not download weights and does not rank engines.
+Status describes an adapter. Use the engine probe to check local runtime and model availability.
 """
 
 from __future__ import annotations
@@ -35,12 +32,30 @@ ENGINES: dict[str, EngineSpec] = {
     "kokoro_dayour": EngineSpec(
         id="kokoro_dayour",
         kind="synth",
-        status="external",
+        status="implemented",
         summary=(
             "dayour/kokoro KPipeline on CPU. Misaki is assigned to pipeline.g2p. "
             "Weights are not vendored; fetch hexgrad/Kokoro-82M only when "
             "GEN_AUDIO_ALLOW_HF_DOWNLOAD=1, otherwise use a local .pt pack."
         ),
+    ),
+    "vibevoice_realtime": EngineSpec(
+        id="vibevoice_realtime",
+        kind="synth",
+        status="implemented",
+        summary="VibeVoice Realtime 0.5B through dlm_speech. Preset per turn, with 24 kHz WAV and sample offsets.",
+    ),
+    "livevoice": EngineSpec(
+        id="livevoice",
+        kind="synth",
+        status="implemented",
+        summary="VibeVoice Realtime using the existing livevoice cast framework.",
+    ),
+    "adaptive": EngineSpec(
+        id="adaptive",
+        kind="synth",
+        status="implemented",
+        summary="Uses the synthesis framework specified on each cast speaker and normalizes the output.",
     ),
     "misaki": EngineSpec(
         id="misaki",
@@ -55,7 +70,7 @@ ENGINES: dict[str, EngineSpec] = {
     "vibevoice": EngineSpec(
         id="vibevoice",
         kind="synth",
-        status="external",
+        status="implemented",
         summary=(
             "VibeVoice 1.5B adapter. Calls the processor with voice_samples and "
             "generate with cfg_scale, DDPM steps, and the tokenizer. 7B is "
@@ -65,18 +80,17 @@ ENGINES: dict[str, EngineSpec] = {
     "magpie": EngineSpec(
         id="magpie",
         kind="synth",
-        status="external",
+        status="implemented",
         summary=(
-            "Compare slot for Magpie TTS. No adapter and no weights are included."
+            "Magpie TTS through the configured local CUDA runtime and model."
         ),
     ),
     "pocket_tts": EngineSpec(
         id="pocket_tts",
         kind="synth",
-        status="external",
+        status="implemented",
         summary=(
-            "Compare slot for Kyutai Pocket TTS, used as the CPU stand-in when "
-            "a Magpie render is not available. No adapter and no weights are included."
+            "Local Kyutai Pocket TTS. Requires the pocket-tts runtime and voice assets."
         ),
     ),
     "agentyankers": EngineSpec(

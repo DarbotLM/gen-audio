@@ -6,6 +6,65 @@ Darbot Gen-Audio is a desktop app plus a Python SDK for multi-speaker podcast to
 
 This repo does not ship model weights, voice binaries, API keys, or podcast renders. The spectrogram panel draws a browser formant map for the agent, voice, duration, perspectives, and loaded engine in the side pane. That map is not speech and not the Python spectrogram. The cube view stays a sine fixture tone.
 
+## Synthesis engines
+
+`vibevoice_realtime` uses the Microsoft Realtime 0.5B provider in `dlm_speech`.
+Set `GEN_AUDIO_DLM_SPEECH_URL` to its base URL and, if the worker requires
+authentication, set `GEN_AUDIO_DLM_SPEECH_TOKEN` in the renderer environment.
+Select a loaded stock preset such as `en-Carter_man`. The script generator
+maps the Alice and Frank personas to the stock Emma and Frank presets.
+For authored cast maps, `livevoice` also selects the Realtime adapter.
+The existing `vibevoice` engine uses the separately configured long-form
+checkpoint and its reference WAVs.
+
+```powershell
+'VibeVoice is running on this node.' | python -m gen_audio.cli.render_speech --engine vibevoice_realtime --voice en-Carter_man --output speech.wav
+```
+
+Install `nemo-speech` from NVIDIA to use Magpie and its NanoCodec decoder on
+CPU. Set `GEN_AUDIO_NEMO_SPEECH` to the executable or put it on PATH.
+`nemo-speech pull magpie` provisions the model, tokenizer, and codec.
+For optional transcript QA, set `GEN_AUDIO_NEMOTRON_ASR_MODEL`
+to an installed Nemotron model ID. Pocket TTS uses the separately installed
+`pocket-tts` package and its own presets.
+
+For mixed narration use `engine: adaptive` in an authored cast map and name
+the synthesis framework and voice on each speaker. Pass the cast with
+`gen-audio-generate --engine adaptive --cast-map PATH --prompt-file SCRIPT
+--duration-s SECONDS --out-dir DIRECTORY`. Keep the Speaker script and cast
+map inside the work directory. The adapter decodes each
+runtime's audio, converts it to mono at 24 kHz, and records sample offsets
+after conversion. It accepts WAV and declared PCM16 byte orders from the speech
+service, including older DLM Speech builds. Each model runs its own neural
+codec and keeps its own voice preset format.
+
+## Speech recognition
+
+Use Transformers 5.23.0 with Accelerate for the Microsoft VibeVoice ASR-HF
+checkpoint. The command reads local weights and emits JSON with plain text,
+speaker segments, and timestamps. Use `--context` for vocabulary hints. Set
+`GEN_AUDIO_VIBEVOICE_ASR_MODEL` to the ASR-HF directory to use it for Gen-Audio
+transcript QA. `GEN_AUDIO_VIBEVOICE_ASR_CONTEXT` supplies optional QA vocabulary.
+
+```powershell
+gen-audio-transcribe-vibevoice recording.wav --model C:\models\vibevoice-asr-hf --context "Darbot, VibeVoice"
+```
+
+Use a separate environment for the Microsoft streaming source, Transformers
+4.57.6, and either ASR Streaming checkpoint. Install this package in that
+environment and expose the upstream source on `PYTHONPATH`. Populate the Qwen
+tokenizer cache and run with `HF_HUB_OFFLINE=1`. Streaming emits JSON lines in
+checkpoint order and uses the checkpoint's chunk and lookahead settings.
+
+```powershell
+gen-audio-transcribe-vibevoice recording.wav --model C:\models\vibevoice-asr-streaming-15 --streaming
+```
+
+For an installed Nemotron 3.5 Transcribe 30B-A4B SALM pair, set
+`GEN_AUDIO_NEMOTRON_ASR_MODEL` to the decoder and
+`GEN_AUDIO_NEMOTRON_ASR_ENCODER` to its matching encoder. The Gen-Audio
+transcript QA path sends both to the local NeMo Speech runtime.
+
 ## Desktop app
 
 Targets: Windows (WebView2, NSIS and MSI), macOS (WebKit, dmg), Linux (webkit2gtk 4.1, deb/appimage). Ship the installer from the build script. Do not launch `target/release/gen-audio-desktop.exe` from a bare `cargo build -p gen-audio-desktop`: that compile leaves the `custom-protocol` feature off, so the WebView loads `devUrl` `http://localhost:1420` and Edge reports `ERR_CONNECTION_REFUSED`. MCP on `127.0.0.1:8765` can still be healthy while that window is dead.

@@ -319,7 +319,7 @@ pub fn validate_track(agents: &[Value], voice: &str) -> Result<(), (i32, String)
     if matches!(voice, "af_heart" | "am_michael" | "alice" | "frank") {
         return Err((
             -32602,
-            format!("{voice} is not a Voice model. af_heart and am_michael are Kokoro pack refs on personas Alice and Frank. Voice is kokoro_onnx, kokoro_dayour, misaki, vibevoice, magpie, or pocket_tts."),
+            format!("{voice} is not a Voice model. af_heart and am_michael are Kokoro pack refs on personas Alice and Frank. Voice is kokoro_onnx, kokoro_dayour, misaki, vibevoice, vibevoice_realtime, magpie, or pocket_tts."),
         ));
     }
     catalog::voice_model(voice).ok_or((-32602, format!("unknown voice model {voice}")))?;

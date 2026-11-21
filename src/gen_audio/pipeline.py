@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gen_audio.asr_wer import AsrError, transcribe, word_error_rate
+from gen_audio.asr_wer import AsrError, recognizer_name, transcribe, word_error_rate
 from gen_audio.assets import asset_object, sha256_file
 from gen_audio.audio_io import read_wav, write_wav
 from gen_audio.cube_layers import library_cube, write_cube_png
@@ -403,7 +403,7 @@ def compare_clip(
         "bw95_hz": bw95,
         "hypothesis": hypothesis,
         "reference": reference_text,
-        "asr": "faster-whisper tiny.en",
+        "asr": recognizer_name(),
         "duration_s": float(duration_s),
         "derived_from": list(derived_from),
     }

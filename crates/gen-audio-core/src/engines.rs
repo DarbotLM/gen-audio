@@ -1,4 +1,4 @@
-//! Compare-list engines. Only `kokoro_onnx` has a synthesizer, and only in the Python SDK.
+//! Desktop engine availability. External engines can be used through the Python SDK.
 
 use serde::Serialize;
 
@@ -53,21 +53,35 @@ const ENGINES: &[EngineSpec] = &[
         kind: EngineKind::Synth,
         status: EngineStatus::External,
         weights_bundled: false,
-        summary: "VibeVoice 1.5B compare slot (Alice/Frank in the 2026-10-06 notes). No adapter and no weights here.",
+        summary: "Long-form VibeVoice with local model weights and a compatible inference runtime.",
+    },
+    EngineSpec {
+        id: "vibevoice_realtime",
+        kind: EngineKind::Synth,
+        status: EngineStatus::Implemented,
+        weights_bundled: false,
+        summary: "VibeVoice Realtime 0.5B through the configured dlm_speech service.",
+    },
+    EngineSpec {
+        id: "adaptive",
+        kind: EngineKind::Synth,
+        status: EngineStatus::Implemented,
+        weights_bundled: false,
+        summary: "Uses each cast speaker's engine and converts its output to a shared clock.",
     },
     EngineSpec {
         id: "magpie",
         kind: EngineKind::Synth,
         status: EngineStatus::External,
         weights_bundled: false,
-        summary: "Magpie TTS 357M compare slot (Sofia/Jason in the 2026-10-06 notes). No adapter and no weights here.",
+        summary: "Magpie TTS with NVIDIA NeMo Speech and the NanoCodec decoder.",
     },
     EngineSpec {
         id: "pocket_tts",
         kind: EngineKind::Synth,
         status: EngineStatus::External,
         weights_bundled: false,
-        summary: "Kyutai Pocket TTS, the CPU stand-in used when PersonaPlex weights are unavailable. No adapter here.",
+        summary: "Kyutai Pocket TTS with local CPU inference.",
     },
 ];
 
@@ -84,15 +98,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_kokoro_onnx_is_implemented() {
+    fn reports_implemented_adapters() {
         let implemented: Vec<_> = engines()
             .iter()
             .filter(|spec| spec.status == EngineStatus::Implemented)
             .map(|spec| spec.id)
             .collect();
-        assert_eq!(implemented, vec!["kokoro_onnx"]);
+        assert_eq!(implemented, vec!["kokoro_onnx", "vibevoice_realtime", "adaptive"]);
         assert_eq!(engine("misaki").unwrap().kind, EngineKind::G2p);
-        assert!(engine("vibevoice").unwrap().summary.contains("No adapter"));
         assert!(engines().iter().all(|spec| !spec.weights_bundled));
     }
 }

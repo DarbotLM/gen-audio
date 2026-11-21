@@ -16,13 +16,15 @@ The same floor applies to the spectrogram, the genaid-audio URL helpers, podcast
 | `kokoro_dayour` | waveform synth | dayour/kokoro `KPipeline` on CPU when the package and a local pack, or `GEN_AUDIO_ALLOW_HF_DOWNLOAD=1`, are present. Misaki is assigned to `pipeline.g2p`. |
 | `misaki` | grapheme-to-phoneme | Kokoro's G2P library (hexgrad/misaki). Not a waveform synth. kokoro-onnx phonemizes inside its own dependency tree. This package does not import misaki. |
 | `vibevoice` | waveform synth | Adapter calls the local VibeVoice processor when `GEN_AUDIO_VIBEVOICE_MODEL` is set. Weights stay on disk. |
-| `magpie` | waveform synth | Compare-list slot for Magpie TTS. The synthesize path stays refused until a measured run. |
-| `pocket_tts` | waveform synth | Compare-list slot for Kyutai Pocket TTS, named as the CPU stand-in when a Magpie render is unavailable. |
+| `magpie` | waveform synth | NVIDIA NeMo Speech CLI with Magpie and NanoCodec. The configured NeMo Python adapter can also run on CUDA. |
+| `pocket_tts` | waveform synth | Kyutai Pocket TTS model with local CPU inference. |
+| `vibevoice_realtime` | waveform synth | Calls the configured dlm_speech worker with one preset per turn. |
+| `adaptive` | waveform synth | Uses each cast speaker’s chosen engine and joins the decoded waveforms. |
 | `agentyankers` | podcast format | Rundown mix: VibeVoice commentary, laugh and stinger cues, a bed, spectrogram, and cube revision. Live calls stay in `genaid_audio.agentyankers`. |
 
 `gen_audio.compare.score_wav` reads a finished WAV and records inv-HDR, BW95, and clip fraction. An unregistered engine id is allowed and marked `"registered": false`. The score file does not sort engines or assign a quality rating.
 
-Synthesis is off unless you construct `KokoroOnnxSynthesizer`. Importing `gen_audio` does not import kokoro-onnx.
+Engine adapters load their runtimes when rendering is requested. Importing `gen_audio` leaves the model runtimes unloaded.
 
 ### kokoro-onnx path
 

@@ -78,6 +78,24 @@ function Read-GenAudioRuntimeConfig {
     }
 }
 
+function Set-GenAudioProcessVariable {
+    # PowerShell passes $null to a .NET string parameter as "", and on .NET 9 and
+    # later [Environment]::SetEnvironmentVariable(name, "", 'Process') keeps an
+    # empty variable instead of removing it. Rust's env::var then reads Some(""),
+    # so unset means Remove-Item on the Env: drive.
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()][AllowEmptyString()][string]$Value
+    )
+    if (-not $PSCmdlet.ShouldProcess("Env:$Name", 'Set process environment variable')) { return }
+    if ([string]::IsNullOrEmpty($Value)) {
+        Remove-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue
+    } else {
+        Set-Item -LiteralPath "Env:$Name" -Value $Value
+    }
+}
+
 function Get-GenAudioRuntimeEnvironment {
     param([Parameter(Mandatory = $true)]$Config)
     [ordered]@{

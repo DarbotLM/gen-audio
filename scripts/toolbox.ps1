@@ -580,7 +580,7 @@ function Write-NodeConfiguration {
     $configuration = Get-GenAudioRuntimeEnvironment $script:RuntimeConfig
     New-Item -ItemType Directory -Force -Path $script:RuntimeDir | Out-Null
     foreach ($entry in $configuration.GetEnumerator()) {
-        [Environment]::SetEnvironmentVariable($entry.Key, "$($entry.Value)", 'Process')
+        Set-GenAudioProcessVariable -Name $entry.Key -Value "$($entry.Value)"
     }
     $legacyEnvironment = Join-Path $script:RuntimeDir 'node-environment.ps1'
     if (Test-Path -LiteralPath $legacyEnvironment) {
@@ -907,7 +907,7 @@ function Test-Framework {
     $saved = @{}
     foreach ($name in $names) {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        Set-GenAudioProcessVariable -Name $name -Value $null
     }
     try {
         Invoke-External $powershell @(
@@ -918,7 +918,7 @@ function Test-Framework {
         ) $RepoRoot
     } finally {
         foreach ($name in $names) {
-            [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
+            Set-GenAudioProcessVariable -Name $name -Value $saved[$name]
         }
     }
 }

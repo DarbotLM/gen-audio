@@ -75,7 +75,7 @@ New-Item -ItemType Directory -Force -Path $runtime, $environment.GEN_AUDIO_WORK_
 $saved = @{}
 foreach ($key in $environment.Keys) {
     $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
-    [Environment]::SetEnvironmentVariable($key, $environment[$key], 'Process')
+    Set-GenAudioProcessVariable -Name $key -Value $environment[$key]
 }
 Push-Location $cwd
 try {
@@ -85,6 +85,6 @@ try {
 } finally {
     Pop-Location
     foreach ($key in $saved.Keys) {
-        [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process')
+        Set-GenAudioProcessVariable -Name $key -Value $saved[$key]
     }
 }

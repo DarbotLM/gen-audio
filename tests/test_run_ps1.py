@@ -161,6 +161,30 @@ def test_toolbox_runtime_library_functions_reach_later_steps():
     assert "Get-GenAudioRuntimeEnvironment $script:RuntimeConfig" in text
 
 
+def test_scripts_unset_process_variables_without_leaving_them_empty():
+    for name in ("toolbox.ps1", "run.ps1"):
+        text = (REPO / "scripts" / name).read_text(encoding="utf-8")
+        assert "[Environment]::SetEnvironmentVariable(" not in text, name
+
+
+@pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
+def test_set_process_variable_removes_instead_of_emptying(tmp_path):
+    library = REPO / "scripts" / "lib" / "runtime-config.ps1"
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        f". '{library}'\n"
+        "$env:GA_PROBE = 'x'\n"
+        "Set-GenAudioProcessVariable -Name GA_PROBE -Value $null\n"
+        "\"removed=$(-not (Test-Path Env:GA_PROBE))\"\n"
+        "Set-GenAudioProcessVariable -Name GA_PROBE -Value 'y'\n"
+        "\"value=$env:GA_PROBE\"\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run([SHELL, "-NoProfile", "-File", str(script)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "removed=True" in result.stdout and "value=y" in result.stdout
+
+
 @pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
 def test_toolbox_promotes_dot_sourced_library_functions(tmp_path):
     lib = tmp_path / "lib.ps1"

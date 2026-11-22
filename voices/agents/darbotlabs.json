@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "id": "kokoro_onnx.agent-darbotlabs",
+  "display_name": "darbotlabs",
+  "language": "en-us",
+  "gender": "female",
+  "framework": "kokoro_onnx",
+  "assets": [
+    { "role": "style_pack", "path": "kokoro/voices-v1.0.bin", "format": "npz" },
+    { "role": "onnx_model", "path": "kokoro/kokoro-v1.0.onnx", "format": "onnx" }
+  ],
+  "source": {
+    "name": "hexgrad/Kokoro-82M",
+    "url": "https://github.com/thewh1teagle/kokoro-onnx",
+    "license": "Apache-2.0",
+    "attribution": "Agent voice formed from weighted af_sky and af_kore style vectors in voices-v1.0.bin."
+  },
+  "tags": ["en-us", "female", "warm", "agent"],
+  "g2p": "misaki.en-us",
+  "params": {
+    "lang": "en-us",
+    "speed": 0.97,
+    "voices_file": "voices-v1.0.bin",
+    "model_file": "kokoro-v1.0.onnx",
+    "blend": [
+      { "voice_id": "af_sky", "weight": 0.75 },
+      { "voice_id": "af_kore", "weight": 0.25 }
+    ]
+  }
+}

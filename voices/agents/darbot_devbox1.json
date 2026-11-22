@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "id": "kokoro_onnx.agent-darbot-devbox1",
+  "display_name": "darbot_devbox1",
+  "language": "en-us",
+  "gender": "male",
+  "framework": "kokoro_onnx",
+  "assets": [
+    { "role": "style_pack", "path": "kokoro/voices-v1.0.bin", "format": "npz" },
+    { "role": "onnx_model", "path": "kokoro/kokoro-v1.0.onnx", "format": "onnx" }
+  ],
+  "source": {
+    "name": "hexgrad/Kokoro-82M",
+    "url": "https://github.com/thewh1teagle/kokoro-onnx",
+    "license": "Apache-2.0",
+    "attribution": "Agent voice formed from weighted am_michael and am_adam style vectors in voices-v1.0.bin."
+  },
+  "tags": ["en-us", "male", "calm", "clear", "agent"],
+  "g2p": "misaki.en-us",
+  "params": {
+    "lang": "en-us",
+    "speed": 0.95,
+    "voices_file": "voices-v1.0.bin",
+    "model_file": "kokoro-v1.0.onnx",
+    "blend": [
+      { "voice_id": "am_michael", "weight": 0.7 },
+      { "voice_id": "am_adam", "weight": 0.3 }
+    ]
+  }
+}

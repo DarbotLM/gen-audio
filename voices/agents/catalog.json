@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "id": "agent-voices",
+  "catalog_source": "handwritten",
+  "note": "Unique kokoro_onnx agent voice blends for the Darbot voice work nodes.",
+  "library": {
+    "env": "GENAID_VOICES_DIR"
+  },
+  "voices": [
+    "darbot_devbox1.json",
+    "darbot-devbox2.json",
+    "devbox3-agentworkshop-hub.json",
+    "devbox4-poweragent.json",
+    "darbotlm.json",
+    "darbotlabs.json"
+  ],
+  "g2p": ["g2p/misaki.en-us.json"]
+}

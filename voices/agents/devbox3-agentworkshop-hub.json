@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "id": "kokoro_onnx.agent-devbox3-agentworkshop-hub",
+  "display_name": "devbox3-agentworkshop-hub",
+  "language": "en-us",
+  "gender": "male",
+  "framework": "kokoro_onnx",
+  "assets": [
+    { "role": "style_pack", "path": "kokoro/voices-v1.0.bin", "format": "npz" },
+    { "role": "onnx_model", "path": "kokoro/kokoro-v1.0.onnx", "format": "onnx" }
+  ],
+  "source": {
+    "name": "hexgrad/Kokoro-82M",
+    "url": "https://github.com/thewh1teagle/kokoro-onnx",
+    "license": "Apache-2.0",
+    "attribution": "Agent voice formed from weighted am_eric and am_liam style vectors in voices-v1.0.bin."
+  },
+  "tags": ["en-us", "male", "workshop", "agent"],
+  "g2p": "misaki.en-us",
+  "params": {
+    "lang": "en-us",
+    "speed": 1.0,
+    "voices_file": "voices-v1.0.bin",
+    "model_file": "kokoro-v1.0.onnx",
+    "blend": [
+      { "voice_id": "am_eric", "weight": 0.55 },
+      { "voice_id": "am_liam", "weight": 0.45 }
+    ]
+  }
+}

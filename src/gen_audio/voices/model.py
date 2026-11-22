@@ -122,6 +122,8 @@ class G2pConfig:
     custom_entries: Mapping[str, str]
     unk: str | None
     framework_lang_code: str | None = None
+    version: str | None = None
+    enable_en_g2p: bool | None = None
     path: Path | None = None
 
 
@@ -142,7 +144,7 @@ def default_catalog_path() -> Path:
     checkout = _checkout_root()
     if checkout is not None:
         return checkout / "voices" / "catalog.example.json"
-    bundled = Path(__file__).resolve().parent / "data" / "catalog.example.json"
+    bundled = Path(__file__).resolve().parents[1] / "data" / "catalog.example.json"
     if bundled.is_file():
         return bundled
     raise VoiceError("voice catalog is not installed", code="missing_schemas")
@@ -154,7 +156,7 @@ def g2p_config_path(config_id: str) -> Path:
     checkout = _checkout_root()
     if checkout is not None:
         return checkout / "voices" / "g2p" / name
-    bundled = Path(__file__).resolve().parent / "data" / "g2p" / name
+    bundled = Path(__file__).resolve().parents[1] / "data" / "g2p" / name
     if bundled.is_file():
         return bundled
     raise VoiceError(f"g2p config {config_id} is not installed", code="missing_schemas")
@@ -165,7 +167,7 @@ def schema_dir() -> Path:
     checkout = _checkout_root()
     if checkout is not None:
         return checkout / "schemas" / "voices"
-    bundled = Path(__file__).resolve().parent / "data" / "schemas"
+    bundled = Path(__file__).resolve().parents[1] / "data" / "schemas"
     if (bundled / "registry.v1.json").is_file():
         return bundled
     raise VoiceError("voice schemas are not installed", code="missing_schemas")

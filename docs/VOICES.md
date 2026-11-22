@@ -64,7 +64,16 @@ Reference-wav languages in this commit are `en`, `zh`, and `in` (`in-Samuel_man.
 
 ### Kokoro (PyTorch) — `kokoro`
 
-Schema: `schemas/voices/frameworks/kokoro.v1.schema.json`. Engine id: `kokoro_dayour` (the dayour/kokoro fork of hexgrad/kokoro). Wired to `KPipeline(lang_code, repo_id="hexgrad/Kokoro-82M", device="cpu")`. The voice argument is the local `.pt` path when that file is in the library. A weighted blend is the summed tensor `Σ wᵢ·packᵢ`, not `KPipeline.load_voice`'s equal-weight mean. Misaki is assigned to `pipeline.g2p` after `custom_entries` are written into `lexicon.golds`. `prepare` stays non-executable until the `kokoro` and `misaki` packages are installed and either the packs are on disk or `GEN_AUDIO_ALLOW_HF_DOWNLOAD=1`. Weights are not in this repo.
+Schema: `schemas/voices/frameworks/kokoro.v1.schema.json`. Engine id:
+`kokoro_dayour` (the DarbotLM Python 3.14 fork, pinned at 0.9.4). The adapter
+loads one `KModel`, reuses one `KPipeline` per language, and defaults to CPU;
+`GEN_AUDIO_KOKORO_DEVICE=auto|cuda|cuda:N|mps` opts into another device. The voice
+argument is a local `.pt` path from `GENAID_VOICES_DIR` or a weighted tensor. A
+blend is `Σ wᵢ·packᵢ`, not `KPipeline.load_voice`'s equal-weight mean.
+`GEN_AUDIO_KOKORO_TORCH_CONFIG` and `GEN_AUDIO_KOKORO_TORCH_WEIGHTS` are paired
+local checkpoint overrides. Otherwise `GEN_AUDIO_ALLOW_HF_DOWNLOAD=1` permits
+the configured `GEN_AUDIO_KOKORO_REPO`; the default is Hugging Face offline mode.
+Misaki is assigned to `pipeline.g2p` after lexicon entries are merged.
 
 A pack id is `<lang><gender>_<name>`:
 
@@ -86,9 +95,22 @@ A pack id is `<lang><gender>_<name>`:
 
 Schema: `schemas/voices/frameworks/kokoro_onnx.v1.schema.json`. Wired.
 
-The v1 pair is `kokoro-v1.0.onnx` and `voices-v1.0.bin`. The `.bin` file is a NumPy npz of named float32 style vectors. `synthesize_with_g2p` phonemizes with the voice's Misaki config and calls `Kokoro.create(phonemes, voice=<pack id or ndarray>, is_phonemes=True)`, splitting phonemes into chunks of at most 510 characters. A blend's `voice` is the ndarray from `blend_from_pack`. The cast synthesizer still speaks the single pack id on speakers 1 and 2 (`af_heart`, `am_michael`) because those turns do not carry a blend descriptor. `prepare` reports a blend as executable only when the voices file and the `kokoro-onnx` package are present, which is the same condition `voice_for_create` needs.
+The v1 pair is `kokoro-v1.0.onnx` and `voices-v1.0.bin`. The `.bin` file is a
+NumPy npz of named float32 style vectors. The pinned DarbotLM 0.6.1 runtime
+provides `create_timed`, `create_stream`, embedded/exported vocabulary selection,
+provider resolution, trim/pause controls, and continuous overlapping windows
+for duration-export graphs. Non-finite audio or invalid durations are refused.
+`synthesize_with_g2p` phonemizes with the referenced Misaki config and passes
+`is_phonemes=True`; a blend is the ndarray from `blend_from_pack`. A cast
+speaker with `voice_id` resolves its descriptor, so blends reach ordinary
+multi-turn generation through `GEN_AUDIO_VOICE_CATALOG` or the checkout
+descriptor. Legacy pack-only speakers continue to use `af_heart`/`am_michael`.
 
-`prepare` reports `executable: true` only when those files exist and the `kokoro-onnx` package is installed. It does not synthesize by itself.
+`prepare` reports `executable: true` only when the files and pinned package
+exist. Actual provider initialization is still explicit and may refuse rather
+than silently fall back to CPU. `ONNX_PROVIDER=CPUExecutionProvider` is the
+node default; `CUDAExecutionProvider` and other fork-supported providers are
+opt-in through `kokoro-gpu` or a compatible ONNX Runtime installation.
 
 Later language packs use a versioned bin name such as `voices-v1.1-zh.bin`. The `voices_file` pattern allows that. The example English voices point at `voices-v1.0.bin`.
 
@@ -99,11 +121,22 @@ Schema for a voice's params is empty: Misaki is not a voice. The document you au
 | `backend` | What it selects |
 | --- | --- |
 | `misaki-en` | English G2P. `variant` is `en-us` or `en-gb`. `british` follows that variant. `transformer` is the spaCy transformer switch. `espeak_fallback` turns on espeak for out-of-lexicon words, and `espeak_language` must match the variant |
-| `misaki-ja` | Japanese Misaki. `language` is `ja` |
-| `misaki-zh` | Chinese Misaki. `language` is `zh` |
+| `misaki-ja` | Japanese Misaki. `language` is `ja`; `version` is `pyopenjtalk` (wheel-ready default) or `cutlet` when UniDic is installed separately |
+| `misaki-zh` | Chinese Misaki. `language` is `zh`; `version` is `legacy` or `1.1`. The 1.1 frontend receives an English G2P callable |
+| `misaki-ko` | Korean Misaki. `language` is `ko` |
+| `misaki-vi` | Vietnamese Misaki. `language` is `vi`; `enable_en_g2p` controls embedded-English handling |
 | `espeak` | Languages Misaki does not cover itself. `espeak_language` is required |
 
-`custom_entries` is a small overlay (the English example records the usual `kokoro` pronunciation). `apply_custom_entries` writes that map into `g2p.lexicon.golds`. `lexicon` is an optional file relative to the library. `transformer` is `false`: the misaki fork raises `RuntimeError` for `trf=True` on Python 3.14. `framework_lang_code` is Kokoro's pipeline letter (`en-us` → `a`, `en-gb` → `b`, `ja` → `j`, `zh` → `z`, `es` → `e`). `phonemize_with_misaki` builds the backend and refuses if misaki is not installed. `prepare` on a G2P config stays `executable: false` because Misaki does not emit a waveform.
+`custom_entries` is a small overlay (the English example records the usual
+`kokoro` pronunciation). `lexicon` is an optional UTF-8 JSON object or
+line-oriented `<word><tab><phonemes>` / `<word>=<phonemes>` file relative to
+`GENAID_VOICES_DIR`; its entries merge with `custom_entries` into
+`g2p.lexicon.golds`. `transformer` is `false`: the fork refuses `trf=True` on
+Python 3.14. `framework_lang_code` covers `a,b,e,f,h,i,j,p,z`; native Korean and
+Vietnamese configs leave it unset because that fork has no Kokoro voice prefix
+for those languages. `gen-audio-voices phonemize` and
+`phonemize_with_misaki` build the backend and refuse missing extras explicitly.
+`prepare` on a G2P config stays `executable: false` because it emits no waveform.
 
 ### VibeVoice — `vibevoice`
 
@@ -176,6 +209,8 @@ A map with no `schema_version` is the older shape (`engine`, `speakers`, `name`,
 
 ```bash
 python scripts/voices.py frameworks
+python scripts/voices.py phonemize misaki.en-us --text "Kokoro pronunciation"
+python scripts/voices.py phonemize misaki.vi --text "Xin chào."
 python scripts/voices.py list --framework vibevoice
 python scripts/voices.py validate voices/catalog.example.json
 python scripts/voices.py validate voices/catalog.example.json --require-assets --library "$GENAID_VOICES_DIR"
@@ -185,7 +220,15 @@ python scripts/voices.py scan --library "$GENAID_VOICES_DIR"
 python scripts/voices.py rebuild --library "$GENAID_VOICES_DIR" --check
 ```
 
-`frameworks` prints id, kind, engine id, `wired` or `schema`, and the registry summary. `list` prints JSON. `plan` prints whether one voice can run. `scan` and `rebuild` classify a library. `rebuild --check` fails when the vibevoice and livevoice files on disk are not the catalog's asset paths. Validate commands print one `ok` line or `error:` on stderr. Schemas, the example catalog, and the g2p configs are package data, so a non-editable install still finds them. CI runs `validate` and `validate-cast` without `--require-assets`, because the runner has no voice library.
+`frameworks` prints id, kind, engine id, `wired` or `schema`, and the registry
+summary. `phonemize` prints JSON with the exact Misaki backend, language,
+version, and phonemes. `list` prints JSON. `plan` prints whether one voice can
+run. `scan` and `rebuild` classify a library. `rebuild --check` fails when the
+vibevoice and livevoice files on disk are not the catalog's asset paths.
+Validate commands print one `ok` line or `error:` on stderr. Schemas, the
+example catalog, and all G2P configs are package data under `gen_audio/data`,
+so a non-editable install finds them. CI runs `validate` and `validate-cast`
+without `--require-assets`, because the runner has no voice library.
 
 ## Adding a framework
 

@@ -10,6 +10,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, replace
 from math import gcd
 from tempfile import TemporaryDirectory
@@ -21,6 +22,8 @@ from gen_audio.audio_io import as_mono, read_wav, write_wav
 from gen_audio.cast import CastMap, Turn, assignment_framework, resolve_turn
 from gen_audio.guards import enforce_text_limit
 from gen_audio.speakers import concatenate_turns, roster
+
+_KOKORO_TORCH_LOCK = threading.Lock()
 
 
 class EngineRefusal(RuntimeError):
@@ -142,111 +145,128 @@ _KOKORO_G2P = {
     "en-us": "misaki.en-us",
     "en-gb": "misaki.en-gb",
     "es": "misaki.es",
+    "fr-fr": "misaki.fr-fr",
+    "hi": "misaki.hi",
+    "it": "misaki.it",
     "ja": "misaki.ja",
+    "pt-br": "misaki.pt-br",
     "zh": "misaki.zh",
 }
 
 
 def _missing_kokoro_torch() -> list[str]:
-    from gen_audio.voices.runtime import allow_hf_download
+    from gen_audio.voices.runtime import kokoro_torch_device
 
     missing: list[str] = []
+    if not _module_present("torch"):
+        missing.append("PyTorch is not installed")
     if not _module_present("kokoro"):
         missing.append("kokoro package is not installed")
     if not _module_present("misaki"):
         missing.append("misaki is not installed; kokoro will not invent phonemes")
-    if (
-        not allow_hf_download()
-        and not os.environ.get("GENAID_VOICES_DIR", "").strip()
-        and not os.environ.get("GEN_AUDIO_KOKORO_TORCH_DIR", "").strip()
-    ):
-        missing.append(
-            "Kokoro .pt packs are not bundled; GEN_AUDIO_ALLOW_HF_DOWNLOAD=1 is required before KPipeline can fetch hexgrad/Kokoro-82M"
+    config = os.environ.get("GEN_AUDIO_KOKORO_TORCH_CONFIG", "").strip()
+    weights = os.environ.get("GEN_AUDIO_KOKORO_TORCH_WEIGHTS", "").strip()
+    if bool(config) != bool(weights):        missing.append(
+            "GEN_AUDIO_KOKORO_TORCH_CONFIG and GEN_AUDIO_KOKORO_TORCH_WEIGHTS must be set together"
         )
+    if config and not Path(config).is_file():
+        missing.append("GEN_AUDIO_KOKORO_TORCH_CONFIG file is missing")
+    if weights and not Path(weights).is_file():
+        missing.append("GEN_AUDIO_KOKORO_TORCH_WEIGHTS file is missing")
+    if _module_present("torch"):
+        try:
+            kokoro_torch_device()
+        except ValueError as exc:
+            missing.append(str(exc))
     return missing
 
 
 def _synth_kokoro_torch(turns: list[Turn], cast: CastMap, output: Path) -> dict:
-    """Run dayour/kokoro ``KPipeline`` on CPU. Misaki is assigned to ``pipeline.g2p``."""
-    from gen_audio.improve import trim_bounds
-    from gen_audio.voices.agents import agent_g2p, agent_voice, blend_parts
+    """Run DarbotLM Kokoro with one shared KModel and explicit Misaki configs."""
+    import torch
+
     from gen_audio.voices.errors import VoiceError
-    from gen_audio.voices.model import g2p_config_path, load_g2p
-    from gen_audio.voices.runtime import blend_kokoro_packs, kokoro_pack_path, run_kokoro_pipeline
+    from gen_audio.voices.runtime import (
+        KokoroTorchSession,
+        kokoro_torch_voice_argument,
+        resolve_g2p_descriptor,
+        resolve_voice_descriptor,
+    )
 
-    pieces: list[tuple[int, np.ndarray]] = []
-    sample_rate = 24000
-    g2p_used: set[str] = set()
-    voices_used: dict[str, str] = {}
-    try:
-        speakers, index_of = roster(turns, cast)
-        for turn in turns:
-            assignment = resolve_turn(turn, cast)
-            lang = assignment.lang or cast.default_lang
-            code = _KOKORO_LANG_CODE.get(lang)
-            g2p_id = _KOKORO_G2P.get(lang)
-            if code is None or g2p_id is None:
-                raise EngineRefusal("kokoro_dayour", [f"no Misaki config for language {lang}"])
-            agent = agent_voice(assignment.voice)
-            voice_arg: object = assignment.voice
-            if agent is not None:
-                # Persona blend: the same packs the kokoro_onnx blend mixes, as .pt tensors.
-                g2p = agent_g2p(agent)
-                g2p_used.add(str(agent["g2p"]))
-                parts = blend_parts(agent)
-                voice_arg = blend_kokoro_packs(parts)
-                voices_used[assignment.voice] = " + ".join(f"{weight:g}*{voice_id}" for voice_id, weight in parts)
-            else:
-                g2p = load_g2p(g2p_config_path(g2p_id))
-                g2p_used.add(g2p_id)
-                pack = kokoro_pack_path(assignment.voice)
-                if pack is not None:
-                    voice_arg = str(pack)
-                voices_used[assignment.voice] = assignment.voice
-            audio, sample_rate = run_kokoro_pipeline(
-                turn.text,
-                lang_code=code,
-                voice=voice_arg,
-                g2p=g2p,
-                speed=assignment.speed,
-            )
-            # KPipeline pads every utterance with silence; cut it so the clip has
-            # one even pause per turn instead of a second-long hole at each change.
-            start, end = trim_bounds(audio, sample_rate)
-            pieces.append((index_of[turn.speaker_id], audio[start:end] if end > start else audio))
-    except VoiceError as exc:
-        raise EngineRefusal("kokoro_dayour", [str(exc)]) from exc
-    if not pieces or not any(audio.size for _, audio in pieces):
-        raise EngineRefusal("kokoro_dayour", ["KPipeline produced no samples"])
-    joined, segments = concatenate_turns(pieces, sample_rate, np.zeros(int(0.3 * sample_rate), dtype=np.float32))
-    joined = joined.astype(np.float32)
-    write_wav(output, joined, sample_rate, subtype="FLOAT")
-    return {
-        "engine": "kokoro_dayour",
-        "g2p": sorted(g2p_used),
-        "voices": voices_used,
-        "sample_rate": sample_rate,
-        "samples": int(joined.size),
-        "turns": len(turns),
-        "speech": {
-            "speakers": speakers,
-            "segments": [
-                {
-                    "speaker_idx": segment.speaker_idx,
-                    "start_sample": segment.start_sample,
-                    "end_sample": segment.end_sample,
-                }
-                for segment in segments
-            ],
-            "sample_rate": sample_rate,
-        },
-    }
+    library_raw = os.environ.get("GENAID_VOICES_DIR", "").strip()
+    library = Path(library_raw) if library_raw else None
+    with _KOKORO_TORCH_LOCK:
+        try:
+            session = KokoroTorchSession()
 
+            def render(turn, assignment):
+                framework = assignment_framework(assignment, cast)
+                if framework not in {"kokoro", "kokoro_dayour"}:
+                    raise EngineRefusal(
+                        "kokoro_dayour",
+                        [f"speaker {turn.speaker_id} uses {framework}"],
+                    )
+                lang = assignment.lang or cast.default_lang
+                code = _KOKORO_LANG_CODE.get(lang)
+                if code is None:
+                    raise EngineRefusal(
+                        "kokoro_dayour",
+                        [f"language {lang} has no Kokoro pipeline code"],
+                    )
+                descriptor = resolve_voice_descriptor(assignment.voice_id)
+                if descriptor is not None:
+                    if descriptor.framework != "kokoro":
+                        raise VoiceError(
+                            f"{descriptor.id} is not a kokoro torch voice",
+                            code="bad_voice",
+                        )
+                    code = str(descriptor.params["lang_code"])
+                    lang = str(descriptor.params["lang"])
+                    g2p = resolve_g2p_descriptor(descriptor.g2p or _KOKORO_G2P[lang])
+                    voice_arg = kokoro_torch_voice_argument(
+                        descriptor,
+                        library,
+                        lambda path: torch.load(path, map_location="cpu", weights_only=True),
+                    )
+                    speed = float(descriptor.params["speed"])
+                else:
+                    g2p_id = _KOKORO_G2P.get(lang)
+                    if g2p_id is None:
+                        raise EngineRefusal(
+                            "kokoro_dayour",
+                            [f"no Misaki config for language {lang}"],
+                        )
+                    g2p = resolve_g2p_descriptor(g2p_id)
+                    voice_arg = assignment.voice
+                    if library:
+                        local_voice = (
+                            library / "kokoro" / "voices" / f"{assignment.voice}.pt"
+                        )
+                        if local_voice.is_file():
+                            voice_arg = str(local_voice)
+                    speed = assignment.speed
+                audio, sample_rate = session.synthesize(
+                    turn.text,
+                    lang_code=code,
+                    voice=voice_arg,
+                    g2p=g2p,
+                    speed=float(speed),
+                    library=library,
+                )
+                return audio, sample_rate
+
+            return _render_turns("kokoro_dayour", turns, cast, output, render)
+        except (VoiceError, ValueError, OSError, RuntimeError) as exc:
+            if isinstance(exc, EngineRefusal):
+                raise
+            raise EngineRefusal("kokoro_dayour", [str(exc)]) from exc
 
 def _missing_kokoro() -> list[str]:
     missing: list[str] = []
     if not _module_present("kokoro_onnx"):
-        missing.append("kokoro-onnx package is not installed (pip install 'gen-audio[kokoro]')")
+        missing.append(
+            "kokoro-onnx package is not installed (pip install 'gen-audio[kokoro-onnx]')"
+        )
     model = os.environ.get("GEN_AUDIO_KOKORO_MODEL", "").strip()
     voices = os.environ.get("GEN_AUDIO_KOKORO_VOICES", "").strip()
     if not model:
@@ -369,17 +389,30 @@ def _missing_magpie() -> list[str]:
 
 
 def _synth_kokoro(turns: list[Turn], cast: CastMap, output: Path) -> dict:
-    from gen_audio.synth_kokoro_onnx import KokoroOnnxSynthesizer, resolve_model_paths
+    from gen_audio.synth_kokoro_onnx import (
+        KokoroOnnxSynthesizer,
+        OnnxSynthesisOptions,
+        resolve_model_paths,
+    )
 
     model_path, voices_path = resolve_model_paths(None, None)
     synth = KokoroOnnxSynthesizer(model_path, voices_path)
-    result = synth.synthesize_turns(turns, cast, gap_s=0.15, improve_publish=False)
+    result = synth.synthesize_turns(
+        turns,
+        cast,
+        gap_s=0.15,
+        improve_publish=False,
+        options=OnnxSynthesisOptions.from_env(),
+        library=os.environ.get("GENAID_VOICES_DIR"),
+    )
     write_wav(output, result.audio, result.sample_rate, subtype="FLOAT")
     return {
         "engine": "kokoro_onnx",
         "sample_rate": result.sample_rate,
         "samples": int(result.audio.size),
         "turns": len(result.turns),
+        "providers": list(result.providers),
+        "phoneme_timings": list(result.phoneme_timings),
         "speech": {
             "speakers": result.speakers,
             "segments": [
@@ -712,8 +745,13 @@ def _synth_vibevoice_realtime(turns: list[Turn], cast: CastMap, output: Path) ->
 
 def _synth_adaptive(turns: list[Turn], cast: CastMap, output: Path) -> dict:
     """Render a mixed cast using each speaker's engine and a shared WAV clock."""
-    backends = {
+    raw_backends = {
         turn.speaker_id: assignment_framework(resolve_turn(turn, cast), cast) for turn in turns
+    }
+    aliases = {"kokoro": "kokoro_dayour"}
+    backends = {
+        speaker_id: aliases.get(framework, framework)
+        for speaker_id, framework in raw_backends.items()
     }
     for engine in dict.fromkeys(backends.values()):
         if engine == "adaptive":

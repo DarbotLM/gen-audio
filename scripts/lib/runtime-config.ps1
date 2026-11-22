@@ -98,14 +98,31 @@ function Set-GenAudioProcessVariable {
 
 function Get-GenAudioRuntimeEnvironment {
     param([Parameter(Mandatory = $true)]$Config)
+    $onnxProvider = [Environment]::GetEnvironmentVariable('ONNX_PROVIDER', 'Process')
+    if (-not $onnxProvider) { $onnxProvider = 'CPUExecutionProvider' }
+    $kokoroDevice = [Environment]::GetEnvironmentVariable('GEN_AUDIO_KOKORO_DEVICE', 'Process')
+    if (-not $kokoroDevice) { $kokoroDevice = 'cpu' }
+    $allowHfDownload = [Environment]::GetEnvironmentVariable('GEN_AUDIO_ALLOW_HF_DOWNLOAD', 'Process')
+    if (-not $allowHfDownload) { $allowHfDownload = '0' }
+    $onnxTrim = [Environment]::GetEnvironmentVariable('GEN_AUDIO_KOKORO_TRIM', 'Process')
+    if (-not $onnxTrim) { $onnxTrim = 'true' }
+    $useMisaki = [Environment]::GetEnvironmentVariable('GEN_AUDIO_KOKORO_USE_MISAKI', 'Process')
+    if (-not $useMisaki) { $useMisaki = 'false' }
+    $kokoroModel = [Environment]::GetEnvironmentVariable('GEN_AUDIO_KOKORO_MODEL', 'Process')
+    if (-not $kokoroModel) { $kokoroModel = Join-Path $Config.models 'kokoro-v1.0.onnx' }
+    $kokoroVoices = [Environment]::GetEnvironmentVariable('GEN_AUDIO_KOKORO_VOICES', 'Process')
+    if (-not $kokoroVoices) { $kokoroVoices = Join-Path $Config.models 'voices-v1.0.bin' }
     [ordered]@{
         GEN_AUDIO_REPO = $Config.checkout
         GEN_AUDIO_PYTHON = $Config.python
         GEN_AUDIO_MODEL_DIR = $Config.models
-        GEN_AUDIO_KOKORO_MODEL = Join-Path $Config.models 'kokoro-v1.0.onnx'
-        GEN_AUDIO_KOKORO_VOICES = Join-Path $Config.models 'voices-v1.0.bin'
-        GEN_AUDIO_KOKORO_TORCH_DIR = Join-Path $Config.models 'kokoro-torch'
-        GENAID_MODEL_BASE = $Config.models
+        GEN_AUDIO_KOKORO_MODEL = $kokoroModel
+        GEN_AUDIO_KOKORO_VOICES = $kokoroVoices
+        GEN_AUDIO_KOKORO_DEVICE = $kokoroDevice
+        GEN_AUDIO_ALLOW_HF_DOWNLOAD = $allowHfDownload
+        GEN_AUDIO_KOKORO_TRIM = $onnxTrim
+        GEN_AUDIO_KOKORO_USE_MISAKI = $useMisaki
+        ONNX_PROVIDER = $onnxProvider        GENAID_MODEL_BASE = $Config.models
         GEN_AUDIO_WORK_DIR = Join-Path $Config.runtime 'mcp'
         GEN_AUDIO_MCP_ADDR = "127.0.0.1:$($Config.ports.Mcp)"
         GEN_AUDIO_MCP_ADDR_FILE = $Config.mcpAddressFile

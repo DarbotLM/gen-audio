@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -25,11 +26,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--engine", required=True)
     parser.add_argument("--duration-s", type=float, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--provider")
+    parser.add_argument("--vocab")
+    parser.add_argument("--trim", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--continuous", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--misaki-g2p", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--sentence-pause", type=float)
+    parser.add_argument("--clause-pause", type=float)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    overrides = {
+        "ONNX_PROVIDER": args.provider,
+        "GEN_AUDIO_KOKORO_VOCAB": args.vocab,
+        "GEN_AUDIO_KOKORO_TRIM": args.trim,
+        "GEN_AUDIO_KOKORO_CONTINUOUS": args.continuous,
+        "GEN_AUDIO_KOKORO_USE_MISAKI": args.misaki_g2p,
+        "GEN_AUDIO_KOKORO_SENTENCE_PAUSE": args.sentence_pause,
+        "GEN_AUDIO_KOKORO_CLAUSE_PAUSE": args.clause_pause,
+    }
+    for key, value in overrides.items():
+        if value is not None:
+            os.environ[key] = (
+                str(value).lower() if isinstance(value, bool) else str(value)
+            )
     out_dir = args.out_dir.resolve()
     prompt_path = args.prompt_file.resolve()
     try:
@@ -73,6 +95,11 @@ def main(argv: list[str] | None = None) -> int:
         manifest["speed"] = prepared.speed if prepared else cast.default_speed
         manifest["castSource"] = "persona-voice-map" if prepared else "authored"
         manifest["sampleScript"] = False
+        if isinstance(rendered, dict):
+            if rendered.get("providers"):
+                manifest["onnxProviders"] = rendered["providers"]
+            if rendered.get("phoneme_timings"):
+                manifest["phonemeTimings"] = rendered["phoneme_timings"]
     except (PromptError, SpeakerError, EngineRefusal, OSError, ValueError, KeyError, RuntimeError) as exc:
         _emit(out_dir, {
             "ok": False,

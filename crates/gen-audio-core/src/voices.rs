@@ -87,6 +87,12 @@ pub struct G2pConfig {
     pub custom_entries: BTreeMap<String, String>,
     #[serde(default)]
     pub unk: Option<String>,
+    #[serde(default)]
+    pub framework_lang_code: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub enable_en_g2p: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -239,16 +245,79 @@ pub fn validate_g2p_json(value: &Value) -> Result<G2pConfig, String> {
             if british != (config.variant.as_deref() == Some("en-gb")) {
                 return Err("british must follow the en-gb variant".into());
             }
+            if config.version.is_some() || config.enable_en_g2p.is_some() {
+                return Err("English Misaki has no version or enable_en_g2p".into());
+            }
         }
-        "misaki-ja" if config.language == "ja" => {}
-        "misaki-zh" if config.language == "zh" => {}
+        "misaki-ja" if config.language == "ja" => {
+            if config
+                .version
+                .as_deref()
+                .is_some_and(|value| !matches!(value, "cutlet" | "pyopenjtalk"))
+            {
+                return Err("Japanese Misaki version must be cutlet or pyopenjtalk".into());
+            }
+            if config.enable_en_g2p.is_some() {
+                return Err("Japanese Misaki has no enable_en_g2p".into());
+            }
+        }
+        "misaki-zh" if config.language == "zh" => {
+            if config
+                .version
+                .as_deref()
+                .is_some_and(|value| !matches!(value, "legacy" | "1.1"))
+            {
+                return Err("Chinese Misaki version must be legacy or 1.1".into());
+            }
+            if config.enable_en_g2p.is_some() {
+                return Err("Chinese Misaki has no enable_en_g2p".into());
+            }
+        }
+        "misaki-ko" if config.language == "ko" => {
+            if config.version.is_some() || config.enable_en_g2p.is_some() {
+                return Err("Korean Misaki has no version or enable_en_g2p".into());
+            }
+        }
+        "misaki-vi" if config.language == "vi" => {
+            if config.version.is_some() || config.enable_en_g2p.is_none() {
+                return Err("Vietnamese Misaki needs enable_en_g2p and has no version".into());
+            }
+        }
         "espeak" => {
             let espeak = config.espeak_language.as_deref().unwrap_or("");
             if config.espeak_fallback != Some(true) || !lang_ok(espeak) {
                 return Err("espeak backend needs espeak_language".into());
             }
+            if espeak != config.language && !espeak.starts_with(&(config.language.clone() + "-")) {
+                return Err("espeak_language must match the G2P language".into());
+            }
+            if config.version.is_some() || config.enable_en_g2p.is_some() {
+                return Err("espeak has no Misaki version or enable_en_g2p".into());
+            }
         }
         _ => return Err(format!("unsupported g2p backend {}", config.backend)),
+    }
+    let expected_code = match (
+        config.backend.as_str(),
+        config
+            .variant
+            .as_deref()
+            .unwrap_or(config.language.as_str()),
+    ) {
+        ("misaki-en", "en-us") => Some("a"),
+        ("misaki-en", "en-gb") => Some("b"),
+        ("misaki-ja", "ja") => Some("j"),
+        ("misaki-zh", "zh") => Some("z"),
+        ("misaki-ko", "ko") | ("misaki-vi", "vi") => None,
+        ("espeak", "es") => Some("e"),
+        ("espeak", "fr-fr") => Some("f"),
+        ("espeak", "hi") => Some("h"),
+        ("espeak", "it") => Some("i"),
+        ("espeak", "pt-br") => Some("p"),
+        _ => return Err("unsupported G2P language".into()),
+    };
+    if config.framework_lang_code.as_deref() != expected_code {
+        return Err("framework_lang_code does not match G2P language".into());
     }
     Ok(config)
 }
@@ -327,7 +396,9 @@ pub fn validate_cast_json(value: &Value) -> Result<CastDocument, String> {
         };
         if let Some(limit) = limit {
             if *count > limit {
-                return Err(format!("speaker_limit: {fw} supports at most {limit} speakers"));
+                return Err(format!(
+                    "speaker_limit: {fw} supports at most {limit} speakers"
+                ));
             }
         }
     }
@@ -381,12 +452,27 @@ fn validate_kokoro(voice: &VoiceDescriptor, torch: bool) -> Result<(), String> {
     if torch {
         reject_unknown_params(
             voice,
-            &["voice_id", "lang_code", "lang", "speed", "blend", "framework_lang_code"],
+            &[
+                "voice_id",
+                "lang_code",
+                "lang",
+                "speed",
+                "blend",
+                "framework_lang_code",
+            ],
         )?;
     } else {
         reject_unknown_params(
             voice,
-            &["voice_id", "lang", "speed", "voices_file", "model_file", "blend", "framework_lang_code"],
+            &[
+                "voice_id",
+                "lang",
+                "speed",
+                "voices_file",
+                "model_file",
+                "blend",
+                "framework_lang_code",
+            ],
         )?;
     }
     let lang = voice.language.as_str();
@@ -407,15 +493,24 @@ fn validate_kokoro(voice: &VoiceDescriptor, torch: bool) -> Result<(), String> {
     } else {
         let lang_param = text(voice, "lang")?;
         if !kokoro_langs().contains(&lang_param) {
-            return Err(format!("bad_lang: kokoro_onnx lang {lang_param} is not a Kokoro language"));
+            return Err(format!(
+                "bad_lang: kokoro_onnx lang {lang_param} is not a Kokoro language"
+            ));
         }
         if lang_param != lang {
             return Err("bad_lang: kokoro_onnx lang does not match language".into());
         }
-        if ids.iter().any(|id| kokoro_lang(&id[..1]) != Some(lang_param)) {
+        if ids
+            .iter()
+            .any(|id| kokoro_lang(&id[..1]) != Some(lang_param))
+        {
             return Err("bad_pack_lang: kokoro pack language does not match lang".into());
         }
-        let roles: Vec<_> = voice.assets.iter().map(|asset| asset.role.as_str()).collect();
+        let roles: Vec<_> = voice
+            .assets
+            .iter()
+            .map(|asset| asset.role.as_str())
+            .collect();
         if !roles.contains(&"style_pack") || !roles.contains(&"onnx_model") {
             return Err("bad_asset_role: kokoro_onnx needs a style_pack and an onnx_model".into());
         }
@@ -462,14 +557,23 @@ fn validate_vibevoice(voice: &VoiceDescriptor) -> Result<(), String> {
     reject_unknown_params(voice, &["file_stem", "file_prefix", "background_music"])?;
     let prefix = text(voice, "file_prefix")?;
     if stem_lang != prefix {
-        return Err(format!("bad_lang: vibevoice file_prefix {prefix} does not match {stem}"));
+        return Err(format!(
+            "bad_lang: vibevoice file_prefix {prefix} does not match {stem}"
+        ));
     }
     match prefix_language(prefix) {
         Some(expected) if expected == voice.language => {}
         Some(expected) => {
-            return Err(format!("bad_lang: vibevoice language {} is not {expected}", voice.language));
+            return Err(format!(
+                "bad_lang: vibevoice language {} is not {expected}",
+                voice.language
+            ));
         }
-        None => return Err(format!("bad_lang: vibevoice file_prefix {prefix} has no BCP-47 language")),
+        None => {
+            return Err(format!(
+                "bad_lang: vibevoice file_prefix {prefix} has no BCP-47 language"
+            ))
+        }
     }
     if voice.assets.len() != 1 || !voice.assets[0].path.ends_with(&format!("{stem}.wav")) {
         return Err("vibevoice asset must be the reference wav".into());
@@ -504,7 +608,9 @@ fn validate_livevoice(voice: &VoiceDescriptor) -> Result<(), String> {
     )?;
     let prefix = text(voice, "file_prefix")?;
     if stem_lang != prefix {
-        return Err(format!("bad_lang: livevoice file_prefix {prefix} does not match {stem}"));
+        return Err(format!(
+            "bad_lang: livevoice file_prefix {prefix} does not match {stem}"
+        ));
     }
     match prefix_language(prefix) {
         Some(expected) if expected == voice.language => {}
@@ -674,7 +780,9 @@ fn pack_ok(id: &str) -> bool {
 }
 
 fn kokoro_langs() -> [&'static str; 9] {
-    ["en-us", "en-gb", "es", "fr-fr", "hi", "it", "ja", "pt-br", "zh"]
+    [
+        "en-us", "en-gb", "es", "fr-fr", "hi", "it", "ja", "pt-br", "zh",
+    ]
 }
 
 fn kokoro_lang(code: &str) -> Option<&'static str> {

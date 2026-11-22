@@ -65,7 +65,7 @@ if ($Check) {
     return
 }
 if ($Service -ne 'Preview') {
-    foreach ($file in @($exe, $python, $environment.GEN_AUDIO_KOKORO_MODEL, $environment.GEN_AUDIO_KOKORO_VOICES)) {
+    foreach ($file in @($exe, $python)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             throw "Missing runtime dependency: $file. See README.md, Checkout-local deployment."
         }

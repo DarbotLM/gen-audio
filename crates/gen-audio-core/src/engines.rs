@@ -32,21 +32,20 @@ const ENGINES: &[EngineSpec] = &[
         kind: EngineKind::Synth,
         status: EngineStatus::Implemented,
         weights_bundled: false,
-        summary: "Python kokoro-onnx path. Needs local ONNX and voices files. Weights are not in this repo.",
+        summary: "DarbotLM kokoro-onnx 0.6.1 with timed, streaming, continuous, Misaki, and explicit-provider support. Weights are not in this repo.",
     },
     EngineSpec {
         id: "kokoro_dayour",
         kind: EngineKind::Synth,
         status: EngineStatus::Implemented,
         weights_bundled: false,
-        summary: "DarbotLM/kokoro KPipeline with Misaki G2P. Weights come from GEN_AUDIO_KOKORO_TORCH_DIR; not vendored here.",
-    },
+        summary: "DarbotLM Kokoro 0.9.4 with shared KModel, Misaki G2P, CPU/CUDA/MPS, and local or opt-in HF weights.",    },
     EngineSpec {
         id: "misaki",
         kind: EngineKind::G2p,
         status: EngineStatus::Library,
         weights_bundled: false,
-        summary: "dayour/misaki is G2P for Kokoro. It does not emit a waveform by itself.",
+        summary: "DarbotLM Misaki 0.9.4+py314.1 G2P for English, Japanese, Chinese, Korean, Vietnamese, and eSpeak. It does not emit a waveform.",
     },
     EngineSpec {
         id: "vibevoice",
@@ -104,8 +103,15 @@ mod tests {
             .filter(|spec| spec.status == EngineStatus::Implemented)
             .map(|spec| spec.id)
             .collect();
-        assert_eq!(implemented, vec!["kokoro_onnx", "kokoro_dayour", "vibevoice_realtime", "adaptive"]);
-        assert_eq!(engine("misaki").unwrap().kind, EngineKind::G2p);
+        assert_eq!(
+            implemented,
+            vec![
+                "kokoro_onnx",
+                "kokoro_dayour",
+                "vibevoice_realtime",
+                "adaptive"
+            ]
+        );        assert_eq!(engine("misaki").unwrap().kind, EngineKind::G2p);
         assert!(engines().iter().all(|spec| !spec.weights_bundled));
     }
 }

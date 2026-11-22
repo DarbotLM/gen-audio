@@ -8,7 +8,7 @@
       "params_schema": "frameworks/kokoro.v1.schema.json",
       "wired": true,
       "output_sample_rate": 24000,
-      "summary": "PyTorch Kokoro via KPipeline (hexgrad/Kokoro-82M) on CPU. Weighted blends are pre-mixed tensors, not torch.mean. Weights are not bundled; download only if GEN_AUDIO_ALLOW_HF_DOWNLOAD=1."
+      "summary": "DarbotLM Kokoro 0.9.4 KPipeline with a shared KModel on CPU, CUDA, or MPS. Weighted blends are pre-mixed tensors, not torch.mean. Local files are preferred; download only if GEN_AUDIO_ALLOW_HF_DOWNLOAD=1."
     },
     {
       "id": "kokoro_onnx",
@@ -16,7 +16,7 @@
       "engine_id": "kokoro_onnx",
       "params_schema": "frameworks/kokoro_onnx.v1.schema.json",
       "wired": true,
-      "summary": "kokoro-onnx speaks Misaki phonemes via create(..., is_phonemes=true), in chunks of at most 510 phonemes. A blend voice is the ndarray from blend_from_pack. A single voice passes its pack id. Files come from GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES."
+      "summary": "DarbotLM kokoro-onnx 0.6.1 supports timed, streaming and duration-export continuous synthesis, explicit ONNX providers, pause controls, and voice blends. Files come from GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES."
     },
     {
       "id": "misaki",
@@ -24,7 +24,7 @@
       "engine_id": "misaki",
       "params_schema": "frameworks/misaki.v1.schema.json",
       "wired": false,
-      "summary": "Misaki G2P for Kokoro. transformer is false on Python 3.14. custom_entries are merged into lexicon.golds. Phonemes are passed to Kokoro with is_phonemes. This row does not emit a waveform."
+      "summary": "DarbotLM Misaki 0.9.4+py314.1 supports English, Japanese, Chinese, Korean, Vietnamese, and eSpeak G2P. transformer is false on Python 3.14. custom_entries are merged into lexicon.golds. This row does not emit a waveform."
     },
     {
       "id": "vibevoice",

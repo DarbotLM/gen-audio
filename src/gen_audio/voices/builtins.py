@@ -79,8 +79,10 @@ _G2P_KEYS = {
     "custom_entries",
     "unk",
     "framework_lang_code",
+    "version",
+    "enable_en_g2p",
 }
-_BACKENDS = {"misaki-en", "misaki-ja", "misaki-zh", "espeak"}
+_BACKENDS = {"misaki-en", "misaki-ja", "misaki-zh", "misaki-ko", "misaki-vi", "espeak"}
 _REGISTERED = False
 
 
@@ -380,6 +382,8 @@ def validate_g2p_document(payload: dict, *, path: Path | None = None) -> G2pConf
     if espeak_language is not None:
         check_lang(espeak_language, label=f"{label} espeak_language")
     lexicon = optional_str(body, "lexicon", label=label, min_len=1, max_len=220)
+    g2p_version = optional_str(body, "version", label=label, min_len=3, max_len=16)
+    enable_en_g2p = optional_bool(body, "enable_en_g2p", label=label)
     if lexicon is not None:
         check_rel_path(lexicon, label=f"{label} lexicon")
     entries = _custom_entries(body.get("custom_entries"), label) if "custom_entries" in body else {}
@@ -392,6 +396,8 @@ def validate_g2p_document(payload: dict, *, path: Path | None = None) -> G2pConf
         transformer=transformer,
         espeak_fallback=espeak_fallback,
         espeak_language=espeak_language,
+        version=g2p_version,
+        enable_en_g2p=enable_en_g2p,
         label=label,
     )
     expected_code = {
@@ -399,7 +405,13 @@ def validate_g2p_document(payload: dict, *, path: Path | None = None) -> G2pConf
         ("misaki-en", "en-gb"): "b",
         ("misaki-ja", "ja"): "j",
         ("misaki-zh", "zh"): "z",
+        ("misaki-ko", "ko"): None,
+        ("misaki-vi", "vi"): None,
         ("espeak", "es"): "e",
+        ("espeak", "fr-fr"): "f",
+        ("espeak", "hi"): "h",
+        ("espeak", "it"): "i",
+        ("espeak", "pt-br"): "p",
     }.get((backend, variant or language))
     if framework_lang_code != expected_code:
         raise VoiceError(
@@ -421,6 +433,8 @@ def validate_g2p_document(payload: dict, *, path: Path | None = None) -> G2pConf
         custom_entries=MappingProxyType(entries),
         unk=unk,
         framework_lang_code=framework_lang_code,
+        version=g2p_version,
+        enable_en_g2p=enable_en_g2p,
         path=path,
     )
 
@@ -430,7 +444,7 @@ def prepare_kokoro(voice, library: Path | None = None) -> SynthesisPlan:
 
     missing: list[str] = []
     if importlib.util.find_spec("kokoro") is None:
-        missing.append("kokoro package is not installed")
+        missing.append("kokoro package is not installed (pip install 'gen-audio[kokoro-torch]')")
     if importlib.util.find_spec("misaki") is None:
         missing.append("misaki is not installed; kokoro will not invent phonemes")
     files, absent = _existing_assets(voice, library)
@@ -446,7 +460,9 @@ def prepare_kokoro(voice, library: Path | None = None) -> SynthesisPlan:
 def prepare_kokoro_onnx(voice, library: Path | None = None) -> SynthesisPlan:
     files, missing = _kokoro_onnx_files(voice, library)
     if importlib.util.find_spec("kokoro_onnx") is None:
-        missing.append("kokoro-onnx package is not installed (pip install 'gen-audio[kokoro]')")
+        missing.append(
+            "kokoro-onnx package is not installed (pip install 'gen-audio[kokoro-onnx]')"
+        )
     return _plan(voice, "kokoro_onnx", missing, files, executable=not missing)
 
 
@@ -478,6 +494,8 @@ def prepare_misaki(config, library: Path | None = None) -> SynthesisPlan:
                 "variant": config.variant,
                 "british": config.british,
                 "espeak_fallback": config.espeak_fallback,
+                "version": config.version,
+                "enable_en_g2p": config.enable_en_g2p,
             }
         ),
         resolved_files=MappingProxyType(files),
@@ -698,6 +716,8 @@ def _check_g2p_backend(
     transformer: bool | None,
     espeak_fallback: bool | None,
     espeak_language: str | None,
+    version: str | None,
+    enable_en_g2p: bool | None,
     label: str,
 ) -> None:
     if backend == "misaki-en":
@@ -711,14 +731,44 @@ def _check_g2p_backend(
             raise VoiceError(f"{label} espeak_language must match the English variant")
         if not espeak_fallback and espeak_language is not None:
             raise VoiceError(f"{label} espeak_language is only set when espeak_fallback is true")
+        if version is not None or enable_en_g2p is not None:
+            raise VoiceError(f"{label} version and enable_en_g2p do not apply to English Misaki")
         return
     if british or transformer:
         raise VoiceError(f"{label} british and transformer apply to English Misaki")
-    if backend == "misaki-ja" and language != "ja":
-        raise VoiceError(f"{label} misaki-ja language must be ja")
-    if backend == "misaki-zh" and language != "zh":
-        raise VoiceError(f"{label} misaki-zh language must be zh")
+    if backend == "misaki-ja":
+        if language != "ja":
+            raise VoiceError(f"{label} misaki-ja language must be ja")
+        if version not in {None, "cutlet", "pyopenjtalk"}:
+            raise VoiceError(f"{label} misaki-ja version must be cutlet or pyopenjtalk")
+        if enable_en_g2p is not None:
+            raise VoiceError(f"{label} enable_en_g2p does not apply to Japanese Misaki")
+        return
+    if backend == "misaki-zh":
+        if language != "zh":
+            raise VoiceError(f"{label} misaki-zh language must be zh")
+        if version not in {None, "legacy", "1.1"}:
+            raise VoiceError(f"{label} misaki-zh version must be legacy or 1.1")
+        if enable_en_g2p is not None:
+            raise VoiceError(f"{label} enable_en_g2p does not apply to Chinese Misaki")
+        return
+    if backend == "misaki-ko":
+        if language != "ko":
+            raise VoiceError(f"{label} misaki-ko language must be ko")
+        if version is not None or enable_en_g2p is not None:
+            raise VoiceError(f"{label} misaki-ko has no version or English toggle")
+        return
+    if backend == "misaki-vi":
+        if language != "vi":
+            raise VoiceError(f"{label} misaki-vi language must be vi")
+        if version is not None:
+            raise VoiceError(f"{label} misaki-vi version is unsupported")
+        if enable_en_g2p is None:
+            raise VoiceError(f"{label} misaki-vi needs enable_en_g2p")
+        return
     if backend == "espeak":
+        if version is not None or enable_en_g2p is not None:
+            raise VoiceError(f"{label} espeak has no Misaki version or English toggle")
         if espeak_fallback is not True or espeak_language is None:
             raise VoiceError(f"{label} espeak backend needs espeak_fallback and espeak_language")
         if espeak_language != language and not espeak_language.startswith(language + "-"):

@@ -255,7 +255,20 @@ static UID_PROP: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
 fn tool(name: &str, description: &str) -> Value {
     let (properties, required) = match name {
         "synth" => (
-            json!({"script": {"type": "string"}, "castMap": {"type": "string"}, "output": {"type": "string"}}),
+            json!({
+                "script": {"type": "string"},
+                "castMap": {"type": "string"},
+                "output": {"type": "string"},
+                "provider": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*ExecutionProvider$"},
+                "vocab": {"type": "string"},
+                "trim": {"type": "boolean"},
+                "continuous": {"type": "boolean"},
+                "misakiG2p": {"type": "boolean"},
+                "sentencePause": {"type": "number", "minimum": 0, "maximum": 5},
+                "clausePause": {"type": "number", "minimum": 0, "maximum": 5},
+                "gap": {"type": "number", "minimum": 0, "maximum": 30},
+                "improve": {"type": "boolean"}
+            }),
             json!(["output"]),
         ),
         "improve" => (
@@ -308,7 +321,7 @@ fn tool(name: &str, description: &str) -> Value {
             json!(["agents", "voice"]),
         ),
         "ui_generate" => (
-            json!({"agents": {"type": "array"}, "voice": {"type": "string"}, "durationMin": {"type": "integer"}, "duration_s": {"type": "number"}, "prompt": {"type": "string"}, "promptNote": {"type": "string"}, "prompt_ref": {"type": "string"}, "focus": {"type": "boolean"}, "cancel": {"type": "boolean"}, "job": {"type": "string"}}),
+            json!({"agents": {"type": "array"}, "voice": {"type": "string"}, "durationMin": {"type": "integer"}, "duration_s": {"type": "number"}, "prompt": {"type": "string"}, "promptNote": {"type": "string"}, "prompt_ref": {"type": "string"}, "focus": {"type": "boolean"}, "cancel": {"type": "boolean"}, "job": {"type": "string"}, "provider": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*ExecutionProvider$"}, "vocab": {"type": "string"}, "trim": {"type": "boolean"}, "continuous": {"type": "boolean"}, "misakiG2p": {"type": "boolean"}, "sentencePause": {"type": "number", "minimum": 0, "maximum": 5}, "clausePause": {"type": "number", "minimum": 0, "maximum": 5}}),
             json!(["agents", "voice"]),
         ),
         "ui_compare" => (
@@ -404,7 +417,20 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
 /// inputSchema properties (tested): the UI and agents speak one contract.
 fn allowed_arguments(name: &str) -> &'static [&'static str] {
     match name {
-        "synth" => &["script", "castMap", "output"],
+        "synth" => &[
+            "script",
+            "castMap",
+            "output",
+            "provider",
+            "vocab",
+            "trim",
+            "continuous",
+            "misakiG2p",
+            "sentencePause",
+            "clausePause",
+            "gap",
+            "improve",
+        ],
         "improve" => &["input", "output"],
         "spectrogram" => &["before", "after"],
         "cube_revision" => &["input", "output", "maxSteps"],
@@ -437,6 +463,13 @@ fn allowed_arguments(name: &str) -> &'static [&'static str] {
             "focus",
             "cancel",
             "job",
+            "provider",
+            "vocab",
+            "trim",
+            "continuous",
+            "misakiG2p",
+            "sentencePause",
+            "clausePause",
         ],
         "ui_compare" => &["uids", "select"],
         "viewport_get" => &[],

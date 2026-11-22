@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0.0",
+  "id": "misaki.vi",
+  "framework": "misaki",
+  "language": "vi",
+  "backend": "misaki-vi",
+  "espeak_fallback": true,
+  "enable_en_g2p": true
+}

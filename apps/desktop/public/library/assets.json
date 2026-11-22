@@ -560,7 +560,7 @@
         "body": {
           "engineId": "misaki",
           "status": "library",
-          "summary": "misaki is grapheme-to-phoneme for Kokoro. G2P only: it emits phonemes, not a waveform. Its audio is the misaki→kokoro clip."
+          "summary": "DarbotLM Misaki 0.9.4+py314.1 is G2P-only for English, Japanese, Chinese, Korean, Vietnamese, and eSpeak languages; it emits phonemes, not a waveform."
         },
         "id": "engine-misaki",
         "kind": "EngineStatus",
@@ -1626,16 +1626,16 @@
       "body": {
         "body": {
           "engineId": "kokoro_dayour",
-          "status": "library",
-          "summary": "dayour/kokoro torch runtime. Its real Library WAV and rev 3 cube ship here. Not vendored; this repo has no synth adapter."
+          "status": "implemented",
+          "summary": "DarbotLM Kokoro 0.9.4 uses a shared KModel and Misaki G2P on CPU, CUDA, or MPS. Local config, weights, and voice packs are preferred; HF downloads remain opt-in."
         },
         "id": "engine-kokoro-dayour",
         "kind": "EngineStatus",
-        "title": "dayour/kokoro"
+        "title": "DarbotLM/kokoro"
       },
       "display": {
         "glyph": "⣋⢀",
-        "title": "dayour/kokoro"
+        "title": "DarbotLM/kokoro"
       },
       "fields": {
         "card_id": "engine-kokoro-dayour",
@@ -3443,16 +3443,14 @@
     },
     {
       "body": {
-        "label": "dayour/kokoro (KPipeline + misaki)",
-        "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-        "synth_adapter": true,
+        "label": "DarbotLM/kokoro",
+        "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",        "synth_adapter": true,
         "unavailable": false,
         "waveform": true
       },
       "display": {
         "glyph": "⣗⡡",
-        "title": "dayour/kokoro (KPipeline + misaki)"
-      },
+        "title": "DarbotLM/kokoro"      },
       "fields": {
         "model_id": "kokoro_dayour",
         "waveform": true
@@ -3478,7 +3476,7 @@
     {
       "body": {
         "label": "kokoro-onnx",
-        "note": "Python kokoro-onnx path. Needs local ONNX and voices files. Weights are not in this repo.",
+        "note": "DarbotLM kokoro-onnx 0.6.1 with timed, streaming, continuous, Misaki, and explicit-provider support. Weights stay local.",
         "synth_adapter": true,
         "unavailable": false,
         "waveform": true
@@ -3594,7 +3592,7 @@
     {
       "body": {
         "availability": {
-          "reason": "G2P only, used offline for the misaki→kokoro clip; no in-app adapter",
+          "reason": "G2P only, used by Kokoro; no in-app waveform adapter",
           "status": "offline_only"
         },
         "label": "misaki (G2P, not a waveform)",

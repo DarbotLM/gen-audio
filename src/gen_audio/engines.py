@@ -24,9 +24,9 @@ ENGINES: dict[str, EngineSpec] = {
         kind="synth",
         status="implemented",
         summary=(
-            "Multi-turn WAV synthesis through the kokoro-onnx package. "
-            "Requires local model and voice files via CLI flags or "
-            "GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES."
+            "DarbotLM kokoro-onnx 0.6.1: timed, streaming, continuous and "
+            "provider-selected ONNX synthesis. Requires local model and voice "
+            "files; ONNX_PROVIDER selects CPU/CUDA/other installed providers."
         ),
     ),
     "kokoro_dayour": EngineSpec(
@@ -34,9 +34,9 @@ ENGINES: dict[str, EngineSpec] = {
         kind="synth",
         status="implemented",
         summary=(
-            "dayour/kokoro KPipeline on CPU. Misaki is assigned to pipeline.g2p. "
-            "Weights are not vendored; fetch hexgrad/Kokoro-82M only when "
-            "GEN_AUDIO_ALLOW_HF_DOWNLOAD=1, otherwise use a local .pt pack."
+            "DarbotLM Kokoro 0.9.4 KPipeline with one shared KModel and "
+            "CPU/CUDA/MPS selection. Misaki is assigned explicitly; local config, "
+            "weights, and .pt packs are preferred, with HF downloads opt-in."
         ),
     ),
     "vibevoice_realtime": EngineSpec(
@@ -62,9 +62,9 @@ ENGINES: dict[str, EngineSpec] = {
         kind="g2p",
         status="library",
         summary=(
-            "Misaki grapheme-to-phoneme for Kokoro. custom_entries merge into "
-            "lexicon.golds. Kokoro receives those phonemes. Misaki does not "
-            "emit a waveform."
+            "DarbotLM Misaki 0.9.4+py314.1 grapheme-to-phoneme for English, "
+            "Japanese, Chinese, Korean, and Vietnamese plus eSpeak languages. "
+            "Transformer G2P stays disabled on Python 3.14; no waveform is emitted."
         ),
     ),
     "vibevoice": EngineSpec(

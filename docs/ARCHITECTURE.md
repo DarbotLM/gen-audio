@@ -1,6 +1,6 @@
 # Architecture
 
-gen-audio is a small Python 3.14 toolkit (`requires-python` is `>=3.14,<3.15`). The installable import name is `gen_audio`. It turns a labeled script into a mono WAV when kokoro-onnx and local model files are available, and it can process a WAV you already have without any model.
+gen-audio is a small Python 3.14 toolkit (`requires-python` is `>=3.14,<3.15`). The installable import name is `gen_audio`. It turns a labeled script into a mono WAV through DarbotLM Kokoro ONNX or Kokoro PyTorch when the corresponding real weights are available, and it can process a WAV you already have without any model.
 
 The same floor applies to the spectrogram, the genaid-audio URL helpers, podcast script parsing, and any compare-list engine this package scores (VibeVoice, the PersonaPlex CPU stand-in `pocket_tts`, Magpie). genlm-audio, Gradio, and PersonaPlex are not vendored here. A process that imports `gen_audio` uses `>=3.14,<3.15`. Request limits, voice and model path confinement, checksum pins, and `/health` versus `/ready` live in `gen_audio.guards` and are described in `docs/genlm-audio/REVIEW-2026-10-06.md`.
 
@@ -12,9 +12,9 @@ The same floor applies to the spectrogram, the genaid-audio URL helpers, podcast
 
 | Id | Kind | In this package |
 | --- | --- | --- |
-| `kokoro_onnx` | waveform synth | `KokoroOnnxSynthesizer` calls `kokoro_onnx.Kokoro.create` per turn. You pass the ONNX file and the voices file. |
-| `kokoro_dayour` | waveform synth | dayour/kokoro `KPipeline` on CPU when the package and a local pack, or `GEN_AUDIO_ALLOW_HF_DOWNLOAD=1`, are present. Misaki is assigned to `pipeline.g2p`. |
-| `misaki` | grapheme-to-phoneme | Kokoro's G2P library (hexgrad/misaki). Not a waveform synth. kokoro-onnx phonemizes inside its own dependency tree. This package does not import misaki. |
+| `kokoro_onnx` | waveform synth | `KokoroOnnxSynthesizer` uses pinned DarbotLM `kokoro-onnx 0.6.1`: timed, streaming, continuous-window, provider-selected, Misaki-capable ONNX synthesis. |
+| `kokoro_dayour` | waveform synth | DarbotLM `Kokoro 0.9.4`: one shared `KModel`, one `KPipeline` per language, explicit Misaki G2P, CPU/CUDA/MPS selection, and local `.pt`/weighted-blend support. |
+| `misaki` | grapheme-to-phoneme | DarbotLM `Misaki 0.9.4+py314.1` for English, Japanese, Chinese, Korean, Vietnamese, and Kokoro eSpeak languages. It is never a waveform synth. |
 | `vibevoice` | waveform synth | Adapter calls the local VibeVoice processor when `GEN_AUDIO_VIBEVOICE_MODEL` is set. Weights stay on disk. |
 | `magpie` | waveform synth | NVIDIA NeMo Speech CLI with Magpie and NanoCodec. The configured NeMo Python adapter can also run on CUDA. |
 | `pocket_tts` | waveform synth | Kyutai Pocket TTS model with local CPU inference. |
@@ -31,24 +31,49 @@ Engine adapters load their runtimes when rendering is requested. Importing `gen_
 1. Parse the script (`gen_audio.cast.parse_script`).
 2. Load the cast map. `engine` must be `kokoro_onnx`.
 3. Resolve each turn's speaker id to `voice`, `lang`, and `speed`.
-4. Call `Kokoro.create(text, voice=..., speed=..., lang=...)` once per turn.
-5. Concatenate mono float audio with `gap_s` seconds of silence between turns (default 0.35). If a later turn reports a different sample rate, that turn is resampled to the first turn's rate before the join.
-6. Optionally run the publish chain (`improve_publish=True` or `--improve`).
+4. Resolve a legacy pack id or a `voice_id` descriptor. A descriptor can provide a weighted style-vector blend and a Misaki config.
+5. By default call `Kokoro.create_timed(text, ...)` once per turn. The Misaki path passes `is_phonemes=True`; `stream_described` and `stream_with_g2p` expose `create_stream` without inventing file output.
+6. Validate the fork's finite/non-empty output and concatenate mono float audio with `gap_s` seconds of silence. If a later turn reports a different sample rate, that turn is resampled to the first turn's rate before the join.
+7. Record absolute phoneme timings when the graph exposes a duration output. Older timing-free graphs return an empty list.
+8. Optionally run the publish chain (`improve_publish=True` or `--improve`).
 
 The synth CLI writes a float32 WAV when `--improve` is off, because PCM_16 clips anything outside [-1, 1] and the publish chain has not run yet. With `--improve`, the file is PCM_16 at 24 kHz after the peak has been brought to about 0.89.
 
 kokoro-onnx v1 reports 24 kHz. The code keeps whatever rate `create` returns, and the publish chain is still what forces the 24 kHz deliverable. That matters for WAVs that did not come from Kokoro.
+`continuous=True` is available only on a duration-export graph; the fork raises
+before synthesis when that capability is missing. `trim`, sentence/clause pauses,
+explicit vocabulary, eSpeak paths, provider selection, and Misaki are first-class
+CLI/MCP options. Invalid or non-finite audio and invalid duration vectors are
+errors from the fork, not inputs to the publish chain.
 
 Paths:
 
 * `--model` or `GEN_AUDIO_KOKORO_MODEL`
 * `--voices` or `GEN_AUDIO_KOKORO_VOICES`
+* `--vocab` or `GEN_AUDIO_KOKORO_VOCAB`
+* `--provider` or `ONNX_PROVIDER`
 
-There is no download step. A missing file raises `FileNotFoundError` before the optional package is imported. A missing install raises `ImportError` telling you to `pip install 'gen-audio[kokoro]'`.
+There is no model download step. A missing file raises `FileNotFoundError` before the optional package is imported. A missing install raises `ImportError` telling you to install `gen-audio[kokoro-onnx]`.
 
 The example cast map uses `af_heart` and `am_michael` for speakers 1 and 2. Those are Kokoro v1 voice ids. kokoro-onnx raises if the loaded voice pack does not contain the id. The same file also names a VibeVoice speaker and a character-to-voice table for other frameworks. That layer is documented in [VOICES.md](VOICES.md).
 
 Kokoro and `kokoro_onnx` speeds are checked against 0.5–2.0 at cast-map load, which is the range kokoro-onnx asserts. Other frameworks accept a finite speed greater than 0 and at most 4 so an older map that always wrote `speed` still loads. That number is not their synthesis parameter.
+
+### Kokoro PyTorch path
+
+`KokoroTorchSession` loads one `KModel` and reuses it across the script's
+language pipelines. `GEN_AUDIO_KOKORO_TORCH_CONFIG` plus
+`GEN_AUDIO_KOKORO_TORCH_WEIGHTS` select local checkpoint files; both must be
+set together. `GEN_AUDIO_KOKORO_REPO` chooses the Hugging Face repository when
+those local files are absent. A `.pt` voice under `GENAID_VOICES_DIR`, or a
+weighted tensor from a descriptor, is passed directly to `KPipeline`.
+
+With `GEN_AUDIO_ALLOW_HF_DOWNLOAD=0` (the node default), `HF_HUB_OFFLINE` and
+`TRANSFORMERS_OFFLINE` are scoped around model and voice loading. Missing cache
+entries fail loudly; a network fallback is never silent. The renderer defaults
+to CPU and allows `auto`, `cuda`, `cuda:N`, or `mps` only through
+`GEN_AUDIO_KOKORO_DEVICE`. Explicit CUDA/MPS requests are refused when that
+device is unavailable.
 
 ## 24 kHz publish path
 

@@ -6,13 +6,18 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from gen_audio.artifacts import publish_copy
 from gen_audio.audio_io import write_wav
 from gen_audio.cast import load_cast_map, read_script
 from gen_audio.library_manifest import OUTSIDE, WRITE_HINT, file_facts, label_work_dir_paths, outside_repo_label
-from gen_audio.synth_kokoro_onnx import KokoroOnnxSynthesizer, resolve_model_paths
+from gen_audio.synth_kokoro_onnx import (
+    KokoroOnnxSynthesizer,
+    OnnxSynthesisOptions,
+    resolve_model_paths,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +29,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", type=Path, required=True, help="output WAV path")
     parser.add_argument("--model", help="path to the kokoro ONNX model (or GEN_AUDIO_KOKORO_MODEL)")
     parser.add_argument("--voices", help="path to the kokoro voices bin (or GEN_AUDIO_KOKORO_VOICES)")
+    parser.add_argument("--vocab", help="path to an exported Kokoro vocabulary config")
+    parser.add_argument("--provider", help="ONNX Runtime execution provider")
+    parser.add_argument("--espeak-lib", help="explicit eSpeak shared library path")
+    parser.add_argument("--espeak-data", help="explicit eSpeak data directory")
+    parser.add_argument(
+        "--trim",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="trim model silence (default: GEN_AUDIO_KOKORO_TRIM or true)",
+    )
+    parser.add_argument(
+        "--continuous",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="use overlapping continuous windows (requires a duration-export graph)",
+    )
+    parser.add_argument(
+        "--misaki-g2p",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="phonemize with the pinned Misaki config before ONNX inference",
+    )
+    parser.add_argument("--sentence-pause", type=float)
+    parser.add_argument("--clause-pause", type=float)
     parser.add_argument("--gap", type=float, default=0.35, help="silence between turns, in seconds")
     parser.add_argument(
         "--improve",
@@ -69,15 +98,49 @@ def main(argv: list[str] | None = None) -> int:
         turns = read_script(args.script)
         cast = load_cast_map(args.cast_map)
         model_path, voices_path = resolve_model_paths(args.model, args.voices)
-        synth = KokoroOnnxSynthesizer(model_path, voices_path)
-        result = synth.synthesize_turns(turns, cast, gap_s=args.gap, improve_publish=args.improve)
+        synth = KokoroOnnxSynthesizer(
+            model_path,
+            voices_path,
+            vocab_config=args.vocab,
+            espeak_lib=args.espeak_lib,
+            espeak_data=args.espeak_data,
+            provider=args.provider,
+        )
+        controls = OnnxSynthesisOptions.from_env()
+        changes = {
+            "trim": args.trim,
+            "continuous": args.continuous,
+            "use_misaki": args.misaki_g2p,
+            "sentence_pause": args.sentence_pause,
+            "clause_pause": args.clause_pause,
+        }
+        controls = replace(
+            controls,
+            **{name: value for name, value in changes.items() if value is not None},
+        )
+        result = synth.synthesize_turns(
+            turns,
+            cast,
+            gap_s=args.gap,
+            improve_publish=args.improve,
+            options=controls,
+            library=os.environ.get("GENAID_VOICES_DIR"),
+        )
         # Raw engine samples can sit outside [-1, 1]. PCM_16 would clip them
         # before improve() gets a chance to set the 0.89 peak. Float keeps the
         # render; the publish chain writes PCM_16 once the peak is limited.
         subtype = "PCM_16" if result.improved else "FLOAT"
         write_wav(args.output, result.audio, result.sample_rate, subtype=subtype)
         manifest_path = args.output.with_suffix(".json")
-        inputs = {"script": args.script, "cast_map": args.cast_map, "model": model_path, "voices": voices_path, "output": args.output}
+        inputs = {
+            "script": args.script,
+            "cast_map": args.cast_map,
+            "model": model_path,
+            "voices": voices_path,
+            "output": args.output,
+        }
+        if args.vocab:
+            inputs["vocab"] = Path(args.vocab)
         payload = sidecar_payload(result.manifest(), subtype, inputs, REPO_ROOT)
         manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         durable_wav = publish_copy(args.output, args.artifact_dir)

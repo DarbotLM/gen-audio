@@ -286,11 +286,13 @@ through `src`.
     they fold into `voice_model.body.availability`, so "no fake audio" is
     structural.
   - A voice model is `status: ok` only when Generate can produce it here
-    (`synth_adapter`, today only `kokoro_onnx`). A model with no in-app
-    adapter whose clips were rendered elsewhere (`kokoro_dayour`, and the G2P
-    `misaki`) gets `availability {status: "offline_only", reason}` and status
-    `unavailable`; its clips' provenance says "offline run" and its cubes show
-    as offline runs. Tested in `asset_v1.rs` and the npm E test.
+    (`synth_adapter`, today `kokoro_onnx` and `kokoro_dayour`). A model with
+    no in-app adapter whose clips were rendered elsewhere (VibeVoice and the
+    G2P-only `misaki`) gets `availability {status: "offline_only", reason}` and
+    status `unavailable`; its historical clip provenance can still say "offline
+    run". Kokoro's historical clips keep that provenance, but its current voice
+    model is `ok` because this checkout can render new clips. Tested in
+    `asset_v1.rs` and the npm E test.
   - VoiceProfile → `voice_profile`:
     - `fields` hold the persona text plus the voice_model uid.
     - `body` is the VoiceProfile document itself.
@@ -303,7 +305,7 @@ through `src`.
     `kind` becomes `fields.view`. `viewport.example.json` keeps `id` and gains
     `uid` alongside it, and it still validates against
     `card-viewport.schema.json`.
-  - The misaki clip's voice model is `kokoro_dayour` (dayour/kokoro
+  - The misaki clip's voice model is `kokoro_dayour` (DarbotLM/kokoro
     `KPipeline.generate_from_tokens`), with `provenance.g2p_model` = misaki.
   - Cubes older than rev 2 store no `bin_frames`, so it is inferred as
     `floor(duration·sr / time_bins)` and flagged in

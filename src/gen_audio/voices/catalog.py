@@ -240,7 +240,11 @@ def _g2p_agrees(voice: VoiceDescriptor, config: G2pConfig) -> None:
         return
     if lang == "zh" and config.backend == "misaki-zh":
         return
-    if lang in {"en-us", "en-gb", "ja", "zh"}:
+    if lang == "ko" and config.backend == "misaki-ko":
+        return
+    if lang == "vi" and config.backend == "misaki-vi":
+        return
+    if lang in {"en-us", "en-gb", "ja", "zh", "ko", "vi"}:
         raise VoiceError(f"{voice.id} g2p {config.id} does not match language {lang}")
     if config.backend != "espeak":
         raise VoiceError(f"{voice.id} language {lang} needs an espeak G2P config")

@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0.0",
+  "id": "misaki.hi",
+  "framework": "misaki",
+  "language": "hi",
+  "backend": "espeak",
+  "espeak_fallback": true,
+  "espeak_language": "hi",
+  "framework_lang_code": "h"
+}

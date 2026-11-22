@@ -8,10 +8,12 @@ import sys
 from pathlib import Path
 
 from gen_audio.cast import load_cast_map
+from gen_audio.guards import enforce_text_limit
 from gen_audio.voices.catalog import library_root, load_catalog, missing_assets
 from gen_audio.voices.errors import VoiceError
-from gen_audio.voices.model import default_catalog_path
+from gen_audio.voices.model import default_catalog_path, g2p_config_path
 from gen_audio.voices.registry import list_frameworks
+from gen_audio.voices.runtime import phonemize_with_misaki
 from gen_audio.voices.resolve import validate_cast
 
 DEFAULT_CATALOG = default_catalog_path()
@@ -26,6 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     frameworks = sub.add_parser("frameworks", help="print the voice framework registry")
     frameworks.set_defaults(func=_frameworks)
+
+    phonemize = sub.add_parser("phonemize", help="convert real text with one Misaki config")
+    phonemize.add_argument("config", help="shipped config id or a JSON file path")
+    text = phonemize.add_mutually_exclusive_group(required=True)
+    text.add_argument("--text")
+    text.add_argument("--text-file", type=Path)
+    phonemize.add_argument("--library", type=Path, help="voice library for an optional custom lexicon")
+    phonemize.set_defaults(func=_phonemize)
 
     listed = sub.add_parser("list", help="print voice ids from a catalog as JSON")
     listed.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
@@ -83,6 +93,33 @@ def _frameworks(_args) -> int:
         engine = spec.engine_id or "-"
         wired = "wired" if spec.wired else "schema"
         print(f"{spec.id}\t{spec.kind}\t{engine}\t{wired}\t{spec.summary}")
+    return 0
+
+
+def _phonemize(args) -> int:
+    from gen_audio.voices.model import load_g2p
+
+    supplied = Path(args.config)
+    config_path = supplied if supplied.is_file() else g2p_config_path(args.config)
+    config = load_g2p(config_path)
+    source = args.text
+    if args.text_file is not None:
+        source = args.text_file.read_text(encoding="utf-8-sig")
+    enforce_text_limit(source, "segment")
+    phonemes = phonemize_with_misaki(source, config, library=args.library)
+    sys.stdout.write(
+        json.dumps(
+            {
+                "id": config.id,
+                "language": config.language,
+                "backend": config.backend,
+                "version": config.version,
+                "phonemes": phonemes,
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
     return 0
 
 

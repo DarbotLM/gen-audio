@@ -531,6 +531,10 @@ function Install-DependencySet {
     Assert-MsvcBuildToolsAvailable
     $git = Get-Tool @('git.exe')
     if (-not $git) { Install-WingetPackage -Id 'Git.Git' }
+    if (-not (Get-Tool @('gh.exe'))) {
+        Install-WingetPackage -Id 'GitHub.cli'
+    }
+    if (-not (Get-Tool @('gh.exe'))) { throw 'GitHub CLI is required to install the private DarbotLM speech wheels.' }
     $node = Install-Node
     if (-not (Get-Tool @('npm.cmd'))) { throw "npm was not found beside $node." }
     Install-Uv
@@ -563,7 +567,7 @@ function Install-DependencySet {
         Select-Object -First 1
     if (-not $webview) { Install-WingetPackage -Id 'Microsoft.EdgeWebView2Runtime' -Machine }
     Initialize-PackageNetwork
-    Write-ToolboxLog 'OK' "git=$(& git --version); node=$(& node --version); npm=$(& npm.cmd --version)"
+    Write-ToolboxLog 'OK' "git=$(& git --version); gh=$(& gh --version | Select-Object -First 1); node=$(& node --version); npm=$(& npm.cmd --version)"
     Write-ToolboxLog 'OK' "uv=$(& uv --version); cargo=$(& cargo --version); ffmpeg=$((& ffmpeg -version)[0])"
 }
 
@@ -620,6 +624,74 @@ function Install-ModelSet {
     }
 }
 
+function Install-DarbotSpeechWheels {
+    param([Parameter(Mandatory = $true)][string]$RequirementsPath)
+    $gh = Get-Tool @('gh.exe')
+    if (-not $gh) { throw 'GitHub CLI is required for the private DarbotLM wheel set.' }
+    & $gh auth status --hostname github.com *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'GitHub CLI is not authenticated for github.com. Run gh auth login before bootstrapping Gen-Audio.'
+    }
+    $wheelRoot = Join-Path $script:RuntimeDir 'speech-wheels'
+    New-Item -ItemType Directory -Force -Path $wheelRoot | Out-Null
+    $targets = @(
+        @{
+            Repository = 'DarbotLM/misaki'
+            Tag = 'py314-2026.09.17'
+            Name = 'misaki-0.9.4+py314.1-py3-none-any.whl'
+            Hash = '931dad3ff39b246a3920963b2812f03994f6cef49de71467670f39a10f964c2f'
+            Url = 'https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl'
+        },
+        @{
+            Repository = 'DarbotLM/kokoro'
+            Tag = 'py314-2026.09.17'
+            Name = 'kokoro-0.9.4-py3-none-any.whl'
+            Hash = 'f43902798ad657b619f6a955f4ea3d9cead771b1a58e4082023c29bfd486626f'
+            Url = 'https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl'
+        },
+        @{
+            Repository = 'DarbotLM/kokoro-onnx'
+            Tag = 'py314-2026.09.17'
+            Name = 'kokoro_onnx-0.6.1-py3-none-any.whl'
+            Hash = '398c623fa238acb508798a2887022d5a5216de58c7bbe0f2a0d7f28f9de08c1d'
+            Url = 'https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl'
+        }
+    )
+    $requirements = [IO.File]::ReadAllText($RequirementsPath)
+    foreach ($target in $targets) {
+        $destination = Join-Path $wheelRoot $target.Name
+        $valid = (Test-Path -LiteralPath $destination -PathType Leaf) -and
+            ((Get-FileSha256 $destination) -eq $target.Hash)
+        if (-not $valid) {
+            Invoke-External $gh @(
+                'release', 'download', $target.Tag,
+                '--repo', $target.Repository,
+                '--pattern', $target.Name,
+                '--dir', $wheelRoot,
+                '--clobber'
+            ) $RepoRoot
+        }
+        if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+            throw "DarbotLM wheel was not downloaded: $($target.Name)"
+        }
+        if ((Get-FileSha256 $destination) -ne $target.Hash) {
+            throw "DarbotLM wheel checksum mismatch: $($target.Name)"
+        }
+        $count = [regex]::Matches($requirements, [regex]::Escape($target.Url)).Count
+        if ($count -lt 1) {
+            throw "Frozen requirements do not contain $($target.Url)"
+        }
+        $fileUri = ([Uri]::new((Get-Item -LiteralPath $destination).FullName)).AbsoluteUri
+        $requirements = $requirements.Replace($target.Url, $fileUri)
+        Write-ToolboxLog 'OK' "$($target.Name) bytes=$((Get-Item -LiteralPath $destination).Length) sha256=$($target.Hash)"
+    }
+    [IO.File]::WriteAllText(
+        $RequirementsPath,
+        $requirements,
+        (New-Object Text.UTF8Encoding($false))
+    )
+}
+
 function Build-Framework {
     Install-DependencySet
     Write-ToolboxLog 'STEP' 'Installing and building the full Gen-Audio framework.'
@@ -647,6 +719,7 @@ function Build-Framework {
         '--format', 'requirements-txt', '--no-emit-project',
         '--output-file', $fullRequirements
     ) $RepoRoot
+    Install-DarbotSpeechWheels -RequirementsPath $fullRequirements
     $requirementLines = [IO.File]::ReadAllLines($fullRequirements)
     $torchStart = [array]::IndexOf($requirementLines, @($requirementLines | Where-Object { $_ -match '^torch==' })[0])
     if ($torchStart -lt 0) { throw 'Frozen requirements did not contain torch.' }
@@ -668,13 +741,11 @@ function Build-Framework {
         '--index-url', $script:TorchIndexUrl,
         '-r', $torchRequirements
     ) $RepoRoot
-    # uv resolves the lock while ignoring upper bounds on a dependency's
-    # Requires-Python (kokoro-onnx 0.6.1 declares <3.14), and CI runs that lock on
-    # 3.14 through uv sync. pip enforces the bound, so the same hash-pinned set
-    # failed on a clean node; follow the lock's resolution instead.
+    # A few pure-Python Misaki dependencies (notably jieba) publish only an
+    # sdist. pip still prefers wheels whenever the frozen lock provides one.
     $pipArguments = @(
         '-m', 'pip', 'install', '--disable-pip-version-check',
-        '--only-binary=:all:', '--require-hashes', '--ignore-requires-python',
+        '--prefer-binary', '--require-hashes',
         '-r', $requirements
     )
     if ($env:PIP_INDEX_URL) {
@@ -682,13 +753,7 @@ function Build-Framework {
     }
     Invoke-External $python $pipArguments $RepoRoot
     Invoke-External $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', '.') $RepoRoot
-    $speech = Initialize-SpeechSourceCheckout
-    Invoke-External $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', $speech['kokoro-onnx']) $RepoRoot
-    Invoke-External $uv @(
-        'sync', '--frozen', '--all-extras', '--offline',
-        '--no-install-project', '--inexact', '--no-install-package', 'kokoro-onnx'
-    ) $RepoRoot
-    Invoke-External $python @('-m', 'pip', 'check') $RepoRoot
+    Invoke-External $uv @('lock', '--check', '--offline') $RepoRoot    Invoke-External $python @('-m', 'pip', 'check') $RepoRoot
     Invoke-External (Get-Tool @('npm.cmd')) @('ci') (Join-Path $RepoRoot 'apps\desktop')
     Invoke-External (Get-Tool @('npm.cmd')) @('run', 'build') (Join-Path $RepoRoot 'apps\desktop')
     Invoke-External (Get-Tool @('cargo.exe')) @(
@@ -1183,6 +1248,14 @@ function Test-Framework {
     $names = @(
         'GEN_AUDIO_REPO', 'GEN_AUDIO_PYTHON', 'GEN_AUDIO_MODEL_DIR',
         'GEN_AUDIO_KOKORO_MODEL', 'GEN_AUDIO_KOKORO_VOICES',
+        'GEN_AUDIO_KOKORO_TORCH_CONFIG', 'GEN_AUDIO_KOKORO_TORCH_WEIGHTS',
+        'GEN_AUDIO_KOKORO_DEVICE', 'GEN_AUDIO_KOKORO_REPO',
+        'GEN_AUDIO_KOKORO_TRIM', 'GEN_AUDIO_KOKORO_USE_MISAKI',
+        'GEN_AUDIO_KOKORO_CONTINUOUS', 'GEN_AUDIO_KOKORO_SENTENCE_PAUSE',
+        'GEN_AUDIO_KOKORO_CLAUSE_PAUSE', 'GEN_AUDIO_ALLOW_HF_DOWNLOAD',
+        'GEN_AUDIO_KOKORO_VOCAB', 'GEN_AUDIO_KOKORO_ESPEAK_LIB',
+        'GEN_AUDIO_KOKORO_ESPEAK_DATA', 'GEN_AUDIO_KOKORO_DISABLE_COMPLEX',
+        'ONNX_PROVIDER', 'GENAID_VOICES_DIR', 'GEN_AUDIO_VOICE_CATALOG',
         'GENAID_MODEL_BASE', 'GEN_AUDIO_MCP_ADDR', 'GEN_AUDIO_MCP_ADDR_FILE',
         'GEN_AUDIO_WORK_DIR'
     )

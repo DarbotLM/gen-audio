@@ -20,7 +20,9 @@ pub const SLIDES: &[&str] = &[
     "pipeline",
 ];
 
-const CONNECTOR_IDS: &[&str] = &["mcp", "acp", "harness", "copilot", "claude", "gpt", "gemini", "local"];
+const CONNECTOR_IDS: &[&str] = &[
+    "mcp", "acp", "harness", "copilot", "claude", "gpt", "gemini", "local",
+];
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -233,17 +235,16 @@ const VOICE_MODELS: &[VoiceModel] = &[
         waveform: true,
         synth_adapter: true,
         unavailable: false,
-        note: "Python kokoro-onnx path. Needs local ONNX and voices files. Weights are not in this repo.",
+        note: "DarbotLM kokoro-onnx 0.6.1 with timed, streaming, continuous, Misaki, and explicit-provider support. Weights stay local.",
         offline_reason: None,
     },
     VoiceModel {
         id: "kokoro_dayour",
-        label: "dayour/kokoro (KPipeline + misaki)",
+        label: "DarbotLM/kokoro",
         waveform: true,
         synth_adapter: true,
         unavailable: false,
-        note: "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-        offline_reason: None,
+        note: "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",        offline_reason: None,
     },
     VoiceModel {
         id: "misaki",
@@ -252,7 +253,7 @@ const VOICE_MODELS: &[VoiceModel] = &[
         synth_adapter: false,
         unavailable: false,
         note: "Grapheme-to-phoneme for Kokoro. It does not emit a waveform by itself.",
-        offline_reason: Some("G2P only, used offline for the misaki\u{2192}kokoro clip; no in-app adapter"),
+        offline_reason: Some("G2P only, used by Kokoro; no in-app waveform adapter"),
     },
     VoiceModel {
         id: "vibevoice_realtime",
@@ -324,7 +325,7 @@ const LIBRARY: &[LibraryClipMeta] = &[
         wav_url: Some("/library/library_kokoro.wav"),
         cube_json_url: Some("/library/library_kokoro_cube3d.json"),
         sidecar_url: None,
-        summary: "Catalog says this clip is a real dayour/kokoro briefing rendered offline (dayour/kokoro torch, outside this app). This process does not open the WAV. No synth adapter in this repo.",
+        summary: "Catalog says this clip is a real historical dayour/kokoro briefing rendered outside this app. A current in-app Kokoro adapter exists, but this process does not rerender or open the WAV.",
     },
     LibraryClipMeta {
         id: "lib-misaki-kokoro",
@@ -487,13 +488,21 @@ mod tests {
             assert!(profile.get("cubeJsonUrl").is_none(), "{}", person.id);
             assert_eq!(profile["spectrogram2d"], "none", "{}", person.id);
             assert_eq!(profile["spectrogram3d"], "none", "{}", person.id);
-            assert!(profile["disclaimer"].as_str().unwrap_or_default().contains("No audio of this persona yet"), "{}", person.id);
+            assert!(
+                profile["disclaimer"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("No audio of this persona yet"),
+                "{}",
+                person.id
+            );
         }
     }
 
     #[test]
     fn catalog_serializes_camel_case_like_the_manifest() {
-        let clip = serde_json::to_value(library_clip("lib-misaki-kokoro").expect("clip")).expect("json");
+        let clip =
+            serde_json::to_value(library_clip("lib-misaki-kokoro").expect("clip")).expect("json");
         assert!(clip.get("engineId").is_some());
         assert!(clip.get("wavUrl").is_some());
         assert!(clip.get("cubeJsonUrl").is_some());

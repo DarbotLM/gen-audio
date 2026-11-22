@@ -63,11 +63,11 @@
       "id": "engine-kokoro-dayour",
       "uid": "ga:card:zoap44kodcb55zvwsw5cld4qwm",
       "kind": "EngineStatus",
-      "title": "dayour/kokoro",
+      "title": "DarbotLM/kokoro",
       "body": {
         "engineId": "kokoro_dayour",
-        "status": "library",
-        "summary": "dayour/kokoro torch runtime. Its real Library WAV and rev 3 cube ship here. Not vendored; this repo has no synth adapter."
+        "status": "implemented",
+        "summary": "DarbotLM Kokoro 0.9.4 uses a shared KModel and Misaki G2P on CPU, CUDA, or MPS. Local config, weights, and voice packs are preferred; HF downloads remain opt-in."
       }
     },
     {
@@ -78,7 +78,7 @@
       "body": {
         "engineId": "misaki",
         "status": "library",
-        "summary": "misaki is grapheme-to-phoneme for Kokoro. G2P only: it emits phonemes, not a waveform. Its audio is the misaki→kokoro clip."
+        "summary": "DarbotLM Misaki 0.9.4+py314.1 is G2P-only for English, Japanese, Chinese, Korean, Vietnamese, and eSpeak languages; it emits phonemes, not a waveform."
       }
     },
     {

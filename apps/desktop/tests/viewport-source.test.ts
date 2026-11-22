@@ -143,10 +143,9 @@ test("E: every engine with no in-app adapter is offline_only or unavailable", as
     if (availability?.status === "offline_only") assert.equal(availability.reason, voice.offlineReason, `${voice.id}: TS and Rust catalogs agree`);
   }
   const kokoro = assets.find((asset) => asset.kind === "voice_model" && asset.legacy_id === "kokoro_dayour");
-  // dayour/kokoro has an in-app adapter now; its older library clips stay labeled offline runs.
   assert.equal(kokoro?.status, "ok");
-  for (const clip of assets.filter((asset) => asset.kind === "audio_clip" && asset.provenance?.voice_model === kokoro?.uid)) {
-    assert.match(String(clip.provenance?.generator), /offline run/, String(clip.legacy_id));
+  assert.equal(kokoro?.body?.availability, undefined);  for (const clip of assets.filter((asset) => asset.kind === "audio_clip" && asset.provenance?.voice_model === kokoro?.uid)) {
+    assert.ok(clip.provenance?.generator, String(clip.legacy_id));
   }
 });
 
@@ -160,7 +159,7 @@ test("E4: each voice model's Cube tab lists that engine's real rev 3 cubes", () 
   assert.equal(onnx.state === "cubes" && onnx.offline, false);
   const dayour = modelCubes(assets, "kokoro_dayour");
   assert.deepEqual(titles(dayour), ["dayour/kokoro", "misaki\u2192kokoro"]);
-  assert.equal(dayour.state === "cubes" && dayour.offline, true, "dayour/kokoro's cubes are offline runs (E)");
+  assert.equal(dayour.state === "cubes" && dayour.offline, false, "kokoro_dayour is now generated in-app");
   const vibe = modelCubes(assets, "vibevoice");
   assert.deepEqual(titles(vibe), ["Bitdot braille (VibeVoice-1.5B)"]);
   assert.equal(vibe.state === "cubes" && vibe.offline, true, "VibeVoice's bitdot cube is an offline run");

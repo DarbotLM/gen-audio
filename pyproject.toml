@@ -23,8 +23,36 @@ dependencies = [
 
 [project.optional-dependencies]
 kokoro = [
-    "kokoro-onnx>=0.4.9",
-    "onnxruntime>=1.16",
+    "kokoro @ https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl",
+    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl",
+    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
+    "fugashi>=1.5.2,<2",
+    "jaconv>=0.5.0,<1",
+    "pyopenjtalk-plus>=0.4.1.post9,<1",
+]
+kokoro-onnx = [
+    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl",
+    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
+    "fugashi>=1.5.2,<2",
+    "jaconv>=0.5.0,<1",
+    "pyopenjtalk-plus>=0.4.1.post9,<1",
+]
+kokoro-torch = [
+    "kokoro @ https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl",
+    "misaki[en,zh] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
+    "fugashi>=1.5.2,<2",
+    "jaconv>=0.5.0,<1",
+    "pyopenjtalk-plus>=0.4.1.post9,<1",
+]
+kokoro-gpu = [
+    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl",
+    "onnxruntime-gpu[cuda,cudnn]>=1.30.0,<2; (platform_machine == 'x86_64' or platform_machine == 'AMD64') and sys_platform != 'darwin'",
+]
+misaki = [
+    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
+    "fugashi>=1.5.2,<2",
+    "jaconv>=0.5.0,<1",
+    "pyopenjtalk-plus>=0.4.1.post9,<1",
 ]
 dev = [
     "pytest>=8",
@@ -37,11 +65,11 @@ asr = [
 # located by env/config and never vendored). Inference only: datasets, gradio,
 # peft, ml-collections, absl-py, av and aiortc from upstream's pyproject are
 # fine-tuning / demo-UI deps and are deliberately left out. torch comes from
-# the PyTorch CPU index (see [tool.uv.sources]); every package must install
-# from a cp314 (or pure/abi3) wheel, never an sdist (see [tool.uv]).
+# the PyTorch CPU index (see [tool.uv.sources]); native inference packages must
+# resolve to CPython 3.14 wheels.
 vibevoice = [
     "torch==2.14.1",
-    "transformers==5.10.1",
+    "transformers>=5.17.0,<6",
     "accelerate==1.15.0",
     "diffusers==0.39.0",
     "librosa>=1.0.0",
@@ -72,8 +100,7 @@ where = ["src"]
 gen_audio = ["data/**/*.json"]
 
 [tool.uv]
-# Lock only for the hosts we ship to (box/CI linux x86_64, SMAX win AMD64), and
-# fail the lock if either one would need anything but a wheel.
+# Lock only for the hosts we ship to (box/CI linux x86_64, SMAX win AMD64).
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'win32' and platform_machine == 'AMD64'",
@@ -82,9 +109,9 @@ required-environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
-# Wheels only for every dependency; the gen-audio project itself is still
-# built (editable) from this checkout.
-no-build = true
+# PyPI publishes a few pure-Python Misaki dependencies (for example jieba and
+# UniDic metadata) only as sdists. uv still selects native wheels for compiled
+# packages; the lock file pins every resolved archive hash.
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]

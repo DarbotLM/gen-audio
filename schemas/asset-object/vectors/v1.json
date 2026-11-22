@@ -464,16 +464,14 @@
     {
       "envelope": {
         "body": {
-          "label": "dayour/kokoro (KPipeline + misaki)",
-          "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-          "synth_adapter": true,
+          "label": "DarbotLM/kokoro",
+          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",          "synth_adapter": true,
           "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "dayour/kokoro (KPipeline + misaki)"
-        },
+          "title": "DarbotLM/kokoro"        },
         "fields": {
           "model_id": "kokoro_dayour",
           "waveform": true
@@ -1184,16 +1182,14 @@
     {
       "envelope": {
         "body": {
-          "label": "dayour/kokoro (KPipeline + misaki)",
-          "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-          "synth_adapter": true,
+          "label": "DarbotLM/kokoro",
+          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",          "synth_adapter": true,
           "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "dayour/kokoro (KPipeline + misaki)"
-        },
+          "title": "DarbotLM/kokoro"        },
         "fields": {
           "model_id": "kokoro_dayour",
           "waveform": true
@@ -1225,16 +1221,14 @@
     {
       "envelope": {
         "body": {
-          "label": "dayour/kokoro (KPipeline + misaki)",
-          "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-          "synth_adapter": true,
+          "label": "DarbotLM/kokoro",
+          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",          "synth_adapter": true,
           "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "dayour/kokoro (KPipeline + misaki)"
-        },
+          "title": "DarbotLM/kokoro"        },
         "fields": {
           "model_id": "kokoro_dayour",
           "waveform": true
@@ -4632,16 +4626,14 @@
       "members": [
         {
           "body": {
-            "label": "dayour/kokoro (KPipeline + misaki)",
-            "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-            "synth_adapter": true,
+            "label": "DarbotLM/kokoro",
+            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",            "synth_adapter": true,
             "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "dayour/kokoro (KPipeline + misaki)"
-          },
+            "title": "DarbotLM/kokoro"          },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true
@@ -4667,7 +4659,7 @@
         {
           "body": {
             "availability": {
-              "reason": "G2P only, used offline for the misaki→kokoro clip; no in-app adapter",
+              "reason": "G2P only, used by Kokoro; no in-app waveform adapter",
               "status": "offline_only"
             },
             "label": "misaki (G2P, not a waveform)",
@@ -4903,16 +4895,14 @@
       "members": [
         {
           "body": {
-            "label": "dayour/kokoro (KPipeline + misaki)",
-            "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-            "synth_adapter": true,
+            "label": "DarbotLM/kokoro",
+            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",            "synth_adapter": true,
             "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "dayour/kokoro (KPipeline + misaki)"
-          },
+            "title": "DarbotLM/kokoro"          },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true
@@ -4938,7 +4928,7 @@
         {
           "body": {
             "availability": {
-              "reason": "G2P only, used offline for the misaki→kokoro clip; no in-app adapter",
+              "reason": "G2P only, used by Kokoro; no in-app waveform adapter",
               "status": "offline_only"
             },
             "label": "misaki (G2P, not a waveform)",
@@ -5099,16 +5089,14 @@
       "members": [
         {
           "body": {
-            "label": "dayour/kokoro (KPipeline + misaki)",
-            "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-            "synth_adapter": true,
+            "label": "DarbotLM/kokoro",
+            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",            "synth_adapter": true,
             "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "dayour/kokoro (KPipeline + misaki)"
-          },
+            "title": "DarbotLM/kokoro"          },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true
@@ -5134,7 +5122,7 @@
         {
           "body": {
             "availability": {
-              "reason": "G2P only, used offline for the misaki→kokoro clip; no in-app adapter",
+              "reason": "G2P only, used by Kokoro; no in-app waveform adapter",
               "status": "offline_only"
             },
             "label": "misaki (G2P, not a waveform)",

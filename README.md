@@ -8,6 +8,39 @@ This repo does not ship model weights, voice binaries, API keys, or podcast rend
 
 ## Synthesis engines
 
+The Python 3.14 Kokoro stack is pinned to the DarbotLM forks and their
+`py314-2026.09.17` release wheels:
+[misaki](https://github.com/DarbotLM/misaki) `0.9.4+py314.1`,
+[kokoro](https://github.com/DarbotLM/kokoro) `0.9.4`, and
+[kokoro-onnx](https://github.com/DarbotLM/kokoro-onnx) `0.6.1`.
+They stay optional and import only when an engine is requested.
+
+`kokoro_onnx` accepts a local ONNX graph and voice pack, supports
+`create_timed` phoneme timestamps, asynchronous chunk streaming, and
+duration-export `continuous=True` synthesis. `ONNX_PROVIDER` selects a
+provider such as `CPUExecutionProvider` or `CUDAExecutionProvider`; the fork
+refuses an unavailable provider or an implicit CPU fallback. `--provider`,
+`--vocab`, `--misaki-g2p`, `--continuous`, `--no-trim`,
+`--sentence-pause`, and `--clause-pause` expose the production controls.
+`GEN_AUDIO_KOKORO_USE_MISAKI`, `GEN_AUDIO_KOKORO_TRIM`,
+`GEN_AUDIO_KOKORO_CONTINUOUS`, and the two `GEN_AUDIO_KOKORO_*_PAUSE`
+environment variables carry the same defaults through MCP and the desktop.
+
+`kokoro_dayour` uses one shared DarbotLM `KModel` and one `KPipeline` per
+language. It assigns Misaki explicitly, supports local `.pt` voice packs and
+weighted blends, and records the same sample-accurate speaker offsets as the
+ONNX adapter. `GEN_AUDIO_KOKORO_DEVICE` defaults to `cpu`; `auto`, `cuda`,
+`cuda:N`, and `mps` are opt-in. `GEN_AUDIO_KOKORO_TORCH_CONFIG` and
+`GEN_AUDIO_KOKORO_TORCH_WEIGHTS` are a paired local config/checkpoint override.
+Without those files, `GEN_AUDIO_ALLOW_HF_DOWNLOAD=1` permits the Hugging Face
+load; otherwise Hugging Face is forced offline and a missing cache is a refusal.
+
+Misaki is G2P-only. The shipped configurations cover American/British English,
+Japanese (`pyopenjtalk`), Chinese (legacy or 1.1), Korean, Vietnamese, and the
+Kokoro eSpeak languages Spanish, French, Hindi, Italian, and Brazilian
+Portuguese. `gen-audio-voices phonemize CONFIG --text TEXT` prints phonemes but
+never creates a waveform.
+
 `vibevoice_realtime` uses the Microsoft Realtime 0.5B provider in `dlm_speech`.
 Set `GEN_AUDIO_DLM_SPEECH_URL` to its base URL and, if the worker requires
 authentication, set `GEN_AUDIO_DLM_SPEECH_TOKEN` in the renderer environment.
@@ -94,7 +127,7 @@ npm run build
 npm run dev   # browser preview on :1420, or `cargo tauri dev` inside src-tauri
 ```
 
-The board sits inside a viewport border beside a blue setup pane. Drag a green engine card into the upper half of that pane to load the voice model. **Agent** is a voice persona (Anton, Alice, Khortana, Rocky, and the rest of the catalog, up to 8 on a track). **Voice** is the TTS or G2P model (kokoro-onnx, dayour/kokoro, misaki, and the unavailable slots). Copilot, Claude, GPT, and Gemini stay on the Connectors slide. `af_heart` is a Kokoro pack id referenced by persona Alice, not a Voice option. The `+` next to Agent adds another persona. Duration and a pasted prompt sit under that. Those controls redraw the spectrogram panel for that profile. The map is not speech.
+The board sits inside a viewport border beside a blue setup pane. Drag a green engine card into the upper half of that pane to load the voice model. **Agent** is a voice persona (Anton, Alice, Khortana, Rocky, and the rest of the catalog, up to 8 on a track). **Voice** is the TTS or G2P model (kokoro-onnx, DarbotLM Kokoro, misaki, and the unavailable slots). Copilot, Claude, GPT, and Gemini stay on the Connectors slide. `af_heart` is a Kokoro pack id referenced by persona Alice, not a Voice option. The `+` next to Agent adds another persona. Duration and a pasted prompt sit under that. Those controls redraw the spectrogram panel for that profile. The map is not speech.
 
 Viewport layers jump to voice models, audio clips, an empty video layer, and the spatial cube. Library tiles with a real `wavUrl` expose play, pause, and a scrubber. If the WAV is not in this build the transport says the file is missing and does not invent audio. Magpie, VibeVoice, and Pocket stay unavailable. Flip a voice-profile tile for tone, purpose, domain, accent, traits, refs, a 2D browser map, and a 3D hook when a library cube JSON exists. Rename on a clip changes the semantic name and the face name in the window only.
 
@@ -119,7 +152,9 @@ Connector environment variables, mock behavior, and the live flag are in [docs/C
 
 ## Python SDK
 
-The installable package is still `gen_audio` (`pip install -e .`). It turns a two-speaker script into a WAV with [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) when you supply model files, then runs the 24 kHz publish chain, draws spectrogram PNGs, and can run the cube-revision sketch.
+The installable package is `gen_audio`. With local model files it can render a
+two-speaker script through DarbotLM Kokoro ONNX or Kokoro PyTorch, then run the
+24 kHz publish chain, draw spectrogram PNGs, and produce the cube-revision sketch.
 
 AgentYankers episodes are a format in that SDK. `gen_audio.agentyankers` mixes a rundown with VibeVoice host and multi-speaker commentary, laugh and stinger cues, a ducked bed, a spectrogram, and a cube revision. `POST /genaid-audio/agentyankers/episode` dry-runs or renders that rundown. Live calls stay in `genaid_audio.agentyankers` and are used when that package imports. Voice files are read from `GENAID_VOICES_DIR`. See [docs/AGENTYANKERS.md](docs/AGENTYANKERS.md).
 
@@ -128,14 +163,14 @@ AgentYankers episodes are a format in that SDK. `gen_audio.agentyankers` mixes a
 | Piece | Status |
 | --- | --- |
 | `Speaker N` parsing and cast-map voice resolution | Implemented |
-| Multi-turn synthesis via `kokoro-onnx` | Implemented when local model files are provided |
+| Multi-turn synthesis via `kokoro-onnx` 0.6.1 | Implemented: timed, streamed, blended, continuous, CPU/GPU-provider-aware when local model files are provided |
 | Publish chain: trim silence, ~70 Hz high-pass, peak ~0.89, resample 24 kHz | Implemented |
 | Before/after spectrogram PNGs | Implemented |
 | Inverse-HDR / BW95 / clip-fraction revision sketch | Implemented as a heuristic, not a mastering standard |
 | Engine compare on WAVs you already have | Implemented as measurement only; it does not rank engines |
-| VibeVoice, Magpie, Pocket TTS, dayour Kokoro | VibeVoice and dayour Kokoro have adapters that run when local weights are configured. Magpie and Pocket stay compare-list names until a measured runtime is present |
+| VibeVoice, Magpie, Pocket TTS, DarbotLM Kokoro | VibeVoice and both Kokoro backends have adapters that run when real weights are configured. Magpie and Pocket stay separate optional runtimes |
 | AgentYankers episode format | Implemented. Dry-run tones, or VibeVoice commentary when weights are configured. Laugh, stinger, bed, spectrogram, and cube revision |
-| misaki | Grapheme-to-phoneme library used by Kokoro. Not a waveform engine, and this repo does not call it |
+| Misaki 0.9.4+py314.1 | Implemented as English/Japanese/Chinese/Korean/Vietnamese and eSpeak G2P. It is never presented as a waveform engine |
 | Node HTTP process | Not started by import. URL helpers plus `python -m gen_audio.node_http` |
 | Tauri desktop card viewport | Implemented. Agent is a persona and Voice is a TTS model. Library tiles play a WAV when the file loads. The spectrogram panel follows that profile. The pipeline cube card stays a fixture; the spatial slide draws library cube JSON when a clip has one |
 | Stateless MCP (`gen-audio-mcp`) | Implemented (stdio and loopback HTTP) |
@@ -190,26 +225,43 @@ pwsh -NoProfile -File $toolbox -Step Node -RepoRoot 'G:\gen-audio'
 
 It installs all extras, stages the model files, builds the native services,
 runs the locked gate, launches Node/MCP/preview, and verifies their health.
+The private DarbotLM wheels are downloaded through authenticated GitHub CLI
+(`gh auth login`), SHA-256 checked, and substituted into the local requirements
+file; no token or wheel is written into this repository.
 
 `soundfile` needs the system `libsndfile` library (`libsndfile1` on Debian/Ubuntu).
 
-The synthesizer extra is separate, and it still needs the ONNX model and the voices file on disk:
+The speech extras are granular: `kokoro-onnx`, `kokoro-torch`, `kokoro-gpu`,
+`misaki`, and the compatibility aggregate `kokoro`. The toolbox is the
+supported installer for the private release wheels. It installs the locked
+`kokoro` aggregate and keeps the graph frozen. ONNX synthesis still needs the
+model and voice pack on disk:
 
-```bash
-pip install -e ".[kokoro]"
-export GEN_AUDIO_KOKORO_MODEL=/path/to/kokoro-v1.0.onnx
-export GEN_AUDIO_KOKORO_VOICES=/path/to/voices-v1.0.bin
+```powershell
+gh auth login
+pwsh -NoProfile -File scripts\toolbox.ps1 -Step Build -RepoRoot 'D:\darbot\gen-audio'
+$env:GEN_AUDIO_KOKORO_MODEL = 'C:\models\kokoro-v1.0.onnx'
+$env:GEN_AUDIO_KOKORO_VOICES = 'C:\models\voices-v1.0.bin'
 ```
 
-Those filenames are the v1 pair documented by kokoro-onnx. Weights are published with the [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) project and the [Kokoro-82M ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) repo. Do not commit them here. `.gitignore` ignores `*.onnx`, `*.bin`, `*.wav`, and `models/`.
+Those filenames are the v1 pair documented by kokoro-onnx. The model assets
+remain separate from the DarbotLM package wheels: the code fork has release
+wheels but no replacement graph release, so the toolbox verifies the upstream
+model asset independently. Do not commit model files here. `.gitignore` ignores
+`*.onnx`, `*.bin`, `*.wav`, and `models/`.
 
-The `vibevoice` extra is the locked VibeVoice-1.5B inference runtime (torch 2.14.1+cpu from the PyTorch CPU index, transformers 4.51.3, accelerate 1.6.0, diffusers 0.39.0, librosa). It installs only through uv and `uv.lock`, which covers Linux x86_64 and Windows AMD64 with wheels only (`[tool.uv] no-build = true`):
+The `vibevoice` extra is the locked VibeVoice-1.5B inference runtime (torch
+2.14.1+cpu from the PyTorch CPU index, Transformers `>=5.17,<6`, Accelerate
+1.15.0, Diffusers 0.39.0, librosa). Native packages resolve to CPython 3.14
+wheels for Linux x86_64 and Windows AMD64; pure-Python Misaki dependencies may
+use hash-locked source archives:
 
 ```bash
 uv sync --frozen --extra vibevoice
 ```
 
-It does not include the VibeVoice code or weights; nothing in this repo runs VibeVoice yet. Upstream's `datasets` (which pulls in `multiprocess`), `gradio` and `peft` are fine-tuning or demo-UI dependencies and are left out. `pip-audit` reports open advisories against transformers 4.51.3 and accelerate 1.6.0, which VibeVoice pins; they are listed on the PR that added the extra.
+It does not include VibeVoice code or weights. Upstream `datasets`,
+`gradio`, and `peft` are fine-tuning or demo dependencies and are left out.
 
 `apps/desktop` builds with TypeScript ~7.0.2 (`npm ci`, then `npx tsc --noEmit` and `npm run build`).
 
@@ -236,8 +288,10 @@ supervisor. `-Port` overrides that service's port. `-Check` prints paths and
 arguments without changing files or starting a process. The launcher configures
 the native app and its child MCP/Python processes with the same checkout,
 `.venv`, and `models/` paths, without changing user-wide environment variables.
-Both model guards remain enabled, including when Rust passes Windows
-extended-length paths. MCP output is confined to `artifacts/runtime/mcp/`;
+Model path and checksum guards remain enabled for synthesis, including when
+Rust passes Windows extended-length paths. Service startup itself does not
+require a loaded model; generation refuses clearly until its real files are
+configured. MCP output is confined to `artifacts/runtime/mcp/`;
 pre-existing files cannot be overwritten or read as scratch inputs.
 
 Build the native MCP with `cargo build --release -p gen-audio-mcp`. Build the
@@ -251,10 +305,14 @@ From a checkout, with the environment variables above set:
 ```bash
 python scripts/synth_kokoro_onnx.py examples/podcast_script_sample.txt \
   --cast-map voices/cast_map.example.json \
+  --provider CPUExecutionProvider \
+  --misaki-g2p \
   -o audio/sample.wav
 # sample.wav is float32 so peaks outside [-1, 1] are not clipped yet.
 
 python scripts/improve.py audio/sample.wav -o audio/sample-24k.wav
+
+python scripts/voices.py phonemize misaki.ja --text "こんにちは。"
 
 python scripts/spectrogram.py \
   --before audio/sample.wav \

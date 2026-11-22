@@ -59,7 +59,14 @@ pub fn python_program() -> Result<PathBuf, String> {
         .file_name()
         .and_then(|part| part.to_str())
         .unwrap_or("");
-    const ALLOWED: &[&str] = &["python", "python3", "python.exe", "python3.exe", "py", "py.exe"];
+    const ALLOWED: &[&str] = &[
+        "python",
+        "python3",
+        "python.exe",
+        "python3.exe",
+        "py",
+        "py.exe",
+    ];
     if !ALLOWED.contains(&name) {
         return Err("GEN_AUDIO_PYTHON basename must be python, python3, or py".into());
     }
@@ -155,6 +162,61 @@ pub fn plan(
             planned.push(model_path.to_string_lossy().to_string());
             planned.push("--voices".into());
             planned.push(voices_path.to_string_lossy().to_string());
+            if let Some(provider) = args.get("provider").and_then(Value::as_str) {
+                if provider.len() > 80
+                    || !provider.ends_with("ExecutionProvider")
+                    || !provider.chars().all(|ch| ch.is_ascii_alphanumeric())
+                {
+                    return Err("provider must be an ONNX ExecutionProvider name".into());
+                }
+                planned.push("--provider".into());
+                planned.push(provider.to_string());
+            }
+            if let Some(vocab) = args.get("vocab").and_then(Value::as_str) {
+                if vocab.is_empty() {
+                    return Err("vocab must not be empty".into());
+                }
+                let path = bounded_model_file(vocab)?;
+                planned.push("--vocab".into());
+                planned.push(path.to_string_lossy().to_string());
+            }
+            push_bool_arg(&mut planned, args, "trim", "--trim", "--no-trim")?;
+            push_bool_arg(
+                &mut planned,
+                args,
+                "continuous",
+                "--continuous",
+                "--no-continuous",
+            )?;
+            push_bool_arg(
+                &mut planned,
+                args,
+                "misakiG2p",
+                "--misaki-g2p",
+                "--no-misaki-g2p",
+            )?;
+            push_bounded_number(
+                &mut planned,
+                args,
+                "sentencePause",
+                "--sentence-pause",
+                0.0,
+                5.0,
+            )?;
+            push_bounded_number(
+                &mut planned,
+                args,
+                "clausePause",
+                "--clause-pause",
+                0.0,
+                5.0,
+            )?;
+            push_bounded_number(&mut planned, args, "gap", "--gap", 0.0, 30.0)?;
+            if args.get("improve").and_then(Value::as_bool) == Some(true) {
+                planned.push("--improve".into());
+            } else if args.get("improve").is_some_and(|value| !value.is_boolean()) {
+                return Err("improve must be a boolean".into());
+            }
         }
     }
     Ok(PythonPlan {
@@ -171,43 +233,105 @@ pub fn plan_generate(
     personas: &[String],
     engine: &str,
     duration_s: f64,
+    options: &Value,
 ) -> Result<PythonPlan, String> {
     let script = read_trusted_script(repo, "scripts/generate.py")?;
     if personas.is_empty() || personas.len() > 8 {
         return Err("personas must be 1 to 8 ids".into());
     }
     for id in personas {
-        if id.len() > 32 || !id.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') {
+        if id.len() > 32
+            || !id
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        {
             return Err("persona id is invalid".into());
         }
     }
-    if engine.len() > 32 || !engine.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') {
+    if engine.len() > 32
+        || !engine
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    {
         return Err("engine id must be a short lowercase slug".into());
     }
     if !(0.5..=1800.0).contains(&duration_s) {
         return Err("duration must be from 0.5 to 1800 seconds".into());
     }
     let prompt = work.join("scripts").join("prompt.txt");
-    let prompt = prompt.canonicalize().map_err(|err| format!("prompt file: {err}"))?;
-    let work_canon = work.canonicalize().map_err(|err| format!("work directory: {err}"))?;
+    let prompt = prompt
+        .canonicalize()
+        .map_err(|err| format!("prompt file: {err}"))?;
+    let work_canon = work
+        .canonicalize()
+        .map_err(|err| format!("work directory: {err}"))?;
     if !prompt.starts_with(&work_canon) {
         return Err("prompt file is outside the work directory".into());
     }
+    let mut args = vec![
+        script.to_string_lossy().to_string(),
+        "--prompt-file".into(),
+        prompt.to_string_lossy().to_string(),
+        "--personas".into(),
+        personas.join(","),
+        "--engine".into(),
+        engine.to_string(),
+        "--duration-s".into(),
+        format!("{duration_s}"),
+        "--out-dir".into(),
+        work_canon.to_string_lossy().to_string(),
+    ];
+    if let Some(provider) = options.get("provider").and_then(Value::as_str) {
+        if provider.len() > 80
+            || !provider.ends_with("ExecutionProvider")
+            || !provider.chars().all(|ch| ch.is_ascii_alphanumeric())
+        {
+            return Err("provider must be an ONNX ExecutionProvider name".into());
+        }
+        args.push("--provider".into());
+        args.push(provider.to_string());
+    }
+    if let Some(vocab) = options.get("vocab").and_then(Value::as_str) {
+        if vocab.is_empty() {
+            return Err("vocab must not be empty".into());
+        }
+        args.push("--vocab".into());
+        args.push(bounded_model_file(vocab)?.to_string_lossy().to_string());
+    }
+    push_bool_arg(&mut args, options, "trim", "--trim", "--no-trim")?;
+    push_bool_arg(
+        &mut args,
+        options,
+        "continuous",
+        "--continuous",
+        "--no-continuous",
+    )?;
+    push_bool_arg(
+        &mut args,
+        options,
+        "misakiG2p",
+        "--misaki-g2p",
+        "--no-misaki-g2p",
+    )?;
+    push_bounded_number(
+        &mut args,
+        options,
+        "sentencePause",
+        "--sentence-pause",
+        0.0,
+        5.0,
+    )?;
+    push_bounded_number(
+        &mut args,
+        options,
+        "clausePause",
+        "--clause-pause",
+        0.0,
+        5.0,
+    )?;
     Ok(PythonPlan {
         program: python_program()?,
-        args: vec![
-            script.to_string_lossy().to_string(),
-            "--prompt-file".into(),
-            prompt.to_string_lossy().to_string(),
-            "--personas".into(),
-            personas.join(","),
-            "--engine".into(),
-            engine.to_string(),
-            "--duration-s".into(),
-            format!("{duration_s}"),
-            "--out-dir".into(),
-            work_canon.to_string_lossy().to_string(),
-        ],
+        args,
         cwd: repo.to_path_buf(),
     })
 }
@@ -263,8 +387,10 @@ pub fn run_plan(plan: &PythonPlan) -> Result<Value, String> {
 }
 
 fn bounded_model_file(raw: &str) -> Result<PathBuf, String> {
-    let root = std::env::var("GEN_AUDIO_MODEL_DIR")
-        .map_err(|_| "GEN_AUDIO_MODEL_DIR is required so tool arguments cannot point at arbitrary files".to_string())?;
+    let root = std::env::var("GEN_AUDIO_MODEL_DIR").map_err(|_| {
+        "GEN_AUDIO_MODEL_DIR is required so tool arguments cannot point at arbitrary files"
+            .to_string()
+    })?;
     let root = PathBuf::from(root)
         .canonicalize()
         .map_err(|err| format!("GEN_AUDIO_MODEL_DIR: {err}"))?;
@@ -278,6 +404,45 @@ fn bounded_model_file(raw: &str) -> Result<PathBuf, String> {
         return Err("model path is not a file".into());
     }
     Ok(path)
+}
+
+fn push_bool_arg(
+    planned: &mut Vec<String>,
+    args: &Value,
+    key: &str,
+    enabled: &str,
+    disabled: &str,
+) -> Result<(), String> {
+    let Some(value) = args.get(key) else {
+        return Ok(());
+    };
+    let value = value
+        .as_bool()
+        .ok_or_else(|| format!("{key} must be a boolean"))?;
+    planned.push(if value { enabled } else { disabled }.to_string());
+    Ok(())
+}
+
+fn push_bounded_number(
+    planned: &mut Vec<String>,
+    args: &Value,
+    key: &str,
+    flag: &str,
+    minimum: f64,
+    maximum: f64,
+) -> Result<(), String> {
+    let Some(value) = args.get(key) else {
+        return Ok(());
+    };
+    let value = value
+        .as_f64()
+        .ok_or_else(|| format!("{key} must be a number"))?;
+    if !value.is_finite() || !(minimum..=maximum).contains(&value) {
+        return Err(format!("{key} must be from {minimum} to {maximum}"));
+    }
+    planned.push(flag.to_string());
+    planned.push(value.to_string());
+    Ok(())
 }
 
 fn req_name<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -332,8 +497,13 @@ pub struct NoKokoroEnv {
 impl NoKokoroEnv {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let lock = KOKORO_ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let saved = KOKORO_ENV.iter().map(|name| (*name, std::env::var_os(name))).collect();
+        let lock = KOKORO_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved = KOKORO_ENV
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect();
         for name in KOKORO_ENV {
             std::env::remove_var(name);
         }
@@ -364,13 +534,32 @@ mod tests {
     fn no_kokoro_env_is_test_support_only() {
         let source = include_str!("bridge.rs");
         let gate = "#[cfg(any(test, feature = \"test-support\"))]\n";
-        for item in ["pub const KOKORO_ENV", "static KOKORO_ENV_LOCK", "pub struct NoKokoroEnv", "impl NoKokoroEnv", "impl Drop for NoKokoroEnv"] {
-            let at = source.find(&format!("\n{item}")).unwrap_or_else(|| panic!("{item} not found"));
-            assert!(source[..at + 1].ends_with(gate), "{item} must sit right under {gate}");
+        for item in [
+            "pub const KOKORO_ENV",
+            "static KOKORO_ENV_LOCK",
+            "pub struct NoKokoroEnv",
+            "impl NoKokoroEnv",
+            "impl Drop for NoKokoroEnv",
+        ] {
+            let at = source
+                .find(&format!("\n{item}"))
+                .unwrap_or_else(|| panic!("{item} not found"));
+            assert!(
+                source[..at + 1].ends_with(gate),
+                "{item} must sit right under {gate}"
+            );
         }
-        for manifest in [include_str!("../../gen-audio-mcp/Cargo.toml"), include_str!("../../gen-audio-acp/Cargo.toml")] {
-            let (normal, dev) = manifest.split_once("[dev-dependencies]").expect("a [dev-dependencies] table");
-            assert!(!normal.contains("test-support"), "test-support enabled outside [dev-dependencies]");
+        for manifest in [
+            include_str!("../../gen-audio-mcp/Cargo.toml"),
+            include_str!("../../gen-audio-acp/Cargo.toml"),
+        ] {
+            let (normal, dev) = manifest
+                .split_once("[dev-dependencies]")
+                .expect("a [dev-dependencies] table");
+            assert!(
+                !normal.contains("test-support"),
+                "test-support enabled outside [dev-dependencies]"
+            );
             assert!(dev.contains("features = [\"test-support\"]"));
         }
     }
@@ -382,12 +571,25 @@ mod tests {
     fn viewport_and_library_test_seams_are_test_support_only() {
         let gate = "#[cfg(any(test, feature = \"test-support\"))]\n";
         let files = [
-            (include_str!("viewport.rs"), &["pub struct ViewportHandle", "pub struct ViewportGuard", "pub fn bind_viewport", "thread_local!"][..]),
-            (include_str!("library_store.rs"), &["pub fn set_root_override_for_test", "thread_local!"][..]),
+            (
+                include_str!("viewport.rs"),
+                &[
+                    "pub struct ViewportHandle",
+                    "pub struct ViewportGuard",
+                    "pub fn bind_viewport",
+                    "thread_local!",
+                ][..],
+            ),
+            (
+                include_str!("library_store.rs"),
+                &["pub fn set_root_override_for_test", "thread_local!"][..],
+            ),
         ];
         for (source, items) in files {
             for item in items {
-                let at = source.find(&format!("\n{item}")).unwrap_or_else(|| panic!("{item} not found"));
+                let at = source
+                    .find(&format!("\n{item}"))
+                    .unwrap_or_else(|| panic!("{item} not found"));
                 assert!(
                     source[..at + 1].ends_with(gate),
                     "{item} must sit right under the test-support gate"
@@ -414,7 +616,10 @@ mod tests {
         )
         .unwrap();
         let improve_py = Path::new("scripts").join("improve.py");
-        assert!(good.args.iter().any(|arg| Path::new(arg).ends_with(&improve_py)));
+        assert!(good
+            .args
+            .iter()
+            .any(|arg| Path::new(arg).ends_with(&improve_py)));
         assert!(plan(
             PythonTool::Improve,
             &repo,

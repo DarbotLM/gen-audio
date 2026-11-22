@@ -217,16 +217,15 @@ export const VOICE_MODELS: VoiceModel[] = [
     waveform: true,
     synthAdapter: true,
     unavailable: false,
-    note: "Python kokoro-onnx path. Needs local ONNX and voices files. Weights are not in this repo.",
+    note: "DarbotLM kokoro-onnx 0.6.1 with timed, streaming, continuous, Misaki, and explicit-provider support. Weights stay local.",
   },
   {
     id: "kokoro_dayour",
-    label: "dayour/kokoro (KPipeline + misaki)",
+    label: "DarbotLM/kokoro",
     waveform: true,
     synthAdapter: true,
     unavailable: false,
-    note: "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
-  },
+    note: "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",  },
   {
     id: "misaki",
     label: "misaki (G2P, not a waveform)",
@@ -234,7 +233,7 @@ export const VOICE_MODELS: VoiceModel[] = [
     synthAdapter: false,
     unavailable: false,
     note: "Grapheme-to-phoneme for Kokoro. It does not emit a waveform by itself.",
-    offlineReason: "G2P only, used offline for the misaki\u2192kokoro clip; no in-app adapter",
+    offlineReason: "G2P only, used by Kokoro; no in-app waveform adapter",
   },
   {
     id: "vibevoice_realtime",

@@ -13,6 +13,10 @@ Invoke-WebRequest `
 pwsh -NoProfile -File $toolbox -Step Node -RepoRoot 'G:\gen-audio'
 ```
 
+Authenticate the GitHub CLI first (`gh auth login`) with access to the private
+DarbotLM `misaki`, `kokoro`, and `kokoro-onnx` repositories. The toolbox never
+accepts or writes a token.
+
 Use the currently mounted drive when `G:` is unavailable. For this node, pass
 `-RepoRoot 'Q:\gen-audio'`.
 
@@ -21,11 +25,11 @@ Use the currently mounted drive when `G:` is unavailable. For this node, pass
 The `Node` path:
 
 1. Clones the selected ref when needed and preserves an existing checkout.
-2. Installs Node 24, `uv`, Python 3.14, Git, FFmpeg, Rust, WebView2, and the
+2. Installs Node 24, `uv`, Python 3.14, Git, GitHub CLI, FFmpeg, Rust, WebView2, and the
    Visual Studio C++ build tools. Node 24 and Python come from checksum-checked
-   archives or `uv`. A missing WinGet package (Git, uv, FFmpeg, Rustup, Build
-   Tools, WebView2) is installed only when its id is passed to
-   `-AcceptPackageAgreement`, for example `-AcceptPackageAgreement Rustlang.Rustup`
+   archives or `uv`. A missing WinGet package (Git, GitHub CLI, uv, FFmpeg,
+   Rustup, Build Tools, WebView2) is installed only when its id is passed to
+   `-AcceptPackageAgreement`, for example `-AcceptPackageAgreement GitHub.cli`
    after you have reviewed that package's license. Otherwise the run stops and
    prints the exact `winget install` command so you can install it yourself.
    A missing `uv` is installed from PyPI (`pip install --user uv`) first, and a
@@ -38,13 +42,24 @@ The `Node` path:
    Certificate checks stay on for every host. On a network that refuses TLS to
    `files.pythonhosted.org`, point `GEN_AUDIO_PIP_INDEX_URL` at a mirror that
    serves the locked hashes rather than trusting the host.
-3. Runs `uv sync --frozen --all-extras`, installs the desktop npm lockfile, and
-   builds the MCP, ACP, and harness Rust crates.
+3. Exports the frozen all-extras lock, downloads the exact private Misaki,
+   Kokoro, and Kokoro-ONNX wheel releases with authenticated `gh`, verifies all
+   three SHA-256 values, replaces only the local requirements URLs, installs
+   that hash-locked graph, runs `pip check`, and verifies
+   `uv lock --check --offline`. Native packages use wheels; the few pure-Python
+   Misaki dependencies published only as sdists are allowed and remain
+   hash-pinned. It then installs the desktop npm lockfile and builds MCP, ACP,
+   and harness.
 4. Stages checksum-verified Kokoro ONNX and voice-pack files in `models/`. It
    prefers the normalized a2swe model when that exact registry artifact exists.
+   DarbotLM’s package releases contain wheels, not a corrected model graph, so
+   this step retains the separately verified real model asset rather than
+   claiming that the fork export is included.
 5. Writes `artifacts/runtime/node-environment.json`, a checkout-scoped runtime
    descriptor, plus a sourceable compatibility text file. It sets process-only
    environment values and does not mutate the user's persisted environment.
+   CPU is the default for both Torch and ONNX; CUDA remains explicit through the
+   `GEN_AUDIO_KOKORO_DEVICE` / `ONNX_PROVIDER` overrides.
 6. Runs the locked no-WAV validation gate. `-SkipTests` is explicit: it reports a
    degraded result and exits nonzero instead of claiming full completion.
 7. Launches and verifies:

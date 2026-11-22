@@ -489,10 +489,9 @@ fn every_engine_without_an_in_app_adapter_is_offline_only_or_unavailable() {
         }
     }
     let status = |id: &str| models.iter().find(|model| model["legacy_id"] == id).unwrap()["body"]["availability"]["status"].clone();
-    let dayour = models.iter().find(|model| model["legacy_id"] == "kokoro_dayour").unwrap();
-    assert_eq!(dayour["status"], "ok", "kokoro_dayour runs in-app through KPipeline + misaki");
-    assert_eq!(status("kokoro_dayour"), Value::Null);
-    assert_eq!(status("misaki"), "offline_only");
+    let kokoro = models.iter().find(|model| model["legacy_id"] == "kokoro_dayour").unwrap();
+    assert_eq!(kokoro["status"], "ok");
+    assert!(kokoro["body"].get("availability").is_none());    assert_eq!(status("misaki"), "offline_only");
     assert_eq!(status("vibevoice"), "unavailable");
     // The engine list agrees: only the implemented engine is producible.
     for engine in gen_audio_core::engines::engines() {

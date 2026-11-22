@@ -1102,7 +1102,7 @@ pub fn ui_generate(args: &Value) -> Result<Value, (i32, String)> {
             false,
         );
     }
-    match begin_generate(&voice, &personas, duration_s, &prompt) {
+    match begin_generate(&voice, &personas, duration_s, &prompt, &normalized) {
         Ok((work, child)) => {
             start_generate(seq, job, voice, normalized, side, work, child, duration_s)
         }
@@ -1192,6 +1192,7 @@ fn begin_generate(
     personas: &[String],
     duration_s: f64,
     prompt: &str,
+    options: &Value,
 ) -> Result<(paths::TempWorkDir, std::process::Child), String> {
     let repo = paths::find_repo_root()
         .ok_or_else(|| "failed to start: repository root was not found".to_string())?;
@@ -1200,7 +1201,7 @@ fn begin_generate(
     std::fs::create_dir_all(&scripts).map_err(|err| format!("failed to start: {err}"))?;
     std::fs::write(scripts.join("prompt.txt"), prompt)
         .map_err(|err| format!("failed to start: {err}"))?;
-    let plan = bridge::plan_generate(&repo, &work, personas, voice, duration_s)
+    let plan = bridge::plan_generate(&repo, &work, personas, voice, duration_s, options)
         .map_err(|err| format!("failed to start: {err}"))?;
     let child = bridge::start_plan(&plan)?;
     Ok((work, child))

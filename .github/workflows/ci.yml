@@ -104,7 +104,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "26"
       - run: npm ci
       - name: Asset object golden vectors + Ajv2020 (shared with cargo test)
         run: npm test

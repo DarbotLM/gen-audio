@@ -155,7 +155,11 @@ def _missing_kokoro_torch() -> list[str]:
         missing.append("kokoro package is not installed")
     if not _module_present("misaki"):
         missing.append("misaki is not installed; kokoro will not invent phonemes")
-    if not allow_hf_download() and not os.environ.get("GENAID_VOICES_DIR", "").strip():
+    if (
+        not allow_hf_download()
+        and not os.environ.get("GENAID_VOICES_DIR", "").strip()
+        and not os.environ.get("GEN_AUDIO_KOKORO_TORCH_DIR", "").strip()
+    ):
         missing.append(
             "Kokoro .pt packs are not bundled; GEN_AUDIO_ALLOW_HF_DOWNLOAD=1 is required before KPipeline can fetch hexgrad/Kokoro-82M"
         )
@@ -164,14 +168,17 @@ def _missing_kokoro_torch() -> list[str]:
 
 def _synth_kokoro_torch(turns: list[Turn], cast: CastMap, output: Path) -> dict:
     """Run dayour/kokoro ``KPipeline`` on CPU. Misaki is assigned to ``pipeline.g2p``."""
+    from gen_audio.voices.agents import agent_g2p, agent_voice, blend_parts
     from gen_audio.voices.errors import VoiceError
     from gen_audio.voices.model import g2p_config_path, load_g2p
-    from gen_audio.voices.runtime import run_kokoro_pipeline
+    from gen_audio.voices.runtime import blend_kokoro_packs, kokoro_pack_path, run_kokoro_pipeline
 
-    library = os.environ.get("GENAID_VOICES_DIR", "").strip()
-    pieces: list[np.ndarray] = []
+    pieces: list[tuple[int, np.ndarray]] = []
     sample_rate = 24000
+    g2p_used: set[str] = set()
+    voices_used: dict[str, str] = {}
     try:
+        speakers, index_of = roster(turns, cast)
         for turn in turns:
             assignment = resolve_turn(turn, cast)
             lang = assignment.lang or cast.default_lang
@@ -179,12 +186,22 @@ def _synth_kokoro_torch(turns: list[Turn], cast: CastMap, output: Path) -> dict:
             g2p_id = _KOKORO_G2P.get(lang)
             if code is None or g2p_id is None:
                 raise EngineRefusal("kokoro_dayour", [f"no Misaki config for language {lang}"])
-            g2p = load_g2p(g2p_config_path(g2p_id))
+            agent = agent_voice(assignment.voice)
             voice_arg: object = assignment.voice
-            if library:
-                pack = Path(library) / "kokoro" / "voices" / f"{assignment.voice}.pt"
-                if pack.is_file():
+            if agent is not None:
+                # Persona blend: the same packs the kokoro_onnx blend mixes, as .pt tensors.
+                g2p = agent_g2p(agent)
+                g2p_used.add(str(agent["g2p"]))
+                parts = blend_parts(agent)
+                voice_arg = blend_kokoro_packs(parts)
+                voices_used[assignment.voice] = " + ".join(f"{weight:g}*{voice_id}" for voice_id, weight in parts)
+            else:
+                g2p = load_g2p(g2p_config_path(g2p_id))
+                g2p_used.add(g2p_id)
+                pack = kokoro_pack_path(assignment.voice)
+                if pack is not None:
                     voice_arg = str(pack)
+                voices_used[assignment.voice] = assignment.voice
             audio, sample_rate = run_kokoro_pipeline(
                 turn.text,
                 lang_code=code,
@@ -192,23 +209,33 @@ def _synth_kokoro_torch(turns: list[Turn], cast: CastMap, output: Path) -> dict:
                 g2p=g2p,
                 speed=assignment.speed,
             )
-            pieces.append(audio)
-            gap = int(0.15 * sample_rate)
-            if gap:
-                pieces.append(np.zeros(gap, dtype=np.float32))
+            pieces.append((index_of[turn.speaker_id], audio))
     except VoiceError as exc:
         raise EngineRefusal("kokoro_dayour", [str(exc)]) from exc
-    if pieces and pieces[-1].size and np.all(pieces[-1] == 0):
-        pieces.pop()
-    if not pieces:
+    if not pieces or not any(audio.size for _, audio in pieces):
         raise EngineRefusal("kokoro_dayour", ["KPipeline produced no samples"])
-    joined = np.concatenate(pieces).astype(np.float32)
+    joined, segments = concatenate_turns(pieces, sample_rate, np.zeros(int(0.15 * sample_rate), dtype=np.float32))
+    joined = joined.astype(np.float32)
     write_wav(output, joined, sample_rate, subtype="FLOAT")
     return {
         "engine": "kokoro_dayour",
+        "g2p": sorted(g2p_used),
+        "voices": voices_used,
         "sample_rate": sample_rate,
         "samples": int(joined.size),
         "turns": len(turns),
+        "speech": {
+            "speakers": speakers,
+            "segments": [
+                {
+                    "speaker_idx": segment.speaker_idx,
+                    "start_sample": segment.start_sample,
+                    "end_sample": segment.end_sample,
+                }
+                for segment in segments
+            ],
+            "sample_rate": sample_rate,
+        },
     }
 
 

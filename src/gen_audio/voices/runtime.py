@@ -175,10 +175,83 @@ def _result_audio(result):
     raise VoiceError("KPipeline result did not include audio", code="bad_load")
 
 
+def kokoro_torch_dir():
+    """``GEN_AUDIO_KOKORO_TORCH_DIR``: a local hexgrad/Kokoro-82M copy (config.json,
+    kokoro-v1_0.pth, voices/*.pt), or ``None``."""
+    from pathlib import Path
+
+    raw = os.environ.get("GEN_AUDIO_KOKORO_TORCH_DIR", "").strip()
+    return Path(raw) if raw else None
+
+
+def kokoro_pack_path(voice_id: str):
+    """Local ``.pt`` pack for ``voice_id``: the torch dir, then ``GENAID_VOICES_DIR/kokoro/voices``."""
+    from pathlib import Path
+
+    roots = []
+    folder = kokoro_torch_dir()
+    if folder is not None:
+        roots.append(folder / "voices")
+    library = os.environ.get("GENAID_VOICES_DIR", "").strip()
+    if library:
+        roots.append(Path(library) / "kokoro" / "voices")
+    for root in roots:
+        path = root / f"{voice_id}.pt"
+        if path.is_file():
+            return path
+    return None
+
+
+def blend_kokoro_packs(parts: list[tuple[str, float]], torch_load=None):
+    """``Σ wᵢ·packᵢ`` over local ``.pt`` packs for a voices/agents blend."""
+    if torch_load is None:
+        import torch
+
+        def torch_load(path):
+            return torch.load(path, weights_only=True)
+
+    packs = []
+    for voice_id, weight in parts:
+        path = kokoro_pack_path(voice_id)
+        if path is None:
+            raise VoiceError(
+                f"Kokoro pack {voice_id}.pt is not in GEN_AUDIO_KOKORO_TORCH_DIR/voices or GENAID_VOICES_DIR",
+                code="bad_load",
+            )
+        packs.append((torch_load(path), weight))
+    return mix_kokoro_packs(packs)
+
+
+_LOCAL_PIPELINES: dict = {}
+
+
+def _local_pipeline(lang_code: str, pipeline_cls):
+    """One KPipeline per language on the local weights; loading the model per turn is slow."""
+    folder = kokoro_torch_dir()
+    key = (lang_code, str(folder))
+    if key not in _LOCAL_PIPELINES:
+        config = folder / "config.json"
+        weights = folder / "kokoro-v1_0.pth"
+        if not config.is_file() or not weights.is_file():
+            raise VoiceError(
+                f"GEN_AUDIO_KOKORO_TORCH_DIR {folder} needs config.json and kokoro-v1_0.pth from hexgrad/Kokoro-82M",
+                code="bad_load",
+            )
+        from kokoro import KModel
+
+        model = KModel(repo_id="hexgrad/Kokoro-82M", config=str(config), model=str(weights)).eval()
+        kwargs = kokoro_torch_kwargs(lang_code)
+        kwargs["model"] = model
+        _LOCAL_PIPELINES[key] = _construct_pipeline(pipeline_cls, kwargs)
+    return _LOCAL_PIPELINES[key]
+
+
 def run_kokoro_pipeline(text: str, *, lang_code: str, voice, g2p, speed: float, pipeline_cls=None):
     """Call ``KPipeline`` with a Misaki ``g2p`` assigned and return 24 kHz audio.
 
-    ``voice`` is a pack id, a local ``.pt`` path, or a pre-mixed tensor.
+    ``voice`` is a pack id, a local ``.pt`` path, or a pre-mixed tensor. With
+    ``GEN_AUDIO_KOKORO_TORCH_DIR`` set (and no injected ``pipeline_cls``) the
+    model loads from that directory, never from the network.
     """
     import numpy as np
 
@@ -187,7 +260,12 @@ def run_kokoro_pipeline(text: str, *, lang_code: str, voice, g2p, speed: float, 
             from kokoro import KPipeline as pipeline_cls
         except ImportError as exc:
             raise VoiceError("kokoro package is not installed", code="missing_kokoro") from exc
-    pipeline = _construct_pipeline(pipeline_cls, kokoro_torch_kwargs(lang_code))
+        if kokoro_torch_dir() is not None:
+            pipeline = _local_pipeline(lang_code, pipeline_cls)
+        else:
+            pipeline = _construct_pipeline(pipeline_cls, kokoro_torch_kwargs(lang_code))
+    else:
+        pipeline = _construct_pipeline(pipeline_cls, kokoro_torch_kwargs(lang_code))
     pipeline.g2p = build_misaki(g2p)
     chunks = []
     for result in pipeline(text, voice=voice, speed=float(speed)):

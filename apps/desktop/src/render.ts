@@ -646,7 +646,7 @@ export function fillModelCubes(board: HTMLElement, catalog: LibraryCatalog | nul
         panel.append(link);
       }
     } else {
-      if (view.offline) panel.append(paragraph("Offline run: rendered outside this app; the engine has no adapter here."));
+      if (view.offline) panel.append(paragraph("Offline run: rendered outside this app (its provenance says offline run)."));
       const table = window.document.createElement("table");
       table.className = "model-cube-table";
       const head = window.document.createElement("tr");

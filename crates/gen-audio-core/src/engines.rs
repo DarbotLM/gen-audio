@@ -37,9 +37,9 @@ const ENGINES: &[EngineSpec] = &[
     EngineSpec {
         id: "kokoro_dayour",
         kind: EngineKind::Synth,
-        status: EngineStatus::External,
+        status: EngineStatus::Implemented,
         weights_bundled: false,
-        summary: "dayour/kokoro torch runtime. Not vendored here.",
+        summary: "DarbotLM/kokoro KPipeline with Misaki G2P. Weights come from GEN_AUDIO_KOKORO_TORCH_DIR; not vendored here.",
     },
     EngineSpec {
         id: "misaki",
@@ -104,7 +104,7 @@ mod tests {
             .filter(|spec| spec.status == EngineStatus::Implemented)
             .map(|spec| spec.id)
             .collect();
-        assert_eq!(implemented, vec!["kokoro_onnx", "vibevoice_realtime", "adaptive"]);
+        assert_eq!(implemented, vec!["kokoro_onnx", "kokoro_dayour", "vibevoice_realtime", "adaptive"]);
         assert_eq!(engine("misaki").unwrap().kind, EngineKind::G2p);
         assert!(engines().iter().all(|spec| !spec.weights_bundled));
     }

@@ -143,7 +143,8 @@ test("E: every engine with no in-app adapter is offline_only or unavailable", as
     if (availability?.status === "offline_only") assert.equal(availability.reason, voice.offlineReason, `${voice.id}: TS and Rust catalogs agree`);
   }
   const kokoro = assets.find((asset) => asset.kind === "voice_model" && asset.legacy_id === "kokoro_dayour");
-  assert.equal((kokoro?.body?.availability as { status?: string }).status, "offline_only");
+  // dayour/kokoro has an in-app adapter now; its older library clips stay labeled offline runs.
+  assert.equal(kokoro?.status, "ok");
   for (const clip of assets.filter((asset) => asset.kind === "audio_clip" && asset.provenance?.voice_model === kokoro?.uid)) {
     assert.match(String(clip.provenance?.generator), /offline run/, String(clip.legacy_id));
   }

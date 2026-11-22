@@ -464,28 +464,22 @@
     {
       "envelope": {
         "body": {
-          "availability": {
-            "reason": "offline runs only: rendered with the dayour/kokoro torch runtime outside this app; no in-app adapter, so Generate cannot produce it",
-            "status": "offline_only"
-          },
-          "label": "dayour/kokoro (offline only)",
-          "note": "dayour/kokoro torch runtime. Not vendored here. Its library WAVs are offline runs; this repo has no synth adapter.",
-          "synth_adapter": false,
-          "unavailable": true,
+          "label": "dayour/kokoro (KPipeline + misaki)",
+          "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
+          "synth_adapter": true,
+          "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "dayour/kokoro (offline only)"
+          "title": "dayour/kokoro (KPipeline + misaki)"
         },
         "fields": {
           "model_id": "kokoro_dayour",
           "waveform": true
         },
         "honesty": {
-          "claims": [
-            "engine_unavailable"
-          ],
+          "claims": [],
           "fixture": true,
           "synthesized_speech": true
         },
@@ -498,7 +492,7 @@
         "relations": {},
         "schema_version": "1.0.0",
         "src": [],
-        "status": "unavailable",
+        "status": "ok",
         "uid": "ga:voice_model:25q3qpvjdhltosj3w5sgtxdatm",
         "uid_scheme": "ga1"
       },
@@ -1190,19 +1184,15 @@
     {
       "envelope": {
         "body": {
-          "availability": {
-            "reason": "offline runs only: rendered with the dayour/kokoro torch runtime outside this app; no in-app adapter, so Generate cannot produce it",
-            "status": "offline_only"
-          },
-          "label": "dayour/kokoro (offline only)",
-          "note": "dayour/kokoro torch runtime. Not vendored here. Its library WAVs are offline runs; this repo has no synth adapter.",
-          "synth_adapter": false,
-          "unavailable": true,
+          "label": "dayour/kokoro (KPipeline + misaki)",
+          "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
+          "synth_adapter": true,
+          "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "dayour/kokoro (offline only)"
+          "title": "dayour/kokoro (KPipeline + misaki)"
         },
         "fields": {
           "model_id": "kokoro_dayour",
@@ -1224,7 +1214,7 @@
         "relations": {},
         "schema_version": "1.0.0",
         "src": [],
-        "status": "unavailable",
+        "status": "ok",
         "uid": "ga:voice_model:25q3qpvjdhltosj3w5sgtxdatm",
         "uid_scheme": "ga1"
       },
@@ -1235,28 +1225,22 @@
     {
       "envelope": {
         "body": {
-          "availability": {
-            "reason": "offline runs only: rendered with the dayour/kokoro torch runtime outside this app; no in-app adapter, so Generate cannot produce it",
-            "status": "offline_only"
-          },
-          "label": "dayour/kokoro (offline only)",
-          "note": "dayour/kokoro torch runtime. Not vendored here. Its library WAVs are offline runs; this repo has no synth adapter.",
-          "synth_adapter": false,
-          "unavailable": true,
+          "label": "dayour/kokoro (KPipeline + misaki)",
+          "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
+          "synth_adapter": true,
+          "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "dayour/kokoro (offline only)"
+          "title": "dayour/kokoro (KPipeline + misaki)"
         },
         "fields": {
           "model_id": "kokoro_dayour",
           "waveform": true
         },
         "honesty": {
-          "claims": [
-            "engine_unavailable"
-          ],
+          "claims": [],
           "fixture": false,
           "synthesized_speech": false
         },
@@ -1269,7 +1253,7 @@
         "relations": {},
         "schema_version": "2.0.0",
         "src": [],
-        "status": "unavailable",
+        "status": "ok",
         "uid": "ga:voice_model:25q3qpvjdhltosj3w5sgtxdatm",
         "uid_scheme": "ga1"
       },
@@ -4648,28 +4632,22 @@
       "members": [
         {
           "body": {
-            "availability": {
-              "reason": "offline runs only: rendered with the dayour/kokoro torch runtime outside this app; no in-app adapter, so Generate cannot produce it",
-              "status": "offline_only"
-            },
-            "label": "dayour/kokoro (offline only)",
-            "note": "dayour/kokoro torch runtime. Not vendored here. Its library WAVs are offline runs; this repo has no synth adapter.",
-            "synth_adapter": false,
-            "unavailable": true,
+            "label": "dayour/kokoro (KPipeline + misaki)",
+            "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
+            "synth_adapter": true,
+            "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "dayour/kokoro (offline only)"
+            "title": "dayour/kokoro (KPipeline + misaki)"
           },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true
           },
           "honesty": {
-            "claims": [
-              "engine_unavailable"
-            ],
+            "claims": [],
             "fixture": false,
             "synthesized_speech": false
           },
@@ -4682,7 +4660,7 @@
           "relations": {},
           "schema_version": "1.0.0",
           "src": [],
-          "status": "unavailable",
+          "status": "ok",
           "uid": "ga:voice_model:25q3qpvjdhltosj3w5sgtxdatm",
           "uid_scheme": "ga1"
         },
@@ -4925,28 +4903,22 @@
       "members": [
         {
           "body": {
-            "availability": {
-              "reason": "offline runs only: rendered with the dayour/kokoro torch runtime outside this app; no in-app adapter, so Generate cannot produce it",
-              "status": "offline_only"
-            },
-            "label": "dayour/kokoro (offline only)",
-            "note": "dayour/kokoro torch runtime. Not vendored here. Its library WAVs are offline runs; this repo has no synth adapter.",
-            "synth_adapter": false,
-            "unavailable": true,
+            "label": "dayour/kokoro (KPipeline + misaki)",
+            "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
+            "synth_adapter": true,
+            "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "dayour/kokoro (offline only)"
+            "title": "dayour/kokoro (KPipeline + misaki)"
           },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true
           },
           "honesty": {
-            "claims": [
-              "engine_unavailable"
-            ],
+            "claims": [],
             "fixture": false,
             "synthesized_speech": false
           },
@@ -4959,7 +4931,7 @@
           "relations": {},
           "schema_version": "1.0.0",
           "src": [],
-          "status": "unavailable",
+          "status": "ok",
           "uid": "ga:voice_model:25q3qpvjdhltosj3w5sgtxdatm",
           "uid_scheme": "ga1"
         },
@@ -5127,28 +5099,22 @@
       "members": [
         {
           "body": {
-            "availability": {
-              "reason": "offline runs only: rendered with the dayour/kokoro torch runtime outside this app; no in-app adapter, so Generate cannot produce it",
-              "status": "offline_only"
-            },
-            "label": "dayour/kokoro (offline only)",
-            "note": "dayour/kokoro torch runtime. Not vendored here. Its library WAVs are offline runs; this repo has no synth adapter.",
-            "synth_adapter": false,
-            "unavailable": true,
+            "label": "dayour/kokoro (KPipeline + misaki)",
+            "note": "DarbotLM/kokoro KPipeline on CPU with Misaki G2P. Needs hexgrad/Kokoro-82M weights in GEN_AUDIO_KOKORO_TORCH_DIR (not in this repo). The older library WAVs are offline runs.",
+            "synth_adapter": true,
+            "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "dayour/kokoro (offline only)"
+            "title": "dayour/kokoro (KPipeline + misaki)"
           },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true
           },
           "honesty": {
-            "claims": [
-              "engine_unavailable"
-            ],
+            "claims": [],
             "fixture": false,
             "synthesized_speech": false
           },
@@ -5161,7 +5127,7 @@
           "relations": {},
           "schema_version": "1.0.0",
           "src": [],
-          "status": "unavailable",
+          "status": "ok",
           "uid": "ga:voice_model:25q3qpvjdhltosj3w5sgtxdatm",
           "uid_scheme": "ga1"
         },

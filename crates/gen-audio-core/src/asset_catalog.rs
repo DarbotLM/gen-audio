@@ -361,7 +361,8 @@ mod tests {
 
     #[test]
     fn runtime_load_runs_the_set_check() {
-        assert_eq!(catalog_health().unwrap(), assets().len());
+        // The committed catalog only: assets() also merges this host's runtime library clips.
+        assert_eq!(catalog_health().unwrap(), catalog().len());
         let mut doc: Value = serde_json::from_str(CATALOG_JSON).unwrap();
         // Drop the misaki clip: every envelope is still valid on its own, but
         // its cube and spectrogram now derive from a uid outside the set.

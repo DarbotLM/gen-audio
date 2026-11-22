@@ -36,11 +36,17 @@ def _personas_from_catalog(text: str) -> dict[str, dict[str, str]]:
             continue
         refs = re.findall(r'"([^"]+)"', refs_match.group(1) if refs_match else "")
         kokoro = ""
+        blend = ""
         for ref in refs:
             if ref.startswith("kokoro-pack:"):
                 kokoro = ref.split(":", 1)[1]
+            elif ref.startswith("voice-blend:"):
+                blend = ref.split(":", 1)[1]
+        # A stock pack wins; otherwise the persona's voices/agents blend
+        # (gen_audio.voices.agents), which both Kokoro engines speak.
+        voice = kokoro or blend
         persona_id = id_match.group(1)
-        found[persona_id] = {"name": name_match.group(1), "kokoro_onnx": kokoro, "kokoro_dayour": kokoro}
+        found[persona_id] = {"name": name_match.group(1), "kokoro_onnx": voice, "kokoro_dayour": voice}
         # These are stock synthesis recipes. They are not recordings of the personas.
         if persona_id in {"alice", "frank"}:
             found[persona_id]["vibevoice_realtime"] = {
@@ -54,7 +60,7 @@ def _personas_from_catalog(text: str) -> dict[str, dict[str, str]]:
     return found
 
 
-# Kokoro pack ids come only from catalog.rs refs. Other engines have no pack ref.
+# Kokoro voices come only from catalog.rs refs (kokoro-pack: or voice-blend:). Other engines have no pack ref.
 PERSONAS: dict[str, dict[str, str]] = _personas_from_catalog(_catalog_path().read_text(encoding="utf-8"))
 
 ENGINE_LANG = {

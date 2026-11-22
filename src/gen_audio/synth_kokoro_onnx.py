@@ -234,13 +234,26 @@ class KokoroOnnxSynthesizer:
                     f"speaker {turn.speaker_id} framework is {framework!r}; "
                     "synth_kokoro_onnx requires 'kokoro_onnx'"
                 )
+            from gen_audio.voices.agents import agent_g2p, agent_voice
+
+            agent = agent_voice(assignment.voice)
             try:
-                raw_audio, raw_rate = self._kokoro.create(
-                    turn.text,
-                    voice=assignment.voice,
-                    speed=assignment.speed,
-                    lang=assignment.lang,
-                )
+                if agent is not None:
+                    # Persona blend: Misaki phonemes, blended voices-v1.0.bin vector.
+                    raw_audio, raw_rate = self.synthesize_with_g2p(
+                        turn.text,
+                        dict(agent["params"]),
+                        agent_g2p(agent),
+                        speed=assignment.speed,
+                        lang=assignment.lang,
+                    )
+                else:
+                    raw_audio, raw_rate = self._kokoro.create(
+                        turn.text,
+                        voice=assignment.voice,
+                        speed=assignment.speed,
+                        lang=assignment.lang,
+                    )
             except AssertionError as exc:
                 raise ValueError(
                     f"kokoro-onnx rejected speaker {turn.speaker_id} voice {assignment.voice!r}: {exc}"

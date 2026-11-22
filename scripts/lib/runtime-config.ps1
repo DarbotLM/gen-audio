@@ -104,6 +104,7 @@ function Get-GenAudioRuntimeEnvironment {
         GEN_AUDIO_MODEL_DIR = $Config.models
         GEN_AUDIO_KOKORO_MODEL = Join-Path $Config.models 'kokoro-v1.0.onnx'
         GEN_AUDIO_KOKORO_VOICES = Join-Path $Config.models 'voices-v1.0.bin'
+        GEN_AUDIO_KOKORO_TORCH_DIR = Join-Path $Config.models 'kokoro-torch'
         GENAID_MODEL_BASE = $Config.models
         GEN_AUDIO_WORK_DIR = Join-Path $Config.runtime 'mcp'
         GEN_AUDIO_MCP_ADDR = "127.0.0.1:$($Config.ports.Mcp)"

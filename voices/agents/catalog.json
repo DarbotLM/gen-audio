@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "id": "agent-voices",
   "catalog_source": "handwritten",
-  "note": "Unique kokoro_onnx agent voice blends for the Darbot voice work nodes.",
+  "note": "Unique Kokoro agent voice blends: the Darbot voice work nodes, and the persona-* blends that catalog.rs personas name with voice-blend: refs. kokoro_onnx and kokoro_dayour both speak them through Misaki.",
   "library": {
     "env": "GENAID_VOICES_DIR"
   },
@@ -12,7 +12,16 @@
     "devbox3-agentworkshop-hub.json",
     "devbox4-poweragent.json",
     "darbotlm.json",
-    "darbotlabs.json"
+    "darbotlabs.json",
+    "persona-anton.json",
+    "persona-khortana.json",
+    "persona-rocky.json",
+    "persona-optimus.json",
+    "persona-nova.json",
+    "persona-ivo.json",
+    "persona-sable.json"
   ],
-  "g2p": ["g2p/misaki.en-us.json"]
+  "g2p": [
+    "g2p/misaki.en-us.json"
+  ]
 }

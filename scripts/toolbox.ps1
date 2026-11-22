@@ -624,7 +624,7 @@ function Install-ModelSet {
     }
 }
 
-function Install-DarbotSpeechWheels {
+function Install-DarbotSpeechWheelSet {
     param([Parameter(Mandatory = $true)][string]$RequirementsPath)
     $gh = Get-Tool @('gh.exe')
     if (-not $gh) { throw 'GitHub CLI is required for the private DarbotLM wheel set.' }
@@ -719,7 +719,7 @@ function Build-Framework {
         '--format', 'requirements-txt', '--no-emit-project',
         '--output-file', $fullRequirements
     ) $RepoRoot
-    Install-DarbotSpeechWheels -RequirementsPath $fullRequirements
+    Install-DarbotSpeechWheelSet -RequirementsPath $fullRequirements
     $requirementLines = [IO.File]::ReadAllLines($fullRequirements)
     $torchStart = [array]::IndexOf($requirementLines, @($requirementLines | Where-Object { $_ -match '^torch==' })[0])
     if ($torchStart -lt 0) { throw 'Frozen requirements did not contain torch.' }

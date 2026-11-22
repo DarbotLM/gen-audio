@@ -129,6 +129,20 @@ def test_toolbox_never_accepts_a_package_agreement_unless_the_operator_named_it(
     assert text.count("--accept-package-agreements") == 1
 
 
+def test_toolbox_retries_user_scope_winget_and_refuses_prerelease_python():
+    text = (REPO / "scripts" / "toolbox.ps1").read_text(encoding="utf-8")
+    assert "$script:WingetNoApplicableInstaller = -1978335216" in text
+    block = text[text.index("function Install-WingetPackage"):text.index("function Test-Checkout")]
+    assert "$global:LASTEXITCODE -ne $script:WingetNoApplicableInstaller" in block
+    assert "Invoke-External $winget ($arguments + $Extra) $RepoRoot" in block
+    uv = text[text.index("function Install-Uv"):text.index("function Install-DependencySet")]
+    assert uv.index("'pip', 'install'") < uv.index("Install-WingetPackage -Id 'astral-sh.uv'")
+    assert "[version]$actual -lt [version]$UvMinimumVersion" in uv
+    assert "@('venv', '--python', $PythonVersion" in text
+    assert "if ($release -notmatch '^final ')" in text
+    assert "'3.14'" in text and text.count("'3.14'") == 1, "the Python version lives in the $PythonVersion parameter only"
+
+
 @pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
 def test_native_build_entry_point_parses():
     path = str(REPO / "scripts" / "build-tauri-windows.ps1").replace("'", "''")

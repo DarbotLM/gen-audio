@@ -28,6 +28,10 @@ The `Node` path:
    `-AcceptPackageAgreement`, for example `-AcceptPackageAgreement Rustlang.Rustup`
    after you have reviewed that package's license. Otherwise the run stops and
    prints the exact `winget install` command so you can install it yourself.
+   A missing `uv` is installed from PyPI (`pip install --user uv`) first, and a
+   `uv` older than `-UvMinimumVersion` (default 0.9.0) is updated, because older
+   releases resolve `3.14` to a pre-release interpreter. The venv must be a final
+   Python `-PythonVersion` (default 3.14) release.
 3. Runs `uv sync --frozen --all-extras`, installs the desktop npm lockfile, and
    builds the MCP, ACP, and harness Rust crates.
 4. Stages checksum-verified Kokoro ONNX and voice-pack files in `models/`. It

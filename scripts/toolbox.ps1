@@ -37,6 +37,10 @@ param(
     [ValidateRange(0, 65535)][int]$PreviewPort = 0,
     [string]$LogRoot = (Join-Path $env:LOCALAPPDATA 'gen-audio\toolbox\logs'),
     [string[]]$AcceptPackageAgreement = @(),
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [string]$UvMinimumVersion = '0.9.0',
+    [ValidatePattern('^\d+\.\d+(\.\d+)?$')]
+    [string]$PythonVersion = '3.14',
     [switch]$SkipTests,
     [switch]$NoBrowser,
     [switch]$Help
@@ -61,6 +65,8 @@ $script:LeaseMutex = $null
 $script:LeaseOwned = $false
 $script:BestEffortWarnings = New-Object System.Collections.Generic.List[string]
 $script:ValidationSkipped = $false
+# APPINSTALLER_CLI_ERROR_NO_APPLICABLE_INSTALLER (0x8A150010)
+$script:WingetNoApplicableInstaller = -1978335216
 
 function Resolve-SessionPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -252,11 +258,18 @@ function Install-WingetPackage {
     $arguments = @(
         'install', '--id', $Id, '--exact', '--source', 'winget',
         '--silent', '--disable-interactivity',
-        '--accept-source-agreements', '--accept-package-agreements',
-        '--scope', $scope
+        '--accept-source-agreements', '--accept-package-agreements'
     )
-    $arguments += $Extra
-    try { Invoke-External $winget $arguments $RepoRoot }
+    try {
+        try { Invoke-External $winget ($arguments + @('--scope', $scope) + $Extra) $RepoRoot }
+        catch {
+            # Some manifests (Rustlang.Rustup) publish no installer for an explicit
+            # user scope. Retry once with the manifest's own default scope.
+            if ($Machine -or $global:LASTEXITCODE -ne $script:WingetNoApplicableInstaller) { throw }
+            Write-ToolboxLog 'INFO' "$Id has no $scope-scope installer; retrying with the manifest default scope."
+            Invoke-External $winget ($arguments + $Extra) $RepoRoot
+        }
+    }
     catch {
         if (-not (Get-Tool @($Id.Split('.')[-1]))) { throw }
         Add-BestEffortWarning "$Id reported an installation error, but its tool is now available; continuing in degraded mode."
@@ -357,14 +370,43 @@ function Install-Node {
     return $node
 }
 
+function Install-Uv {
+    # uv is MIT/Apache-2.0 on PyPI and installs without a package agreement, so a
+    # missing uv comes from pip before WinGet is considered.
+    if (-not (Get-Tool @('uv.exe'))) {
+        $python = Get-Tool @('python.exe')
+        if ($python) {
+            Invoke-External $python @('-m', 'pip', 'install', '--user', '--disable-pip-version-check', "uv>=$UvMinimumVersion") $RepoRoot
+            $scripts = & $python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))"
+            if ($scripts) { Add-PathPrefix "$scripts".Trim() }
+        }
+    }
+    if (-not (Get-Tool @('uv.exe'))) { Install-WingetPackage -Id 'astral-sh.uv' }
+    $uv = Get-Tool @('uv.exe')
+    $actual = ((& $uv --version) -replace '^uv\s+(\d+\.\d+\.\d+).*$', '$1').Trim()
+    if ([version]$actual -lt [version]$UvMinimumVersion) {
+        # An older uv resolves "3.14" to a pre-release interpreter (0.8.0 picks 3.14.0b4).
+        Write-ToolboxLog 'INFO' "uv $actual is older than $UvMinimumVersion; updating it."
+        try { Invoke-External $uv @('self', 'update') $RepoRoot }
+        catch {
+            $python = Get-Tool @('python.exe')
+            if (-not $python) { throw "uv $actual is older than $UvMinimumVersion and could not update itself. Update uv, then rerun." }
+            Invoke-External $python @('-m', 'pip', 'install', '--user', '--upgrade', '--disable-pip-version-check', "uv>=$UvMinimumVersion") $RepoRoot
+        }
+        $actual = ((& (Get-Tool @('uv.exe')) --version) -replace '^uv\s+(\d+\.\d+\.\d+).*$', '$1').Trim()
+        if ([version]$actual -lt [version]$UvMinimumVersion) { throw "uv $actual on PATH is still older than $UvMinimumVersion." }
+    }
+    Write-ToolboxLog 'OK' "uv $actual"
+}
+
 function Install-DependencySet {
     Write-ToolboxLog 'STEP' 'Installing system dependencies.'
     $git = Get-Tool @('git.exe')
     if (-not $git) { Install-WingetPackage -Id 'Git.Git' }
     $node = Install-Node
     if (-not (Get-Tool @('npm.cmd'))) { throw "npm was not found beside $node." }
-    if (-not (Get-Tool @('uv.exe'))) { Install-WingetPackage -Id 'astral-sh.uv' }
-    Invoke-External (Get-Tool @('uv.exe')) @('python', 'install', '3.14') $RepoRoot
+    Install-Uv
+    Invoke-External (Get-Tool @('uv.exe')) @('python', 'install', $PythonVersion) $RepoRoot
     if (-not (Get-Tool @('ffmpeg.exe')) -or -not (Get-Tool @('ffprobe.exe'))) {
         Install-WingetPackage -Id 'Gyan.FFmpeg'
         Add-PathPrefix (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links')
@@ -457,7 +499,11 @@ function Build-Framework {
     $venv = Join-Path $RepoRoot '.venv'
     $python = Join-Path $venv 'Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        Invoke-External $uv @('venv', '--python', '3.14', '--seed', $venv) $RepoRoot
+        Invoke-External $uv @('venv', '--python', $PythonVersion, '--seed', $venv) $RepoRoot
+    }
+    $release = (& $python -c "import sys; print(sys.version_info.releaselevel, sys.version.split()[0])") -join ' '
+    if ($release -notmatch '^final ') {
+        throw "The checkout venv uses a pre-release Python ($release). Remove $venv and the pre-release interpreter (uv python uninstall <version>), then rerun."
     }
     & $python -m pip --version *> $null
     if ($LASTEXITCODE -ne 0) {

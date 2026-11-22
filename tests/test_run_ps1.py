@@ -151,6 +151,40 @@ def test_toolbox_native_stderr_is_logged_not_fatal_on_windows_powershell():
     assert "throw \"$FilePath exited with ${code}" in block
 
 
+def test_toolbox_runtime_library_functions_reach_later_steps():
+    text = (REPO / "scripts" / "toolbox.ps1").read_text(encoding="utf-8")
+    block = text[text.index("function Initialize-Repository"):text.index("function Initialize-PackageNetwork")]
+    assert ". $runtimeLibrary" in block
+    assert block.index(". $runtimeLibrary") < block.index('Set-Item -Path "function:script:$($definition.Name)"')
+    library = (REPO / "scripts" / "lib" / "runtime-config.ps1").read_text(encoding="utf-8")
+    assert "function Get-GenAudioRuntimeEnvironment" in library
+    assert "Get-GenAudioRuntimeEnvironment $script:RuntimeConfig" in text
+
+
+@pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
+def test_toolbox_promotes_dot_sourced_library_functions(tmp_path):
+    lib = tmp_path / "lib.ps1"
+    lib.write_text("function Get-Probe { 'probe-ok' }\n", encoding="utf-8")
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        "function Initialize-Thing {\n"
+        f"    $runtimeLibrary = '{lib}'\n"
+        "    . $runtimeLibrary\n"
+        "    $libraryAst = [Management.Automation.Language.Parser]::ParseFile($runtimeLibrary, [ref]$null, [ref]$null)\n"
+        "    foreach ($definition in $libraryAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false)) {\n"
+        "        Set-Item -Path \"function:script:$($definition.Name)\" -Value (Get-Item -LiteralPath \"function:$($definition.Name)\").ScriptBlock\n"
+        "    }\n"
+        "}\n"
+        "function Use-Thing { Get-Probe }\n"
+        "Initialize-Thing\n"
+        "Use-Thing\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run([SHELL, "-NoProfile", "-File", str(script)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "probe-ok" in result.stdout
+
+
 @pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
 def test_native_build_entry_point_parses():
     path = str(REPO / "scripts" / "build-tauri-windows.ps1").replace("'", "''")

@@ -312,6 +312,13 @@ function Initialize-Repository {
     }
     $runtimeLibrary = Join-Path $RepoRoot 'scripts\lib\runtime-config.ps1'
     . $runtimeLibrary
+    # Dot-sourcing inside this function scopes the library's functions to it, so
+    # later steps (Write-RuntimeDescriptor) could not call them. Promote every
+    # function the library defines to script scope.
+    $libraryAst = [Management.Automation.Language.Parser]::ParseFile($runtimeLibrary, [ref]$null, [ref]$null)
+    foreach ($definition in $libraryAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+        Set-Item -Path "function:script:$($definition.Name)" -Value (Get-Item -LiteralPath "function:$($definition.Name)").ScriptBlock
+    }
     $script:RuntimeConfig = Read-GenAudioRuntimeConfig -RepoRoot $RepoRoot -NodePort $NodePort -McpPort $McpPort -PreviewPort $PreviewPort
     $script:NodePort = [int]$script:RuntimeConfig.ports.Node
     $script:McpPort = [int]$script:RuntimeConfig.ports.Mcp

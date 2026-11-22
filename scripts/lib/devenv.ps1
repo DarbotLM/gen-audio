@@ -132,6 +132,48 @@ function Invoke-CargoBinBuild {
     return Select-CargoBinArtifact -Line $lines.ToArray() -Bin $Bin
 }
 
+function Get-CargoUnit {
+    # cargo's per-unit build directories for package $Package under a profile
+    # dir such as target\release, in either layout cargo writes:
+    #   legacy   .fingerprint\<pkg>-<hash>\ (fingerprint files),
+    #            build\<pkg>-<hash>\output (build-script stdout), artifacts
+    #            flat in deps\ as <crate>-<hash>.<ext>.
+    #   current  build\<pkg>\<hash>\fingerprint\, build\<pkg>\<hash>\out\
+    #            (the unit's artifacts, no hash suffix) and, for a build-script
+    #            run, build\<pkg>\<hash>\run\stdout. cargo 1.100 writes only
+    #            this layout: there is no .fingerprint or deps dir at all.
+    # One object per unit: Layout, Hash, Fingerprint (dir), FingerprintFiles
+    # (file names in it), Out (artifact dir), BuildScriptOutput (path; may
+    # not exist).
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory = $true)][string]$ProfileDir, [Parameter(Mandatory = $true)][string]$Package)
+    $legacyHashes = New-Object System.Collections.Generic.SortedSet[string]
+    foreach ($parent in @((Join-Path $ProfileDir '.fingerprint'), (Join-Path $ProfileDir 'build'))) {
+        foreach ($dir in @(Get-ChildItem -LiteralPath $parent -Directory -Filter "$Package-*" -ErrorAction SilentlyContinue)) {
+            $hash = $dir.Name.Substring($Package.Length + 1)
+            if ($hash -match '^[0-9a-f]{16}$') { $legacyHashes.Add($hash) | Out-Null }
+        }
+    }
+    foreach ($hash in $legacyHashes) {
+        $fingerprint = Join-Path $ProfileDir ".fingerprint\$Package-$hash"
+        [pscustomobject]@{
+            Layout = 'legacy'; Hash = $hash; Fingerprint = $fingerprint
+            FingerprintFiles = @(Get-ChildItem -LiteralPath $fingerprint -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            Out = (Join-Path $ProfileDir 'deps'); BuildScriptOutput = (Join-Path $ProfileDir "build\$Package-$hash\output")
+        }
+    }
+    foreach ($dir in @(Get-ChildItem -LiteralPath (Join-Path $ProfileDir "build\$Package") -Directory -ErrorAction SilentlyContinue)) {
+        if ($dir.Name -notmatch '^[0-9a-f]{16}$') { continue }
+        $fingerprint = Join-Path $dir.FullName 'fingerprint'
+        [pscustomobject]@{
+            Layout = 'current'; Hash = $dir.Name; Fingerprint = $fingerprint
+            FingerprintFiles = @(Get-ChildItem -LiteralPath $fingerprint -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            Out = (Join-Path $dir.FullName 'out'); BuildScriptOutput = (Join-Path $dir.FullName 'run\stdout')
+        }
+    }
+}
+
 function Get-OutputFingerprint {
     # Length and sha256 of a build output, or $null when it is missing.
     [CmdletBinding()]

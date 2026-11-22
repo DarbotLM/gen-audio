@@ -244,29 +244,55 @@ try {
     if ($exampleChunk.Count -gt 0) { throw "dist has $($exampleChunk[0].Name); VITE_GEN_AUDIO_FIXTURES leaked into a release build" }
     Write-Step "frontend dist ok $($index.Path) sha256 $($index.Sha256) ($($index.State); public files match; no dev fixtures)"
 
+    $exe = Assert-BuildOutput -LiteralPath $exePath -What 'target\release\gen-audio.exe' -Before $before.exe
+    # Provenance: tauri copies cargo's gen-audio-desktop binary to
+    # target\release\gen-audio.exe and bundles that file. Exactly one cargo
+    # unit must hold a bin with the same sha256: that proves the exe is this
+    # build's compile output, not a leftover copy, and picks the cargo layout
+    # (Get-CargoUnit) the checks below read. cargo 1.100 writes no
+    # .fingerprint dir, so the old .fingerprint-only gate found 0 and failed.
+    # Units an older cargo left in the other layout are listed and ignored.
+    $desktopUnits = @(Get-CargoUnit -ProfileDir $releaseDir -Package 'gen-audio-desktop')
+    $binMatches = @(foreach ($unit in $desktopUnits) {
+            if ($unit.FingerprintFiles -notcontains 'bin-gen-audio-desktop') { continue }
+            $binPath = if ($unit.Layout -eq 'current') { Join-Path $unit.Out 'gen_audio_desktop.exe' } else { Join-Path $unit.Out "gen_audio_desktop-$($unit.Hash).exe" }
+            if ((Test-Path -LiteralPath $binPath -PathType Leaf) -and (Get-Sha256 -LiteralPath $binPath) -eq $exe.Sha256) {
+                [pscustomobject]@{ Unit = $unit; Path = $binPath }
+            }
+        })
+    if ($binMatches.Count -ne 1) {
+        throw ("expected exactly one cargo gen-audio-desktop bin unit under $releaseDir whose binary has gen-audio.exe's sha256 $($exe.Sha256), " +
+            "found $($binMatches.Count) ($($desktopUnits.Count) desktop unit(s) seen); the exe is not provably this build's")
+    }
+    $layout = $binMatches[0].Unit.Layout
+    $units = @($desktopUnits | Where-Object { $_.Layout -eq $layout })
+    $ignored = @($desktopUnits | Where-Object { $_.Layout -ne $layout })
+    Write-Step "exe provenance: cargo unit $($binMatches[0].Unit.Hash) ($layout layout) $($binMatches[0].Path) has gen-audio.exe's sha256$(if ($ignored.Count) { "; ignoring $($ignored.Count) unit(s) in the $($ignored[0].Layout) layout" })"
+
     # No localhost: a dev build (no custom-protocol) makes tauri-build emit
     # cargo:rustc-cfg=dev, and that exe loads devUrl http://localhost:1420.
     # Every gen-audio-desktop build-script output is checked, whatever its
     # mtime (a no-op rebuild does not rewrite it; the fingerprint gate below
-    # allows only one desktop configuration).
-    $outputs = @(Get-ChildItem -Path (Join-Path $releaseDir 'build') -Filter 'output' -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.Directory.Name -like 'gen-audio-desktop-*' })
+    # allows only one desktop configuration). None found is a failure: a
+    # check over zero outputs proves nothing.
+    $outputs = @($units | Where-Object { Test-Path -LiteralPath $_.BuildScriptOutput -PathType Leaf } |
+            ForEach-Object { Get-Item -LiteralPath $_.BuildScriptOutput })
+    if ($outputs.Count -eq 0) { throw "no gen-audio-desktop build-script output in cargo's $layout layout under $releaseDir; cannot rule out a dev (devUrl) build" }
     foreach ($output in $outputs) {
         if (Select-String -LiteralPath $output.FullName -Pattern 'cargo:rustc-cfg=dev' -SimpleMatch -Quiet) {
             throw "dev build detected ($($output.FullName) has cargo:rustc-cfg=dev); this exe would load http://localhost:1420"
         }
     }
     Write-Step "no dev cfg in gen-audio-desktop build-script output ($($outputs.Count) checked)"
-    # Fingerprint gate: one desktop lib fingerprint in target\release. More than
-    # one means the desktop crate was built under a second configuration
-    # (bare cargo, another CLI, other features) and the cache is thrashing.
-    $fingerprints = @(Get-ChildItem -Path (Join-Path $releaseDir '.fingerprint') -Directory -Filter 'gen-audio-desktop-*' -ErrorAction SilentlyContinue |
-            Where-Object { @(Get-ChildItem -LiteralPath $_.FullName -Filter 'lib-gen_audio_desktop_lib*' -ErrorAction SilentlyContinue).Count -gt 0 })
-    Write-Step "gen-audio-desktop lib fingerprints: $($fingerprints.Count) ($(($fingerprints | ForEach-Object { $_.Name }) -join ', '))"
+    # Fingerprint gate: one desktop lib fingerprint in the layout cargo used.
+    # More than one means the desktop crate was built under a second
+    # configuration (bare cargo, another CLI, other features) and the cache
+    # is thrashing.
+    $fingerprints = @($units | Where-Object { @($_.FingerprintFiles | Where-Object { $_ -like 'lib-gen_audio_desktop_lib*' }).Count -gt 0 })
+    Write-Step "gen-audio-desktop lib fingerprints: $($fingerprints.Count) ($layout layout: $(($fingerprints | ForEach-Object { $_.Hash }) -join ', '))"
     if ($fingerprints.Count -ne 1) {
-        throw "expected exactly one gen-audio-desktop lib fingerprint under target\release\.fingerprint, found $($fingerprints.Count)"
+        throw "expected exactly one gen-audio-desktop lib fingerprint in cargo's $layout layout under $releaseDir, found $($fingerprints.Count)"
     }
-    $exe = Assert-BuildOutput -LiteralPath $exePath -What 'target\release\gen-audio.exe' -Before $before.exe
     Write-Step "exe $($exe.Path) sha256 $($exe.Sha256) ($($exe.State))"
 
     if ($Mode -eq 'Full') {

@@ -116,7 +116,7 @@ def _phonemize(args) -> int:
                 "version": config.version,
                 "phonemes": phonemes,
             },
-            ensure_ascii=False,
+            ensure_ascii=True,
         )
         + "\n"
     )

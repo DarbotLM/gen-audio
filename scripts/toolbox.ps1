@@ -518,6 +518,9 @@ function Install-ModelSet {
     Write-ToolboxLog 'STEP' 'Staging checkout-local Kokoro model assets.'
     $models = Join-Path $RepoRoot 'models'
     New-Item -ItemType Directory -Force -Path $models | Out-Null
+    # Downloads stage under the runtime directory, which a fresh checkout
+    # running -Step Models alone has not created yet.
+    New-Item -ItemType Directory -Force -Path $script:RuntimeDir | Out-Null
     $targets = @(
         @{
             Name = 'kokoro-v1.0.onnx'

@@ -246,3 +246,9 @@ def test_toolbox_node_archive_extracts_on_windows_powershell_51():
     block = block[:block.index("\nfunction ")]
     assert "Expand-Archive -LiteralPath" not in block, "Expand-Archive 1.0.1.0 fails on Windows PowerShell 5.1"
     assert "[System.IO.Compression.ZipFile]::ExtractToDirectory($archive, (Join-Path $cache 'extract'))" in block
+
+
+def test_toolbox_models_step_creates_the_runtime_directory_before_downloading():
+    text = (REPO / "scripts" / "toolbox.ps1").read_text(encoding="utf-8")
+    block = text[text.index("Staging checkout-local Kokoro model assets."):]
+    assert block.index("New-Item -ItemType Directory -Force -Path $script:RuntimeDir") < block.index("$download = Join-Path $script:RuntimeDir")

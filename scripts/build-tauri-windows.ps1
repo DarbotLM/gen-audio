@@ -253,21 +253,32 @@ try {
     # .fingerprint dir, so the old .fingerprint-only gate found 0 and failed.
     # Units an older cargo left in the other layout are listed and ignored.
     $desktopUnits = @(Get-CargoUnit -ProfileDir $releaseDir -Package 'gen-audio-desktop')
+    # Where the unit's binary is: current layout build\<pkg>\<hash>\out\
+    # gen_audio_desktop.exe (cargo 1.100); legacy layout deps\gen_audio_desktop.exe
+    # (cargo 1.90 on Windows: bins carry no hash suffix, so the pdb name stays
+    # stable) or deps\gen_audio_desktop-<hash>.exe. tauri copies it to
+    # gen-audio.exe and may leave its bundle-type marker set there, so a
+    # match is byte-equal except those three letters (Compare-TauriBundleExe).
     $binMatches = @(foreach ($unit in $desktopUnits) {
-            if ($unit.FingerprintFiles -notcontains 'bin-gen-audio-desktop') { continue }
-            $binPath = if ($unit.Layout -eq 'current') { Join-Path $unit.Out 'gen_audio_desktop.exe' } else { Join-Path $unit.Out "gen_audio_desktop-$($unit.Hash).exe" }
-            if ((Test-Path -LiteralPath $binPath -PathType Leaf) -and (Get-Sha256 -LiteralPath $binPath) -eq $exe.Sha256) {
-                [pscustomobject]@{ Unit = $unit; Path = $binPath }
+            if (@($unit.FingerprintFiles | Where-Object { $_ -match '^bin-gen[-_]audio[-_]desktop$' }).Count -eq 0) { continue }
+            $candidates = if ($unit.Layout -eq 'current') { @(Join-Path $unit.Out 'gen_audio_desktop.exe') } else { @((Join-Path $unit.Out "gen_audio_desktop-$($unit.Hash).exe"), (Join-Path $unit.Out 'gen_audio_desktop.exe')) }
+            foreach ($binPath in $candidates) {
+                if (-not (Test-Path -LiteralPath $binPath -PathType Leaf)) { continue }
+                $same = (Get-Sha256 -LiteralPath $binPath) -eq $exe.Sha256
+                if (-not $same) {
+                    try { $null = Compare-TauriBundleExe -Built $binPath -Payload $exe.Path; $same = $true } catch { $same = $false }
+                }
+                if ($same) { [pscustomobject]@{ Unit = $unit; Path = $binPath }; break }
             }
         })
     if ($binMatches.Count -ne 1) {
-        throw ("expected exactly one cargo gen-audio-desktop bin unit under $releaseDir whose binary has gen-audio.exe's sha256 $($exe.Sha256), " +
+        throw ("expected exactly one cargo gen-audio-desktop bin unit under $releaseDir whose binary matches gen-audio.exe (sha256 $($exe.Sha256), or equal but for the tauri bundle-type marker), " +
             "found $($binMatches.Count) ($($desktopUnits.Count) desktop unit(s) seen); the exe is not provably this build's")
     }
     $layout = $binMatches[0].Unit.Layout
     $units = @($desktopUnits | Where-Object { $_.Layout -eq $layout })
     $ignored = @($desktopUnits | Where-Object { $_.Layout -ne $layout })
-    Write-Step "exe provenance: cargo unit $($binMatches[0].Unit.Hash) ($layout layout) $($binMatches[0].Path) has gen-audio.exe's sha256$(if ($ignored.Count) { "; ignoring $($ignored.Count) unit(s) in the $($ignored[0].Layout) layout" })"
+    Write-Step "exe provenance: cargo unit $($binMatches[0].Unit.Hash) ($layout layout) $($binMatches[0].Path) matches gen-audio.exe$(if ($ignored.Count) { "; ignoring $($ignored.Count) unit(s) in the $($ignored[0].Layout) layout" })"
 
     # No localhost: a dev build (no custom-protocol) makes tauri-build emit
     # cargo:rustc-cfg=dev, and that exe loads devUrl http://localhost:1420.

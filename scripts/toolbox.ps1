@@ -713,6 +713,7 @@ function Build-Framework {
     New-Item -ItemType Directory -Force -Path $script:RuntimeDir | Out-Null
     $requirements = Join-Path $script:RuntimeDir 'python-requirements.lock.txt'
     $torchRequirements = Join-Path $script:RuntimeDir 'torch-requirements.lock.txt'
+    $gpuRuntimeRequirements = Join-Path $script:RuntimeDir 'onnxruntime-gpu-requirements.lock.txt'
     $fullRequirements = Join-Path $script:RuntimeDir 'python-requirements-full.lock.txt'
     Invoke-External $uv @(
         'export', '--frozen', '--all-extras',
@@ -752,6 +753,27 @@ function Build-Framework {
         $pipArguments += @('--index-url', $env:PIP_INDEX_URL)
     }
     Invoke-External $python $pipArguments $RepoRoot
+    $gpuStart = [array]::IndexOf($requirementLines, @($requirementLines | Where-Object { $_ -match '^onnxruntime-gpu' })[0])
+    if ($gpuStart -ge 0) {
+        $gpuEnd = $gpuStart + 1
+        while ($gpuEnd -lt $requirementLines.Count -and $requirementLines[$gpuEnd] -notmatch '^[A-Za-z0-9_.-]+(?:\[.*\])?==') {
+            $gpuEnd++
+        }
+        [IO.File]::WriteAllLines(
+            $gpuRuntimeRequirements,
+            $requirementLines[$gpuStart..($gpuEnd - 1)],
+            (New-Object Text.UTF8Encoding($false))
+        )
+        $gpuArguments = @(
+            '-m', 'pip', 'install', '--disable-pip-version-check',
+            '--force-reinstall', '--only-binary=:all:', '--require-hashes',
+            '--no-deps', '-r', $gpuRuntimeRequirements
+        )
+        if ($env:PIP_INDEX_URL) {
+            $gpuArguments += @('--index-url', $env:PIP_INDEX_URL)
+        }
+        Invoke-External $python $gpuArguments $RepoRoot
+    }
     Invoke-External $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', '.') $RepoRoot
     Invoke-External $uv @('lock', '--check', '--offline') $RepoRoot    Invoke-External $python @('-m', 'pip', 'check') $RepoRoot
     Invoke-External (Get-Tool @('npm.cmd')) @('ci') (Join-Path $RepoRoot 'apps\desktop')

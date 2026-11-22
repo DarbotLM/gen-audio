@@ -225,14 +225,20 @@ function Invoke-External {
     Write-ToolboxLog 'CMD' "$FilePath $($Arguments -join ' ') (cwd: $WorkingDirectory)"
     $originalDirectory = [IO.Directory]::GetCurrentDirectory()
     Set-Location -LiteralPath $WorkingDirectory
+    # Windows PowerShell 5.1 turns any native stderr line into a terminating
+    # NativeCommandError under ErrorActionPreference=Stop (uv writes download
+    # progress to stderr). The exit code is the failure signal, so log stderr.
+    $previousPreference = $ErrorActionPreference
     try {
+        $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = 0
         & $FilePath @Arguments 2>&1 | ForEach-Object {
-            $line = "$_"
+            $line = if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
             if ($line) { Write-ToolboxLog 'CMD' $line }
         }
         $code = $LASTEXITCODE
     } finally {
+        $ErrorActionPreference = $previousPreference
         Set-Location -LiteralPath $originalDirectory
     }
     if ($code -ne 0) {

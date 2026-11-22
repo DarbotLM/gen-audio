@@ -143,6 +143,14 @@ def test_toolbox_retries_user_scope_winget_and_refuses_prerelease_python():
     assert "'3.14'" in text and text.count("'3.14'") == 1, "the Python version lives in the $PythonVersion parameter only"
 
 
+def test_toolbox_native_stderr_is_logged_not_fatal_on_windows_powershell():
+    text = (REPO / "scripts" / "toolbox.ps1").read_text(encoding="utf-8")
+    block = text[text.index("function Invoke-External"):text.index("function Install-WingetPackage")]
+    assert block.index("$ErrorActionPreference = 'Continue'") < block.index("& $FilePath @Arguments 2>&1")
+    assert "$ErrorActionPreference = $previousPreference" in block
+    assert "throw \"$FilePath exited with ${code}" in block
+
+
 @pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
 def test_native_build_entry_point_parses():
     path = str(REPO / "scripts" / "build-tauri-windows.ps1").replace("'", "''")

@@ -552,7 +552,8 @@ class KokoroOnnxSynthesizer:
                     lang=assignment.lang,
                     phonemes=phonemes,
                     options=options,
-                )            except AssertionError as exc:
+                )
+            except AssertionError as exc:
                 raise ValueError(
                     f"kokoro-onnx rejected speaker {turn.speaker_id} voice {assignment.voice!r}: {exc}"
                 ) from exc

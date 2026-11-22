@@ -21,8 +21,8 @@
       "sha256": "db383ad7a31dd2c34f7c72f546508c5d5fd3f899e1267806f1aced8ef676924e"
     },
     "library_bitdot_braille_vibevoice_pipeline_r2_cube3d.json": {
-      "bytes": 294029,
-      "sha256": "0f85c83a46723e67387ec656accedbbcf87cbdbfaf908ab39f8abaf9c00eb484"
+      "bytes": 294027,
+      "sha256": "7f0327e05b57905ee067ad00b6352a3cf21ef5299e3494dac21df516bb7fec87"
     },
     "library_cube_explainer_kokoro_onnx_cube3d.json": {
       "bytes": 295214,
@@ -37,8 +37,8 @@
       "sha256": "995ff66a4e251c912dc69c1068fbbbea613131c8bdfcaf46381f4a7f8b62ebec"
     },
     "library_genaid_full_misaki_kokoro_pipeline_r2_cube3d.json": {
-      "bytes": 294929,
-      "sha256": "72203442b317b2c540d2caf528b28ff55eaaf3a74d6e56208db538d36ed9ce34"
+      "bytes": 294925,
+      "sha256": "246f03ba3ce3d8036d95ab2beb3fe0913191992f95abc2b255c578cc0605eb68"
     },
     "library_kokoro_cube3d.json": {
       "bytes": 294733,

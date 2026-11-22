@@ -1,7 +1,10 @@
 """Engine probes name the missing piece and do not write audio."""
 
-from gen_audio.adapters import EngineRefusal, probe, synthesize
-from gen_audio.cast import CastMap, Turn
+import numpy as np
+
+from gen_audio.audio_io import read_wav
+from gen_audio.adapters import EngineRefusal, _render_turns, probe, synthesize
+from gen_audio.cast import CastMap, Turn, VoiceAssignment
 
 
 def test_kokoro_refusal_names_missing_model_env(monkeypatch):
@@ -72,3 +75,46 @@ def test_synthesize_does_not_write_audio_when_refused(tmp_path, monkeypatch):
     else:
         raise AssertionError("synth wrote a refusal path as success")
     assert not output.exists()
+
+
+def test_render_turns_can_trim_kpipeline_padding_and_use_even_gap(tmp_path):
+    rate = 24000
+    tone = np.ones(2400, dtype=np.float32)
+    padded = np.concatenate(
+        (
+            np.zeros(rate // 2, dtype=np.float32),
+            tone,
+            np.zeros(rate // 2, dtype=np.float32),
+        )
+    )
+    turns = [
+        Turn("1", "One.", "Alice", 1),
+        Turn("2", "Two.", "Alice", 2),
+    ]
+    cast = CastMap(
+        "kokoro_dayour",
+        "en-us",
+        1.0,
+        {
+            "1": VoiceAssignment("1", "Alice", "af_heart", "en-us", 1.0),
+            "2": VoiceAssignment("2", "Alice", "af_heart", "en-us", 1.0),
+        },
+    )
+
+    result = _render_turns(
+        "kokoro_dayour",
+        turns,
+        cast,
+        tmp_path / "turns.wav",
+        lambda _turn, _assignment: (padded, rate),
+        trim=True,
+        gap_seconds=0.3,
+    )
+    audio, rendered_rate = read_wav(tmp_path / "turns.wav")
+
+    assert rendered_rate == rate
+    assert result["samples"] == len(audio)
+    segments = result["speech"]["segments"]
+    assert len(segments) == 2
+    assert segments[0]["end_sample"] - segments[0]["start_sample"] <= len(tone) + 2 * 720
+    assert segments[1]["start_sample"] - segments[0]["end_sample"] == 7200

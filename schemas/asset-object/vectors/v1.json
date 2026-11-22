@@ -465,13 +465,15 @@
       "envelope": {
         "body": {
           "label": "DarbotLM/kokoro",
-          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",          "synth_adapter": true,
+          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",
+          "synth_adapter": true,
           "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "DarbotLM/kokoro"        },
+          "title": "DarbotLM/kokoro"
+        },
         "fields": {
           "model_id": "kokoro_dayour",
           "waveform": true
@@ -1183,13 +1185,15 @@
       "envelope": {
         "body": {
           "label": "DarbotLM/kokoro",
-          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",          "synth_adapter": true,
+          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",
+          "synth_adapter": true,
           "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "DarbotLM/kokoro"        },
+          "title": "DarbotLM/kokoro"
+        },
         "fields": {
           "model_id": "kokoro_dayour",
           "waveform": true
@@ -1222,13 +1226,15 @@
       "envelope": {
         "body": {
           "label": "DarbotLM/kokoro",
-          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",          "synth_adapter": true,
+          "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",
+          "synth_adapter": true,
           "unavailable": false,
           "waveform": true
         },
         "display": {
           "glyph": "⣗⡡",
-          "title": "DarbotLM/kokoro"        },
+          "title": "DarbotLM/kokoro"
+        },
         "fields": {
           "model_id": "kokoro_dayour",
           "waveform": true
@@ -4627,13 +4633,15 @@
         {
           "body": {
             "label": "DarbotLM/kokoro",
-            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",            "synth_adapter": true,
+            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",
+            "synth_adapter": true,
             "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "DarbotLM/kokoro"          },
+            "title": "DarbotLM/kokoro"
+          },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true
@@ -4896,13 +4904,15 @@
         {
           "body": {
             "label": "DarbotLM/kokoro",
-            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",            "synth_adapter": true,
+            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",
+            "synth_adapter": true,
             "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "DarbotLM/kokoro"          },
+            "title": "DarbotLM/kokoro"
+          },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true
@@ -5090,13 +5100,15 @@
         {
           "body": {
             "label": "DarbotLM/kokoro",
-            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",            "synth_adapter": true,
+            "note": "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",
+            "synth_adapter": true,
             "unavailable": false,
             "waveform": true
           },
           "display": {
             "glyph": "⣗⡡",
-            "title": "DarbotLM/kokoro"          },
+            "title": "DarbotLM/kokoro"
+          },
           "fields": {
             "model_id": "kokoro_dayour",
             "waveform": true

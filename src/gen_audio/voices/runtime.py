@@ -422,11 +422,13 @@ def run_kokoro_pipeline(
     pipeline=None,
     model=None,
     library: Path | str | None = None,
-):    """Call ``KPipeline`` with a Misaki ``g2p`` assigned and return 24 kHz audio.
+):
+    """Call ``KPipeline`` with a Misaki ``g2p`` assigned and return 24 kHz audio.
 
-    ``voice`` is a pack id, a local ``.pt`` path, or a pre-mixed tensor. With
-    ``GEN_AUDIO_KOKORO_TORCH_DIR`` set (and no injected ``pipeline_cls``) the
-    model loads from that directory, never from the network.
+    ``voice`` is a pack id, a local ``.pt`` path, or a pre-mixed tensor.
+    Explicit config and weight files are selected by
+    ``GEN_AUDIO_KOKORO_TORCH_CONFIG`` and ``GEN_AUDIO_KOKORO_TORCH_WEIGHTS``;
+    otherwise controlled Hugging Face loading uses the configured repo id.
     """
     import numpy as np
 
@@ -440,7 +442,8 @@ def run_kokoro_pipeline(
         if model is not None:
             kwargs["model"] = model
         pipeline = _construct_pipeline(pipeline_cls, kwargs)
-    pipeline.g2p = build_misaki(g2p, library=library)    chunks = []
+    pipeline.g2p = build_misaki(g2p, library=library)
+    chunks = []
     with hf_offline_when_required():
         for result in pipeline(text, voice=voice, speed=float(speed)):
             audio = _result_audio(result)

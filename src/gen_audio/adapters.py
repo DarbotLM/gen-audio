@@ -166,7 +166,8 @@ def _missing_kokoro_torch() -> list[str]:
         missing.append("misaki is not installed; kokoro will not invent phonemes")
     config = os.environ.get("GEN_AUDIO_KOKORO_TORCH_CONFIG", "").strip()
     weights = os.environ.get("GEN_AUDIO_KOKORO_TORCH_WEIGHTS", "").strip()
-    if bool(config) != bool(weights):        missing.append(
+    if bool(config) != bool(weights):
+        missing.append(
             "GEN_AUDIO_KOKORO_TORCH_CONFIG and GEN_AUDIO_KOKORO_TORCH_WEIGHTS must be set together"
         )
     if config and not Path(config).is_file():
@@ -255,7 +256,15 @@ def _synth_kokoro_torch(turns: list[Turn], cast: CastMap, output: Path) -> dict:
                 )
                 return audio, sample_rate
 
-            return _render_turns("kokoro_dayour", turns, cast, output, render)
+            return _render_turns(
+                "kokoro_dayour",
+                turns,
+                cast,
+                output,
+                render,
+                trim=True,
+                gap_seconds=0.3,
+            )
         except (VoiceError, ValueError, OSError, RuntimeError) as exc:
             if isinstance(exc, EngineRefusal):
                 raise
@@ -706,7 +715,16 @@ def _normalize_audio(audio: np.ndarray, rate: int, target_rate: int) -> np.ndarr
     return values.astype(np.float32)
 
 
-def _render_turns(engine, turns, cast, output, render) -> dict:
+def _render_turns(
+    engine,
+    turns,
+    cast,
+    output,
+    render,
+    *,
+    trim: bool = False,
+    gap_seconds: float = 0.15,
+) -> dict:
     speakers, indexes = roster(turns, cast)
     rate = 24000
     pieces = []
@@ -715,10 +733,20 @@ def _render_turns(engine, turns, cast, output, render) -> dict:
             enforce_text_limit(turn.text, "segment")
             audio, actual_rate = render(turn, resolve_turn(turn, cast))
             samples = _normalize_audio(audio, actual_rate, rate)
+            if trim:
+                from gen_audio.improve import trim_bounds
+
+                start, end = trim_bounds(samples, rate)
+                if end > start:
+                    samples = samples[start:end]
         except (ValueError, OSError, RuntimeError) as exc:
             raise EngineRefusal(engine, [f"speaker {turn.speaker_id}, line {turn.line}: {exc}"]) from exc
         pieces.append((indexes[turn.speaker_id], samples))
-    joined, segments = concatenate_turns(pieces, rate, np.zeros(int(0.15 * rate), dtype=np.float32))
+    joined, segments = concatenate_turns(
+        pieces,
+        rate,
+        np.zeros(int(gap_seconds * rate), dtype=np.float32),
+    )
     write_wav(output, joined, rate, subtype="FLOAT")
     return {
         "engine": engine,

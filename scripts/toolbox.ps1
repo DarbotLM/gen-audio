@@ -742,11 +742,13 @@ function Build-Framework {
         '--index-url', $script:TorchIndexUrl,
         '-r', $torchRequirements
     ) $RepoRoot
-    # A few pure-Python Misaki dependencies (notably jieba) publish only an
-    # sdist. pip still prefers wheels whenever the frozen lock provides one.
+    # A few pure-Python Misaki dependencies publish only an sdist, while the
+    # pinned Kokoro wheels target uv's Python 3.14 resolution despite an older
+    # Requires-Python declaration. Prefer wheels where available and preserve
+    # the lock's resolved environment instead of re-checking those bounds.
     $pipArguments = @(
         '-m', 'pip', 'install', '--disable-pip-version-check',
-        '--prefer-binary', '--require-hashes',
+        '--prefer-binary', '--require-hashes', '--ignore-requires-python',
         '-r', $requirements
     )
     if ($env:PIP_INDEX_URL) {
@@ -775,7 +777,8 @@ function Build-Framework {
         Invoke-External $python $gpuArguments $RepoRoot
     }
     Invoke-External $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', '.') $RepoRoot
-    Invoke-External $uv @('lock', '--check', '--offline') $RepoRoot    Invoke-External $python @('-m', 'pip', 'check') $RepoRoot
+    Invoke-External $uv @('lock', '--check', '--offline') $RepoRoot
+    Invoke-External $python @('-m', 'pip', 'check') $RepoRoot
     Invoke-External (Get-Tool @('npm.cmd')) @('ci') (Join-Path $RepoRoot 'apps\desktop')
     Invoke-External (Get-Tool @('npm.cmd')) @('run', 'build') (Join-Path $RepoRoot 'apps\desktop')
     Invoke-External (Get-Tool @('cargo.exe')) @(

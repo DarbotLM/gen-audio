@@ -491,7 +491,8 @@ fn every_engine_without_an_in_app_adapter_is_offline_only_or_unavailable() {
     let status = |id: &str| models.iter().find(|model| model["legacy_id"] == id).unwrap()["body"]["availability"]["status"].clone();
     let kokoro = models.iter().find(|model| model["legacy_id"] == "kokoro_dayour").unwrap();
     assert_eq!(kokoro["status"], "ok");
-    assert!(kokoro["body"].get("availability").is_none());    assert_eq!(status("misaki"), "offline_only");
+    assert!(kokoro["body"].get("availability").is_none());
+    assert_eq!(status("misaki"), "offline_only");
     assert_eq!(status("vibevoice"), "unavailable");
     // The engine list agrees: only the implemented engine is producible.
     for engine in gen_audio_core::engines::engines() {
@@ -611,7 +612,10 @@ fn speech_facts_reject_nine_speakers_overlap_and_overrun() {
 
     let cube = assets
         .iter()
-        .find(|asset| asset["kind"] == "cube_ihdr")
+        .find(|asset| {
+            asset["kind"] == "cube_ihdr"
+                && asset["fields"]["layer_method"] == "library_r3"
+        })
         .unwrap();
     assert_eq!(cube["body"]["speakers"], "unresolved");
     let time_bins = cube["fields"]["time_bins"].as_u64().unwrap() as usize;

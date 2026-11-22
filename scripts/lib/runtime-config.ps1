@@ -122,7 +122,8 @@ function Get-GenAudioRuntimeEnvironment {
         GEN_AUDIO_ALLOW_HF_DOWNLOAD = $allowHfDownload
         GEN_AUDIO_KOKORO_TRIM = $onnxTrim
         GEN_AUDIO_KOKORO_USE_MISAKI = $useMisaki
-        ONNX_PROVIDER = $onnxProvider        GENAID_MODEL_BASE = $Config.models
+        ONNX_PROVIDER = $onnxProvider
+        GENAID_MODEL_BASE = $Config.models
         GEN_AUDIO_WORK_DIR = Join-Path $Config.runtime 'mcp'
         GEN_AUDIO_MCP_ADDR = "127.0.0.1:$($Config.ports.Mcp)"
         GEN_AUDIO_MCP_ADDR_FILE = $Config.mcpAddressFile

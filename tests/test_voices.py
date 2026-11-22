@@ -485,9 +485,11 @@ def test_kokoro_torch_assigns_misaki_and_mixes_the_blend(tmp_path: Path):
 
     marker = Marker()
     monkey_g2p = marker
+    expected_library = library
 
-    def build(config):
+    def build(config, *, library=None):
         assert config.id == "misaki.en-us"
+        assert library == expected_library
         return monkey_g2p
 
     import gen_audio.voices.runtime as runtime

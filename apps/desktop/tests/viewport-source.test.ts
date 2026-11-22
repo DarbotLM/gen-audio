@@ -144,7 +144,8 @@ test("E: every engine with no in-app adapter is offline_only or unavailable", as
   }
   const kokoro = assets.find((asset) => asset.kind === "voice_model" && asset.legacy_id === "kokoro_dayour");
   assert.equal(kokoro?.status, "ok");
-  assert.equal(kokoro?.body?.availability, undefined);  for (const clip of assets.filter((asset) => asset.kind === "audio_clip" && asset.provenance?.voice_model === kokoro?.uid)) {
+  assert.equal(kokoro?.body?.availability, undefined);
+  for (const clip of assets.filter((asset) => asset.kind === "audio_clip" && asset.provenance?.voice_model === kokoro?.uid)) {
     assert.ok(clip.provenance?.generator, String(clip.legacy_id));
   }
 });

@@ -39,7 +39,8 @@ const ENGINES: &[EngineSpec] = &[
         kind: EngineKind::Synth,
         status: EngineStatus::Implemented,
         weights_bundled: false,
-        summary: "DarbotLM Kokoro 0.9.4 with shared KModel, Misaki G2P, CPU/CUDA/MPS, and local or opt-in HF weights.",    },
+        summary: "DarbotLM Kokoro 0.9.4 with shared KModel, Misaki G2P, CPU/CUDA/MPS, and local or opt-in HF weights.",
+    },
     EngineSpec {
         id: "misaki",
         kind: EngineKind::G2p,
@@ -111,7 +112,8 @@ mod tests {
                 "vibevoice_realtime",
                 "adaptive"
             ]
-        );        assert_eq!(engine("misaki").unwrap().kind, EngineKind::G2p);
+        );
+        assert_eq!(engine("misaki").unwrap().kind, EngineKind::G2p);
         assert!(engines().iter().all(|spec| !spec.weights_bundled));
     }
 }

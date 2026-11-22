@@ -44,8 +44,7 @@ export interface ModelCubeRow {
 /**
  * What a voice model card's Cube tab shows (E4):
  * - "cubes": the model's clips' cubes; `offline` when the engine is unavailable
- *   in this app but a clip was rendered elsewhere (VibeVoice -> bitdot), or
- *   when every listed clip's provenance says offline run (dayour/kokoro).
+ *   in this app but a clip was rendered elsewhere (VibeVoice -> bitdot).
  * - "g2p": a G2P-only model (misaki) has no cube of its own; it links the clips
  *   it phonemized.
  * - "unavailable": no clip, engine unavailable, with availability.reason.
@@ -69,14 +68,12 @@ export function modelCubes(assets: readonly AssetEnvelope[], modelId: string): M
     return { state: "g2p", clips: clipsBy("g2p_model").map((clip) => ({ clipId: clip.legacy_id ?? "", clipTitle: clip.display.title })) };
   }
   const rows: ModelCubeRow[] = [];
-  let offlineRows = 0;
   for (const clip of clipsBy("voice_model")) {
     // The clip's own cube; a comparison cube (another layer_method) of the same WAV is not the model's cube.
     const cube = assets.find(
       (asset) => asset.kind === "cube_ihdr" && asset.src.length === 1 && asset.src[0] === clip.uid && !comparisonMethod(asset),
     );
     if (!cube) continue;
-    if (/offline run/.test(String(clip.provenance?.generator ?? ""))) offlineRows += 1;
     const shape = cube.body?.cube_shape_f_t;
     rows.push({
       clipId: clip.legacy_id ?? "",
@@ -91,9 +88,7 @@ export function modelCubes(assets: readonly AssetEnvelope[], modelId: string): M
     });
   }
   const unavailable = model.status === "unavailable";
-  // Offline when the engine has no adapter here, or every listed clip says it
-  // was an offline run (kokoro_dayour's library clips predate its adapter).
-  if (rows.length) return { state: "cubes", offline: unavailable || offlineRows === rows.length, rows };
+  if (rows.length) return { state: "cubes", offline: unavailable, rows };
   if (unavailable) {
     const availability = model.body?.availability as { reason?: unknown } | undefined;
     return { state: "unavailable", reason: typeof availability?.reason === "string" ? availability.reason : "pending" };

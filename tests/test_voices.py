@@ -517,6 +517,17 @@ def test_kokoro_torch_assigns_misaki_and_mixes_the_blend(tmp_path: Path):
     assert seen["voice"].tolist() == pytest.approx([0.75, 1.0])
 
 
+def test_kokoro_cpu_device_does_not_import_torch(monkeypatch):
+    import sys
+
+    from gen_audio.voices.runtime import kokoro_torch_device
+
+    monkeypatch.delenv("GEN_AUDIO_KOKORO_DEVICE", raising=False)
+    monkeypatch.setitem(sys.modules, "torch", None)
+
+    assert kokoro_torch_device() == "cpu"
+
+
 def test_packaged_voice_data_matches_the_checkout():
     bundled = ROOT / "src" / "gen_audio" / "data"
     for path in (ROOT / "schemas" / "voices").rglob("*.json"):

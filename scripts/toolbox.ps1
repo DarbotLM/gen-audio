@@ -692,7 +692,7 @@ function Install-DarbotSpeechWheelSet {
     )
 }
 
-function Build-Framework {
+function Invoke-FrameworkBuild {
     Install-DependencySet
     Write-ToolboxLog 'STEP' 'Installing and building the full Gen-Audio framework.'
     Initialize-PackageNetwork
@@ -1329,7 +1329,7 @@ function Invoke-Toolbox {
             switch ($current) {
                 'Deps' { Install-DependencySet }
                 'Models' { Install-ModelSet }
-                'Build' { Build-Framework; Write-NodeConfiguration }
+                'Build' { Invoke-FrameworkBuild; Write-NodeConfiguration }
                 'Speech' { Install-SpeechSourceSet }
                 'Test' { Test-Framework }
                 'Start' { Invoke-ServiceSuite }

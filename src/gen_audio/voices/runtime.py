@@ -79,6 +79,8 @@ def kokoro_torch_device() -> str:
             "GEN_AUDIO_KOKORO_DEVICE must be auto, cpu, cuda, cuda:N, or mps",
             code="bad_device",
         )
+    if raw == "cpu":
+        return "cpu"
     try:
         import torch
     except ImportError as exc:
@@ -86,8 +88,6 @@ def kokoro_torch_device() -> str:
             "PyTorch is not installed; install gen-audio[kokoro-torch]",
             code="missing_kokoro",
         ) from exc
-    if raw == "cpu":
-        return "cpu"
     if raw.startswith("cuda"):
         if not torch.cuda.is_available():
             raise VoiceError(

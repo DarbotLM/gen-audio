@@ -870,6 +870,25 @@ function Write-NodeConfiguration {
     Write-ToolboxLog 'OK' "Persisted checkout-scoped Gen-Audio descriptor: $descriptorPath"
 }
 
+function Get-CheckoutRevision {
+    # The source revision a checkout-launched service runs: HEAD, plus a
+    # digest of the tracked diff when the tree is dirty. Node imports the
+    # editable src/gen_audio and Mcp runs the checkout's binary, so a service
+    # left running across a pull keeps serving the code it started with.
+    # $null when git cannot say (then a healthy service is reused as before).
+    $git = Get-Tool @('git.exe')
+    if (-not $git) { return $null }
+    $head = "$(& $git -C $RepoRoot rev-parse HEAD 2>$null)".Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $head) { return $null }
+    $diff = (@(& $git -C $RepoRoot diff HEAD --no-ext-diff 2>$null) -join "`n")
+    if ($LASTEXITCODE -ne 0) { return $null }
+    if (-not $diff) { return $head }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $digest = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($diff))[0..5] | ForEach-Object { $_.ToString('x2') }) }
+    finally { $sha.Dispose() }
+    return "$head+dirty.$digest"
+}
+
 function Test-ServiceIdentity {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('Node', 'Mcp', 'Preview')][string]$Service,
@@ -1010,6 +1029,12 @@ function Invoke-NodeService {
     )
     $serviceName = $Service.ToLowerInvariant()
     $pidPath = Join-Path $script:RuntimeDir "$serviceName.pid"
+    # The revision each launch started from. A healthy, owned Node or Mcp
+    # whose revision is not the checkout's is restarted below (the same
+    # process-tree stop as a stale PID file); Preview is Vite and reloads
+    # source itself.
+    $revisionPath = Join-Path $script:RuntimeDir "$serviceName.revision"
+    $revision = Get-CheckoutRevision
     if (Test-ServiceIdentity -Service $Service -Uri $HealthUrl) {
         if (-not (Test-LauncherOwnership -PidPath $pidPath -ExpectedService $Service)) {
             throw "$Service identity matched at $HealthUrl, but no live toolbox-owned launcher PID is recorded; refusing to adopt an unknown process."
@@ -1017,8 +1042,12 @@ function Invoke-NodeService {
         if ($Service -in @('Node', 'Mcp') -and -not (Test-HealthOwnership -PidPath $pidPath -Uri $HealthUrl)) {
             throw "$Service identity matched at $HealthUrl, but its reported PID is not owned by the recorded launcher."
         }
-        Write-ToolboxLog 'OK' "$Service is healthy at $HealthUrl and owned by this checkout."
-        return
+        $running = if (Test-Path -LiteralPath $revisionPath -PathType Leaf) { (Get-Content -LiteralPath $revisionPath -Raw).Trim() } else { '' }
+        if ($Service -eq 'Preview' -or -not $revision -or $running -eq $revision) {
+            Write-ToolboxLog 'OK' "$Service is healthy at $HealthUrl and owned by this checkout$(if ($running) { " (revision $running)" })."
+            return
+        }
+        Write-ToolboxLog 'INFO' "$Service at $HealthUrl started from revision '$(if ($running) { $running } else { 'unrecorded' })', the checkout is at '$revision'; restarting it on the current code."
     }
     if (Test-Path -LiteralPath $pidPath) {
         $recorded = [int](Get-Content -LiteralPath $pidPath -Raw)
@@ -1035,11 +1064,13 @@ function Invoke-NodeService {
         }
         Remove-Item -LiteralPath $pidPath -Force -ErrorAction Stop
     }
+    if (Test-Path -LiteralPath $revisionPath) { Remove-Item -LiteralPath $revisionPath -Force -ErrorAction Stop }
     $powershell = Get-Tool @('pwsh.exe', 'powershell.exe')
     $run = Join-Path $RepoRoot 'scripts\run.ps1'
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $run, '-Service', $Service, '-Port', "$Port")
     $process = Start-Process -FilePath $powershell -ArgumentList $arguments -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
     [IO.File]::WriteAllText($pidPath, "$($process.Id)", (New-Object Text.UTF8Encoding($false)))
+    if ($revision) { [IO.File]::WriteAllText($revisionPath, $revision, (New-Object Text.UTF8Encoding($false))) }
     $trackedChildIds = New-Object System.Collections.Generic.HashSet[int]
     try {
         $deadline = (Get-Date).AddSeconds(60)
@@ -1077,6 +1108,10 @@ function Invoke-NodeService {
         if (Test-Path -LiteralPath $pidPath) {
             try { Remove-Item -LiteralPath $pidPath -Force -ErrorAction Stop }
             catch { $cleanupErrors.Add("failed to remove $pidPath`: $($_.Exception.Message)") }
+        }
+        if (Test-Path -LiteralPath $revisionPath) {
+            try { Remove-Item -LiteralPath $revisionPath -Force -ErrorAction Stop }
+            catch { $cleanupErrors.Add("failed to remove $revisionPath`: $($_.Exception.Message)") }
         }
         if ($cleanupErrors.Count) { $startupError += '; cleanup errors: ' + ($cleanupErrors -join '; ') }
         throw $startupError

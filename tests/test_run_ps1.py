@@ -148,6 +148,8 @@ def test_toolbox_retries_user_scope_winget_and_refuses_prerelease_python():
     assert "[version]$actual -lt [version]$UvMinimumVersion" in uv
     assert "@('venv', '--python', $PythonVersion" in text
     assert "if ($release -notmatch '^final ')" in text
+    pip = text[text.index("$pipArguments = @("):text.index("Invoke-External $python $pipArguments")]
+    assert "'--require-hashes', '--ignore-requires-python'" in pip, "pip must follow uv's lock resolution"
     assert "'3.14'" in text and text.count("'3.14'") == 1, "the Python version lives in the $PythonVersion parameter only"
 
 

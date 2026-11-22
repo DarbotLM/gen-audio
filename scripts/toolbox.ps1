@@ -552,9 +552,13 @@ function Build-Framework {
         '--index-url', 'https://download.pytorch.org/whl/cpu',
         '-r', $torchRequirements
     ) $RepoRoot
+    # uv resolves the lock while ignoring upper bounds on a dependency's
+    # Requires-Python (kokoro-onnx 0.6.1 declares <3.14), and CI runs that lock on
+    # 3.14 through uv sync. pip enforces the bound, so the same hash-pinned set
+    # failed on a clean node; follow the lock's resolution instead.
     $pipArguments = @(
         '-m', 'pip', 'install', '--disable-pip-version-check',
-        '--only-binary=:all:', '--require-hashes',
+        '--only-binary=:all:', '--require-hashes', '--ignore-requires-python',
         '--trusted-host', 'files.pythonhosted.org',
         '--trusted-host', 'pypi.org',
         '-r', $requirements

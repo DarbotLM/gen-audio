@@ -745,7 +745,9 @@ def test_the_shipped_vibevoice_free_text_passes_the_writer(tmp_path, key):
 # identifier. A hub id is now a model id the repo already pins (the Library
 # manifest's provenance `model`), for the shipped check, the writer and the
 # sync alike.
-LOW1_MISSING = "models/VibeVoice-1.5B"
+# A node install stages the real model at models/VibeVoice-1.5B, so the fixture
+# names an org/name-shaped directory that no install creates.
+LOW1_MISSING = "models/VibeVoice-1.5B-absent-fixture"
 LOW1_PINNED = "microsoft/VibeVoice-1.5B"
 
 

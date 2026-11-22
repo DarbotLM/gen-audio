@@ -62,6 +62,7 @@ $script:TranscriptPath = $null
 $script:RuntimeDir = $null
 $script:RuntimeConfig = $null
 $script:LeaseMutex = $null
+$script:LeaseDigest = ''
 $script:LeaseOwned = $false
 $script:BestEffortWarnings = New-Object System.Collections.Generic.List[string]
 $script:ValidationSkipped = $false
@@ -141,6 +142,7 @@ function Request-ToolboxLease {
         throw "Another toolbox run owns the checkout lease for $RepoRoot"
     }
     $script:LeaseOwned = $true
+    $script:LeaseDigest = $digest
     Write-ToolboxLog 'INFO' "Acquired checkout lease for $RepoRoot ($digest)."
 }
 
@@ -909,6 +911,10 @@ function Test-Framework {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
         Set-GenAudioProcessVariable -Name $name -Value $null
     }
+    # The gate runs while this toolbox holds the checkout lease; tell the lease
+    # test so it checks against this holder instead of starting its own.
+    $savedLease = [Environment]::GetEnvironmentVariable('GEN_AUDIO_TOOLBOX_LEASE', 'Process')
+    Set-GenAudioProcessVariable -Name 'GEN_AUDIO_TOOLBOX_LEASE' -Value $script:LeaseDigest
     try {
         Invoke-External $powershell @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass',
@@ -917,6 +923,7 @@ function Test-Framework {
             '-Python', (Join-Path $RepoRoot '.venv\Scripts\python.exe')
         ) $RepoRoot
     } finally {
+        Set-GenAudioProcessVariable -Name 'GEN_AUDIO_TOOLBOX_LEASE' -Value $savedLease
         foreach ($name in $names) {
             Set-GenAudioProcessVariable -Name $name -Value $saved[$name]
         }

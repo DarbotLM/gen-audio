@@ -70,11 +70,29 @@ def test_launch_plan_reads_checkout_descriptor_ports_without_user_env(tmp_path):
     assert plan["environment"]["GEN_AUDIO_MCP_ADDR"] == "127.0.0.1:18765"
 
 
+def _assert_lease_refused(canonical: str, tmp_path) -> None:
+    padded = f'  {canonical.lower()}\\  '
+    result = subprocess.run(
+        [SHELL, "-NoProfile", "-File", str(REPO / "scripts" / "toolbox.ps1"),
+         "-Step", "Test", "-SkipTests", "-RepoRoot", padded,
+         "-LogRoot", str(tmp_path / "logs"), "-NoBrowser"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "Another toolbox run owns the checkout lease" in output, output
+    assert not (tmp_path / "logs").exists(), "logging/mutation must not happen before lease acquisition"
+
+
 @pytest.mark.skipif(SHELL is None or os.name != "nt", reason="needs Windows named mutex support")
 def test_toolbox_lease_uses_canonical_trimmed_checkout_before_mutation(tmp_path):
     canonical = str(REPO.resolve()).rstrip("\\/")
     digest = hashlib.sha256(canonical.upper().encode("utf-8")).hexdigest()[:16]
     mutex = rf'Local\gen-audio-toolbox-{digest}'
+    if os.environ.get("GEN_AUDIO_TOOLBOX_LEASE") == digest:
+        # Run by the toolbox gate, which already holds this checkout's lease.
+        _assert_lease_refused(canonical, tmp_path)
+        return
     holder_code = (
         f"$m=New-Object Threading.Mutex($false, '{mutex}'); "
         "if(-not $m.WaitOne(0)){exit 9}; 'READY'; [Console]::In.ReadLine() | Out-Null; "
@@ -86,17 +104,7 @@ def test_toolbox_lease_uses_canonical_trimmed_checkout_before_mutation(tmp_path)
     )
     try:
         assert holder.stdout and holder.stdout.readline().strip() == "READY"
-        padded = f'  {canonical.lower()}\\  '
-        result = subprocess.run(
-            [SHELL, "-NoProfile", "-File", str(REPO / "scripts" / "toolbox.ps1"),
-             "-Step", "Test", "-SkipTests", "-RepoRoot", padded,
-             "-LogRoot", str(tmp_path / "logs"), "-NoBrowser"],
-            cwd=tmp_path, capture_output=True, text=True, timeout=30,
-        )
-        output = result.stdout + result.stderr
-        assert result.returncode == 1, output
-        assert "Another toolbox run owns the checkout lease" in output, output
-        assert not (tmp_path / "logs").exists(), "logging/mutation must not happen before lease acquisition"
+        _assert_lease_refused(canonical, tmp_path)
     finally:
         if holder.stdin:
             holder.stdin.write("release\n")

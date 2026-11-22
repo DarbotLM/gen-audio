@@ -40,6 +40,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+# The response is UTF-8 JSON for a program to parse. Redirected stdout otherwise
+# uses the console's OEM code page and turns non-ASCII into '?'.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) }
+catch { Write-Verbose "Console output encoding unchanged: $($_.Exception.Message)" }
 . (Join-Path $PSScriptRoot 'lib\devenv.ps1')
 . (Join-Path $PSScriptRoot 'lib\runtime-config.ps1')
 $runtimeConfig = Read-GenAudioRuntimeConfig -RepoRoot (Split-Path -Parent $PSScriptRoot)

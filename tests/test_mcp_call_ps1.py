@@ -61,7 +61,7 @@ def _call(port: int, *extra: str) -> subprocess.CompletedProcess[str]:
 
 
 def _convertfrom_json(path: Path) -> subprocess.CompletedProcess[str]:
-    command = f"$ErrorActionPreference = 'Stop'; (Get-Content -LiteralPath '{path}' -Raw -Encoding UTF8 | ConvertFrom-Json | ConvertTo-Json -Depth 32 -Compress)"
+    command = f"$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); (Get-Content -LiteralPath '{path}' -Raw -Encoding UTF8 | ConvertFrom-Json | ConvertTo-Json -Depth 32 -Compress)"
     return subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True, text=True, encoding="utf-8",
                           timeout=120)
 

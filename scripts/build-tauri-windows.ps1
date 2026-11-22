@@ -296,6 +296,8 @@ try {
     Write-Step "exe $($exe.Path) sha256 $($exe.Sha256) ($($exe.State))"
 
     if ($Mode -eq 'Full') {
+        $sevenZip = Get-SevenZip
+        if (-not $sevenZip) { throw '7-Zip (7z.exe) is required to check the exe inside the NSIS and MSI installers against the built exe' }
         $bundleDir = Join-Path $releaseDir 'bundle'
         foreach ($kind in 'nsis', 'msi') {
             $found = @(Get-ChildItem -Path (Join-Path $bundleDir $kind) -Filter $installerGlob[$kind] -ErrorAction SilentlyContinue)
@@ -303,6 +305,20 @@ try {
             $installer = $found[0].FullName
             $built = Assert-BuildOutput -LiteralPath $installer -What "$kind installer" -Before $before[$installer]
             Write-Output "INSTALLER path=$($built.Path) size=$($built.Length) sha256=$($built.Sha256) state=$($built.State)"
+            # The exe the installer actually carries (NSIS: gen-audio.exe; MSI cab: Path).
+            $payloadDir = Join-Path $releaseDir "payload-check\$kind"
+            if (Test-Path -LiteralPath $payloadDir) { Remove-Item -LiteralPath $payloadDir -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path $payloadDir | Out-Null
+            try {
+                $member = if ($kind -eq 'nsis') { 'gen-audio.exe' } else { 'Path' }
+                Invoke-Checked $sevenZip e $installer $member "-o$payloadDir" -y | Out-Null
+                $payloadExe = Join-Path $payloadDir $member
+                if (-not (Test-Path -LiteralPath $payloadExe -PathType Leaf)) { throw "$kind installer has no $member payload" }
+                $match = Compare-TauriBundleExe -Built $exe.Path -Payload $payloadExe
+                Write-Output "INSTALLER_PAYLOAD kind=$kind sha256=$($match.PayloadSha256) bundle_type=$($match.PayloadType) built_bundle_type=$($match.BuiltType) marker_offset=$($match.Offset) other_bytes=identical"
+            } finally {
+                Remove-Item -LiteralPath (Join-Path $releaseDir 'payload-check') -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 

@@ -174,6 +174,61 @@ function Get-CargoUnit {
     }
 }
 
+function Get-SevenZip {
+    # 7z.exe on PATH or in Program Files; the installer payload check needs it.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    $tool = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($tool) { return $tool.Source }
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not $base) { continue }
+        $candidate = Join-Path $base '7-Zip\7z.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
+function Compare-TauriBundleExe {
+    # The installer's payload exe against the built exe, byte for byte. After
+    # cargo links the exe, tauri's bundler rewrites it in place once per bundle
+    # (Patching ... with bundle type information: nsis, then msi): it sets the
+    # three ASCII letters after __TAURI_BUNDLE_TYPE_VAR_ (UNK, NSS, MSI, ...).
+    # So target\release\gen-audio.exe changes again after makensis runs, and
+    # its sha256 is never the installer's. This returns where the two differ
+    # only in that marker, with both values, and throws on any other byte.
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory = $true)][string]$Built, [Parameter(Mandatory = $true)][string]$Payload)
+    $marker = '__TAURI_BUNDLE_TYPE_VAR_'
+    $a = [IO.File]::ReadAllBytes($Built)
+    $b = [IO.File]::ReadAllBytes($Payload)
+    if ($a.Length -ne $b.Length) { throw "installer payload $Payload is $($b.Length) bytes, the built exe $Built is $($a.Length)" }
+    $latin = [Text.Encoding]::GetEncoding(28591)
+    $text = $latin.GetString($a)
+    $offset = $text.IndexOf($marker, [StringComparison]::Ordinal)
+    if ($offset -lt 0 -or $text.IndexOf($marker, $offset + 1, [StringComparison]::Ordinal) -ge 0) {
+        throw "$Built must hold exactly one $marker marker"
+    }
+    $at = $offset + $marker.Length
+    $builtType = $latin.GetString($a, $at, 3)
+    $payloadType = $latin.GetString($b, $at, 3)
+    foreach ($value in $builtType, $payloadType) {
+        if ($value -cnotmatch '^[A-Z]{3}$') { throw "bundle type marker '$value' at offset $at is not three capital letters" }
+    }
+    $normalized = [byte[]]$b.Clone()
+    [Array]::Copy($a, $at, $normalized, $at, 3)
+    $same = [Security.Cryptography.SHA256]::HashData($a)
+    $other = [Security.Cryptography.SHA256]::HashData($normalized)
+    if (-not [Linq.Enumerable]::SequenceEqual($same, $other)) {
+        throw "installer payload $Payload differs from the built exe $Built beyond the tauri bundle-type marker: the installer carries another link of the exe"
+    }
+    return [pscustomobject]@{
+        Offset = $at; BuiltType = $builtType; PayloadType = $payloadType
+        PayloadSha256 = (Get-Sha256 -LiteralPath $Payload); Identical = ($builtType -ceq $payloadType)
+    }
+}
+
 function Get-OutputFingerprint {
     # Length and sha256 of a build output, or $null when it is missing.
     [CmdletBinding()]

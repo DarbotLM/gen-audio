@@ -11,6 +11,15 @@ checkout-scoped runtime configuration, and launches the node, MCP, and UI
 preview services. Overlapping runs of the same checkout are rejected by a named
 lease. Skipped validation or best-effort warnings produce a degraded exit code.
 
+The Speech step clones (or reuses) the DarbotLM misaki, kokoro and kokoro-onnx
+checkouts beside the Gen-Audio checkout, installs kokoro-onnx editable into the
+Gen-Audio venv (PyPI kokoro-onnx 0.6.1 from uv.lock is never installed; it
+declares Requires-Python <3.14), builds a kokoro venv with misaki[en] editable
+from kokoro's own lock, verifies every import resolves to those checkouts, and
+renders a real kokoro-onnx WAV. The MSVC check accepts only a Visual Studio
+whose toolset has both the x64 compiler and the x64 libraries, so a VS 2026
+Build Tools install without them falls back to VS 2022 (or prompts for it).
+
 .EXAMPLE
 pwsh -NoProfile -File .\scripts\toolbox.ps1 -Step Node -RepoRoot G:\gen-audio
 .EXAMPLE
@@ -24,7 +33,7 @@ its agreement automatically.
 [CmdletBinding()]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Entry-point parameters are consumed by the nested implementation functions.')]
 param(
-    [ValidateSet('All', 'Node', 'Deps', 'Models', 'Build', 'Test', 'Start', 'Verify')]
+    [ValidateSet('All', 'Node', 'Deps', 'Models', 'Build', 'Speech', 'Test', 'Start', 'Verify')]
     [string[]]$Step = @('All'),
     [string]$RepoRoot,
     [string]$CheckoutPath,
@@ -41,6 +50,9 @@ param(
     [string]$UvMinimumVersion = '0.9.0',
     [ValidatePattern('^\d+\.\d+(\.\d+)?$')]
     [string]$PythonVersion = '3.14',
+    [string]$SpeechSourceRoot,
+    [ValidatePattern('^[A-Za-z0-9-]+$')]
+    [string]$SpeechSourceOwner = 'DarbotLM',
     [switch]$SkipTests,
     [switch]$NoBrowser,
     [switch]$Help
@@ -66,6 +78,12 @@ $script:LeaseDigest = ''
 $script:LeaseOwned = $false
 $script:BestEffortWarnings = New-Object System.Collections.Generic.List[string]
 $script:ValidationSkipped = $false
+$script:MsvcInstall = $null
+$script:SpeechSources = @(
+    @{ Name = 'misaki'; Module = 'misaki' },
+    @{ Name = 'kokoro'; Module = 'kokoro' },
+    @{ Name = 'kokoro-onnx'; Module = 'kokoro_onnx' }
+)
 # APPINSTALLER_CLI_ERROR_NO_APPLICABLE_INSTALLER (0x8A150010)
 $script:WingetNoApplicableInstaller = -1978335216
 # ERROR_INSTALL_USEREXIT (1602) and ERROR_CANCELLED (1223): a declined, timed-out
@@ -448,12 +466,43 @@ function Install-Uv {
 # exists, so it carries its own copy of the check in scripts\lib\devenv.ps1.
 $script:MsvcBuildToolsInstallCommand = 'winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
 
-function Test-ToolboxMsvc {
-    if (Get-Command cl.exe -ErrorAction SilentlyContinue) { return $true }
+function Resolve-MsvcToolchain {
+    # Newest Visual Studio whose MSVC toolset has the x64 compiler and the x64
+    # libraries. VS 2026 Build Tools can be installed without them (or without any
+    # MSVC toolset), and Rust then fails at link time, so fall back to VS 2022.
+    # Importing the toolset environment stays in scripts/lib/devenv.ps1.
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { return $false }
-    $install = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-    return ($LASTEXITCODE -eq 0 -and [bool]$install)
+    $json = & $vswhere -all -products '*' -format json 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $json) { return $false }
+    $installs = @(@(($json -join "`n") | ConvertFrom-Json) | Sort-Object { [version]$_.installationVersion } -Descending)
+    foreach ($install in $installs) {
+        $toolset = Get-ChildItem -LiteralPath (Join-Path $install.installationPath 'VC\Tools\MSVC') -Directory -ErrorAction SilentlyContinue |
+            Where-Object {
+                (Test-Path -LiteralPath (Join-Path $_.FullName 'bin\Hostx64\x64\cl.exe') -PathType Leaf) -and
+                (Test-Path -LiteralPath (Join-Path $_.FullName 'lib\x64\msvcrt.lib') -PathType Leaf)
+            } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+        if ($toolset) {
+            if ($install.installationPath -ne $installs[0].installationPath) {
+                Write-ToolboxLog 'INFO' "$($installs[0].displayName) has no MSVC x64 compiler/libraries; falling back to $($install.displayName)."
+            }
+            $script:MsvcInstall = [pscustomobject]@{
+                Name = $install.displayName
+                Path = $install.installationPath
+                Toolset = $toolset.Name
+            }
+            return $true
+        }
+    }
+    return $false
+}
+
+
+function Test-ToolboxMsvc {
+    # A Visual Studio counts only when its MSVC toolset has the x64 compiler and the
+    # x64 libraries; the VC.Tools component flag alone accepts a VS 2026 Build Tools
+    # install that cannot link x64.
+    return (Resolve-MsvcToolchain)
 }
 
 function Test-ToolboxElevated {
@@ -499,7 +548,11 @@ function Install-DependencySet {
         Install-WingetPackage -Id 'Microsoft.VisualStudio.2022.BuildTools' -Machine -Extra @(
             '--override', '--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
         )
+        if (-not (Test-ToolboxMsvc)) {
+            throw "No Visual Studio install has the MSVC x64 compiler and libraries. From an elevated prompt run: $script:MsvcBuildToolsInstallCommand"
+        }
     }
+    Write-ToolboxLog 'OK' "MSVC $($script:MsvcInstall.Toolset) x64 from $($script:MsvcInstall.Name) ($($script:MsvcInstall.Path))"
     $edgeClients = @(
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients',
         'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients',
@@ -605,6 +658,9 @@ function Build-Framework {
     $mainLines = @()
     if ($torchStart -gt 0) { $mainLines += $requirementLines[0..($torchStart - 1)] }
     if ($torchEnd -lt $requirementLines.Count) { $mainLines += $requirementLines[$torchEnd..($requirementLines.Count - 1)] }
+    # uv.lock pins PyPI kokoro-onnx 0.6.1, which breaks on Python 3.14. Drop it here;
+    # the DarbotLM kokoro-onnx checkout is installed editable below instead.
+    $mainLines = @(Get-FilteredRequirementLine -Lines $mainLines -Name 'kokoro-onnx')
     [IO.File]::WriteAllLines($requirements, $mainLines, (New-Object Text.UTF8Encoding($false)))
     Invoke-External $python @(
         '-m', 'pip', 'install', '--disable-pip-version-check',
@@ -626,9 +682,11 @@ function Build-Framework {
     }
     Invoke-External $python $pipArguments $RepoRoot
     Invoke-External $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', '.') $RepoRoot
+    $speech = Initialize-SpeechSourceCheckout
+    Invoke-External $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', $speech['kokoro-onnx']) $RepoRoot
     Invoke-External $uv @(
         'sync', '--frozen', '--all-extras', '--offline',
-        '--no-install-project', '--inexact'
+        '--no-install-project', '--inexact', '--no-install-package', 'kokoro-onnx'
     ) $RepoRoot
     Invoke-External $python @('-m', 'pip', 'check') $RepoRoot
     Invoke-External (Get-Tool @('npm.cmd')) @('ci') (Join-Path $RepoRoot 'apps\desktop')
@@ -638,6 +696,131 @@ function Build-Framework {
         '-p', 'gen-audio-mcp', '-p', 'gen-audio-acp', '-p', 'gen-audio-harness'
     ) $RepoRoot
     Write-ToolboxLog 'OK' 'Python, npm, MCP, ACP, and harness builds completed.'
+}
+
+function Get-FilteredRequirementLine {
+    # Remove one `name==version` entry (and its hash continuation lines) from a
+    # uv-exported requirements file.
+    param([string[]]$Lines, [Parameter(Mandatory = $true)][string]$Name)
+    $pattern = '^' + [regex]::Escape($Name) + '=='
+    $out = New-Object System.Collections.Generic.List[string]
+    $skipping = $false
+    foreach ($line in $Lines) {
+        if ($line -match $pattern) { $skipping = $true; continue }
+        if ($skipping -and $line -match '^\s+') { continue }
+        $skipping = $false
+        $out.Add($line)
+    }
+    return $out.ToArray()
+}
+
+function Get-SpeechSourceRoot {
+    if ($SpeechSourceRoot) { return [IO.Path]::GetFullPath($SpeechSourceRoot) }
+    return Split-Path -Parent $RepoRoot
+}
+
+function Initialize-SpeechSourceCheckout {
+    # The DarbotLM misaki, kokoro and kokoro-onnx forks carry the Python 3.14 fixes.
+    # Existing checkouts are reused untouched; missing ones are cloned.
+    $root = Get-SpeechSourceRoot
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $git = Get-Tool @('git.exe')
+    if (-not $git) { throw 'git is required to fetch the DarbotLM speech sources.' }
+    $paths = @{}
+    foreach ($source in $script:SpeechSources) {
+        $path = Join-Path $root $source.Name
+        $manifest = Join-Path $path 'pyproject.toml'
+        if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+            if (-not (Select-String -LiteralPath $manifest -SimpleMatch "name = `"$($source.Name)`"" -Quiet)) {
+                throw "$path exists but is not a $($source.Name) checkout."
+            }
+            Write-ToolboxLog 'OK' "Using $($source.Name) checkout $path at $((& $git -C $path rev-parse --short HEAD))" | Out-Host
+        } else {
+            if ((Test-Path -LiteralPath $path) -and @(Get-ChildItem -LiteralPath $path -Force).Count) {
+                throw "Refusing to overwrite non-empty path $path"
+            }
+            $url = "https://github.com/$SpeechSourceOwner/$($source.Name).git"
+            # Out-Host keeps log lines out of the returned path table.
+            Invoke-External $git @('clone', $url, $path) $root | Out-Host
+            Write-ToolboxLog 'OK' "Cloned $url to $path" | Out-Host
+        }
+        $paths[$source.Name] = (Resolve-Path -LiteralPath $path).ProviderPath
+    }
+    return $paths
+}
+
+function Test-SpeechImport {
+    # Fail unless every module imports from its DarbotLM checkout (an editable
+    # install), never from a PyPI wheel in site-packages.
+    param([Parameter(Mandatory = $true)][string]$Python, [Parameter(Mandatory = $true)][hashtable]$Expected)
+    foreach ($name in $Expected.Keys) {
+        $module = ($script:SpeechSources | Where-Object { $_.Name -eq $name }).Module
+        $location = @(& $Python -c "import importlib.metadata as m, $module; print($module.__file__); print(m.version('$name'))" 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $location.Count -lt 2) { throw "$module failed to import with $Python (exit $LASTEXITCODE)" }
+        $file = [IO.Path]::GetFullPath("$($location[0])".Trim())
+        $checkout = $Expected[$name].TrimEnd('\') + '\'
+        if (-not $file.StartsWith($checkout, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$module resolves to $file, not the DarbotLM checkout $checkout"
+        }
+        Write-ToolboxLog 'OK' "$name $("$($location[1])".Trim()) imports from $file"
+    }
+}
+
+function Install-SpeechSourceSet {
+    Write-ToolboxLog 'STEP' 'Installing the DarbotLM misaki, kokoro and kokoro-onnx sources.'
+    Initialize-PackageNetwork
+    $speech = Initialize-SpeechSourceCheckout
+    $python = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Run -Step Build first: $python is missing." }
+    $editable = (& $python -m pip show kokoro-onnx 2>$null | Where-Object { $_ -match '^Editable project location:' }) -replace '^Editable project location:\s*', ''
+    if (-not $editable -or [IO.Path]::GetFullPath($editable) -ne $speech['kokoro-onnx']) {
+        Invoke-External $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', $speech['kokoro-onnx']) $RepoRoot
+    }
+    Test-SpeechImport -Python $python -Expected @{ 'kokoro-onnx' = $speech['kokoro-onnx'] }
+
+    # kokoro (PyTorch) and misaki[en] get their own venv from kokoro's uv.lock:
+    # gen-audio pins transformers for VibeVoice, kokoro needs a newer one.
+    $uv = Get-Tool @('uv.exe')
+    $kokoro = $speech['kokoro']
+    $kokoroPython = Join-Path $kokoro '.venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $kokoroPython -PathType Leaf)) {
+        Invoke-External $uv @('venv', '--python', $PythonVersion, '--seed', (Join-Path $kokoro '.venv')) $kokoro
+    }
+    New-Item -ItemType Directory -Force -Path $script:RuntimeDir | Out-Null
+    $kokoroRequirements = Join-Path $script:RuntimeDir 'kokoro-requirements.lock.txt'
+    Invoke-External $uv @(
+        'export', '--frozen', '--format', 'requirements-txt', '--no-emit-project',
+        '--no-emit-package', 'misaki', '--no-dev', '--output-file', $kokoroRequirements
+    ) $kokoro
+    # kokoro's lock includes sdist-only packages (docopt), so source builds are allowed
+    # here; every artifact is still hash-pinned by kokoro's uv.lock.
+    $pipArguments = @('-m', 'pip', 'install', '--disable-pip-version-check', '--require-hashes', '--no-deps', '-r', $kokoroRequirements)
+    if ($env:PIP_INDEX_URL) { $pipArguments += @('--index-url', $env:PIP_INDEX_URL) }
+    Invoke-External $kokoroPython $pipArguments $kokoro
+    Invoke-External $kokoroPython @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', "$($speech['misaki'])[en]", '-e', $kokoro) $kokoro
+    Invoke-External $kokoroPython @('-m', 'pip', 'check') $kokoro
+    Test-SpeechImport -Python $kokoroPython -Expected @{ 'misaki' = $speech['misaki']; 'kokoro' = $kokoro }
+
+    # A real kokoro-onnx render through the Gen-Audio CLI, checked as a RIFF WAV.
+    $configuration = Get-GenAudioRuntimeEnvironment $script:RuntimeConfig
+    $scriptPath = Join-Path $script:RuntimeDir 'kokoro-onnx-smoke.txt'
+    $wav = Join-Path $script:RuntimeDir 'kokoro-onnx-smoke.wav'
+    [IO.File]::WriteAllLines($scriptPath, @('Speaker 1: Gen-Audio is running Kokoro from the DarbotLM sources.', 'Speaker 2: This line was rendered by kokoro-onnx on Python 3.14.'), (New-Object Text.UTF8Encoding($false)))
+    if (Test-Path -LiteralPath $wav) { Remove-Item -LiteralPath $wav -Force }
+    Invoke-External $python @(
+        '-m', 'gen_audio.cli.synth', $scriptPath,
+        '--cast-map', (Join-Path $RepoRoot 'voices\cast_map.example.json'),
+        '--model', $configuration['GEN_AUDIO_KOKORO_MODEL'],
+        '--voices', $configuration['GEN_AUDIO_KOKORO_VOICES'],
+        '-o', $wav
+    ) $RepoRoot
+    $header = New-Object byte[] 12
+    $stream = [IO.File]::OpenRead($wav)
+    try { [void]$stream.Read($header, 0, 12); $length = $stream.Length } finally { $stream.Dispose() }
+    if ([Text.Encoding]::ASCII.GetString($header, 0, 4) -ne 'RIFF' -or [Text.Encoding]::ASCII.GetString($header, 8, 4) -ne 'WAVE' -or $length -lt 48000) {
+        throw "kokoro-onnx smoke output is not a usable WAV: $wav ($length bytes)"
+    }
+    Write-ToolboxLog 'OK' "kokoro-onnx rendered $wav ($length bytes, sha256 $(Get-FileSha256 $wav))"
 }
 
 function Write-NodeConfiguration {
@@ -1003,7 +1186,7 @@ function Invoke-Toolbox {
         $loggingStarted = $true
         Initialize-Repository
         $steps = if ($Step -contains 'All' -or $Step -contains 'Node') {
-            @('Deps', 'Models', 'Build', 'Test', 'Start', 'Verify')
+            @('Deps', 'Models', 'Build', 'Speech', 'Test', 'Start', 'Verify')
         } else {
             $Step
         }
@@ -1014,6 +1197,7 @@ function Invoke-Toolbox {
                 'Deps' { Install-DependencySet }
                 'Models' { Install-ModelSet }
                 'Build' { Build-Framework; Write-NodeConfiguration }
+                'Speech' { Install-SpeechSourceSet }
                 'Test' { Test-Framework }
                 'Start' { Invoke-ServiceSuite }
                 'Verify' { Test-ServiceSuite }

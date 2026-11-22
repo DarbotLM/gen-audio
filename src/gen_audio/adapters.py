@@ -168,6 +168,7 @@ def _missing_kokoro_torch() -> list[str]:
 
 def _synth_kokoro_torch(turns: list[Turn], cast: CastMap, output: Path) -> dict:
     """Run dayour/kokoro ``KPipeline`` on CPU. Misaki is assigned to ``pipeline.g2p``."""
+    from gen_audio.improve import trim_bounds
     from gen_audio.voices.agents import agent_g2p, agent_voice, blend_parts
     from gen_audio.voices.errors import VoiceError
     from gen_audio.voices.model import g2p_config_path, load_g2p
@@ -209,12 +210,15 @@ def _synth_kokoro_torch(turns: list[Turn], cast: CastMap, output: Path) -> dict:
                 g2p=g2p,
                 speed=assignment.speed,
             )
-            pieces.append((index_of[turn.speaker_id], audio))
+            # KPipeline pads every utterance with silence; cut it so the clip has
+            # one even pause per turn instead of a second-long hole at each change.
+            start, end = trim_bounds(audio, sample_rate)
+            pieces.append((index_of[turn.speaker_id], audio[start:end] if end > start else audio))
     except VoiceError as exc:
         raise EngineRefusal("kokoro_dayour", [str(exc)]) from exc
     if not pieces or not any(audio.size for _, audio in pieces):
         raise EngineRefusal("kokoro_dayour", ["KPipeline produced no samples"])
-    joined, segments = concatenate_turns(pieces, sample_rate, np.zeros(int(0.15 * sample_rate), dtype=np.float32))
+    joined, segments = concatenate_turns(pieces, sample_rate, np.zeros(int(0.3 * sample_rate), dtype=np.float32))
     joined = joined.astype(np.float32)
     write_wav(output, joined, sample_rate, subtype="FLOAT")
     return {

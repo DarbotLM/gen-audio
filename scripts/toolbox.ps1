@@ -336,19 +336,35 @@ function Initialize-Repository {
 }
 
 function Initialize-PackageNetwork {
-    $python = Get-Tool @('python.exe')
-    if ($python) {
-        $indexLine = & $python -m pip config list 2>$null | Where-Object { $_ -match '^global\.index-url=' } | Select-Object -Last 1
-        $index = if ($indexLine -match "^global\.index-url=(?:'([^']+)'|`"([^`"]+)`"|(\S+))$") {
-            @($Matches[1], $Matches[2], $Matches[3] | Where-Object { $_ })[0]
-        } else { $null }
-        if ($index) {
-            $env:PIP_INDEX_URL = "$index"
-            $env:UV_DEFAULT_INDEX = "$index"
-            $env:UV_INDEX_URL = "$index"
-            Write-ToolboxLog 'INFO' "Python package index: $($env:UV_DEFAULT_INDEX)"
+    # Index precedence: GEN_AUDIO_PIP_INDEX_URL, then pip's own global.index-url,
+    # then pip's default. Some managed networks refuse TLS to files.pythonhosted.org
+    # while an internal mirror is reachable; point the toolbox at that mirror with
+    # GEN_AUDIO_PIP_INDEX_URL instead of disabling certificate checks.
+    $index = $null
+    $source = $null
+    if ($env:GEN_AUDIO_PIP_INDEX_URL) {
+        $index = "$env:GEN_AUDIO_PIP_INDEX_URL"
+        $source = 'GEN_AUDIO_PIP_INDEX_URL'
+    } else {
+        $python = Get-Tool @('python.exe')
+        if ($python) {
+            $indexLine = & $python -m pip config list 2>$null | Where-Object { $_ -match '^global\.index-url=' } | Select-Object -Last 1
+            if ($indexLine -match "^global\.index-url=(?:'([^']+)'|`"([^`"]+)`"|(\S+))$") {
+                $index = @($Matches[1], $Matches[2], $Matches[3] | Where-Object { $_ })[0]
+                $source = 'pip config global.index-url'
+            }
         }
     }
+    if ($index) {
+        $env:PIP_INDEX_URL = "$index"
+        $env:UV_DEFAULT_INDEX = "$index"
+        $env:UV_INDEX_URL = "$index"
+        Write-ToolboxLog 'INFO' "Python package index: $index (from $source)"
+    } else {
+        Write-ToolboxLog 'INFO' 'Python package index: pip default (set GEN_AUDIO_PIP_INDEX_URL to use a mirror)'
+    }
+    $script:TorchIndexUrl = if ($env:GEN_AUDIO_TORCH_INDEX_URL) { "$env:GEN_AUDIO_TORCH_INDEX_URL" } else { 'https://download.pytorch.org/whl/cpu' }
+    Write-ToolboxLog 'INFO' "Torch wheel index: $($script:TorchIndexUrl)"
     $env:UV_SYSTEM_CERTS = 'true'
     $env:UV_HTTP_TIMEOUT = '300'
     $env:UV_RETRIES = '8'
@@ -380,9 +396,14 @@ function Install-Node {
             if ((Get-FileSha256 $archive) -ne $entry.Groups[1].Value) {
                 throw 'Node archive checksum mismatch.'
             }
-            Expand-Archive -LiteralPath $archive -DestinationPath $cache
+            # Expand-Archive from Microsoft.PowerShell.Archive 1.0.1.0 on Windows
+            # PowerShell 5.1 can fail with a missing 3-argument ExtractToDirectory
+            # overload. The 2-argument ZipFile call exists on .NET Framework and
+            # .NET, and $cache is a fresh directory so nothing needs overwriting.
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($archive, (Join-Path $cache 'extract'))
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installDir) | Out-Null
-            Move-Item -LiteralPath (Join-Path $cache $name) -Destination $installDir
+            Move-Item -LiteralPath (Join-Path (Join-Path $cache 'extract') $name) -Destination $installDir
         } finally {
             try { Remove-Item -LiteralPath $cache -Recurse -Force -ErrorAction Stop }
             catch { Add-BestEffortWarning "Node cache cleanup failed for $cache`: $($_.Exception.Message)" }
@@ -585,8 +606,7 @@ function Build-Framework {
     Invoke-External $python @(
         '-m', 'pip', 'install', '--disable-pip-version-check',
         '--only-binary=:all:', '--require-hashes', '--no-deps',
-        '--trusted-host', 'download.pytorch.org',
-        '--index-url', 'https://download.pytorch.org/whl/cpu',
+        '--index-url', $script:TorchIndexUrl,
         '-r', $torchRequirements
     ) $RepoRoot
     # uv resolves the lock while ignoring upper bounds on a dependency's
@@ -596,8 +616,6 @@ function Build-Framework {
     $pipArguments = @(
         '-m', 'pip', 'install', '--disable-pip-version-check',
         '--only-binary=:all:', '--require-hashes', '--ignore-requires-python',
-        '--trusted-host', 'files.pythonhosted.org',
-        '--trusted-host', 'pypi.org',
         '-r', $requirements
     )
     if ($env:PIP_INDEX_URL) {

@@ -229,3 +229,20 @@ def test_native_build_entry_point_parses():
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_toolbox_keeps_tls_verification_and_takes_a_configurable_index():
+    text = (REPO / "scripts" / "toolbox.ps1").read_text(encoding="utf-8")
+    assert "--trusted-host" not in text, "never disable certificate checks for a package host"
+    block = text[text.index("function Initialize-PackageNetwork"):text.index("function Install-Node")]
+    assert block.index("$env:GEN_AUDIO_PIP_INDEX_URL") < block.index("pip config list"), "explicit index wins over pip config"
+    assert "GEN_AUDIO_TORCH_INDEX_URL" in block
+    assert "'--index-url', $script:TorchIndexUrl" in text
+
+
+def test_toolbox_node_archive_extracts_on_windows_powershell_51():
+    text = (REPO / "scripts" / "toolbox.ps1").read_text(encoding="utf-8")
+    block = text[text.index("function Install-Node"):]
+    block = block[:block.index("\nfunction ")]
+    assert "Expand-Archive -LiteralPath" not in block, "Expand-Archive 1.0.1.0 fails on Windows PowerShell 5.1"
+    assert "[System.IO.Compression.ZipFile]::ExtractToDirectory($archive, (Join-Path $cache 'extract'))" in block

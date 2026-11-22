@@ -32,6 +32,12 @@ The `Node` path:
    `uv` older than `-UvMinimumVersion` (default 0.9.0) is updated, because older
    releases resolve `3.14` to a pre-release interpreter. The venv must be a final
    Python `-PythonVersion` (default 3.14) release.
+   Python wheels come from `GEN_AUDIO_PIP_INDEX_URL` when set, else pip's own
+   `global.index-url`, else PyPI; torch wheels come from
+   `GEN_AUDIO_TORCH_INDEX_URL` (default `https://download.pytorch.org/whl/cpu`).
+   Certificate checks stay on for every host. On a network that refuses TLS to
+   `files.pythonhosted.org`, point `GEN_AUDIO_PIP_INDEX_URL` at a mirror that
+   serves the locked hashes rather than trusting the host.
 3. Runs `uv sync --frozen --all-extras`, installs the desktop npm lockfile, and
    builds the MCP, ACP, and harness Rust crates.
 4. Stages checksum-verified Kokoro ONNX and voice-pack files in `models/`. It

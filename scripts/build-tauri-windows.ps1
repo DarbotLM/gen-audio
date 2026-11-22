@@ -75,10 +75,17 @@ Write-Output "BUILD_LOG $buildLog"
 try {
     Write-Step "build-tauri-windows.ps1 -Mode $Mode (PowerShell $($PSVersionTable.PSVersion))"
     if (-not (Test-IsWindowsHost)) { throw 'build-tauri-windows.ps1 builds Windows installers; run it on Windows.' }
-    Import-VsDevEnv
     foreach ($tool in 'cargo', 'rustc', 'npm', 'npx', 'node') {
         if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool is required on PATH" }
     }
+    Assert-NodeMajor -Major 26
+    # Check the MSVC tools before any npm or cargo work so a machine without
+    # them fails in seconds with the install command, not at the first link.
+    if (-not (Test-MsvcBuildTool)) {
+        throw ("Visual Studio 2022 Build Tools with the C++ workload are required to link the Tauri app and the MCP sidecar. " +
+            "From an elevated prompt run: $(Get-MsvcBuildToolsInstallCommand)")
+    }
+    Import-VsDevEnv
 
     # Preflight: every file tauri.conf.json points at must exist before cargo
     # runs. A missing icon used to surface as a tauri-build panic in build.rs.

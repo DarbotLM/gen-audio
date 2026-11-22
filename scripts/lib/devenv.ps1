@@ -197,6 +197,45 @@ function Test-IsWindowsHost {
     return ($env:OS -eq 'Windows_NT')
 }
 
+# The one supported way to get the MSVC linker and Windows SDK that Rust's
+# x86_64-pc-windows-msvc target and Tauri need. It is a machine-scope install,
+# so it needs an elevated (UAC) prompt; scripts print it instead of running it.
+$script:MsvcBuildToolsInstallCommand = 'winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
+
+function Get-MsvcBuildToolsInstallCommand {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    return $script:MsvcBuildToolsInstallCommand
+}
+
+function Test-MsvcBuildTool {
+    # True when cl.exe is on PATH or vswhere finds the x64 C++ tools.
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+    if (Get-Command cl.exe -ErrorAction SilentlyContinue) { return $true }
+    $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { return $false }
+    $vsPath = & $installer -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    return ($LASTEXITCODE -eq 0 -and [bool]$vsPath)
+}
+
+function Assert-NodeMajor {
+    # Fails early, with the version found, unless node on PATH is the given major.
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][int]$Major)
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) {
+        throw "Node.js $Major is required on PATH. Install the user-level zip from https://nodejs.org/dist/latest-v$Major.x/ (no UAC needed) or run scripts\toolbox.ps1 -Step Deps."
+    }
+    $version = ((& $node.Source --version) -replace '^v', '').Trim()
+    if ($version -notmatch "^$Major\.\d+\.\d+$") {
+        throw "Node.js $Major is required; $($node.Source) is v$version. Put Node $Major first on PATH or run scripts\toolbox.ps1 -Step Deps."
+    }
+    Write-Step "node v$version ($($node.Source))"
+}
+
 function Import-VsDevEnv {
     # Import the x64 MSVC build environment (cl.exe, link.exe, INCLUDE, LIB)
     # into this PowerShell session from vcvars64.bat.
@@ -214,11 +253,13 @@ function Import-VsDevEnv {
     }
     $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $installer)) {
-        throw "vswhere.exe not found at $installer. Install Visual Studio 2022 Build Tools with the 'Desktop development with C++' workload."
+        throw ("vswhere.exe not found at $installer, so Visual Studio 2022 Build Tools (C++ workload) are not installed. " +
+            "From an elevated prompt run: $(Get-MsvcBuildToolsInstallCommand)")
     }
     $vsPath = & $installer -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if ($LASTEXITCODE -ne 0 -or -not $vsPath) {
-        throw 'vswhere found no Visual Studio install with the x64 C++ tools (Microsoft.VisualStudio.Component.VC.Tools.x86.x64).'
+        throw ("vswhere found no Visual Studio install with the x64 C++ tools (Microsoft.VisualStudio.Component.VC.Tools.x86.x64). " +
+            "From an elevated prompt run: $(Get-MsvcBuildToolsInstallCommand)")
     }
     $vcvars = Join-Path ([string]@($vsPath)[0]) 'VC\Auxiliary\Build\vcvars64.bat'
     if (-not (Test-Path -LiteralPath $vcvars)) {

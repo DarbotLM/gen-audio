@@ -31,7 +31,7 @@ param(
     [string]$RepoUrl = 'https://github.com/darbotlabs/gen-audio.git',
     [string]$RepoRef = 'main',
     [ValidatePattern('^24\.\d+\.\d+$')]
-    [string]$NodeVersion = '24.14.1',
+    [string]$NodeVersion = '26.13.1',
     [ValidateRange(0, 65535)][int]$NodePort = 0,
     [ValidateRange(0, 65535)][int]$McpPort = 0,
     [ValidateRange(0, 65535)][int]$PreviewPort = 0,
@@ -68,6 +68,9 @@ $script:BestEffortWarnings = New-Object System.Collections.Generic.List[string]
 $script:ValidationSkipped = $false
 # APPINSTALLER_CLI_ERROR_NO_APPLICABLE_INSTALLER (0x8A150010)
 $script:WingetNoApplicableInstaller = -1978335216
+# ERROR_INSTALL_USEREXIT (1602) and ERROR_CANCELLED (1223): a declined, timed-out
+# or unattended UAC prompt for a machine-scope installer.
+$script:InstallerCancelledCodes = @(1602, 1223)
 
 function Resolve-SessionPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -273,6 +276,10 @@ function Install-WingetPackage {
         catch {
             # Some manifests (Rustlang.Rustup) publish no installer for an explicit
             # user scope. Retry once with the manifest's own default scope.
+            if ($script:InstallerCancelledCodes -contains $global:LASTEXITCODE) {
+                throw ("$Id was not installed: the installer was cancelled (exit $global:LASTEXITCODE), usually a declined " +
+                    "or unattended UAC prompt. Run from an elevated prompt: winget install --id $Id --exact --source winget --scope $scope")
+            }
             if ($Machine -or $global:LASTEXITCODE -ne $script:WingetNoApplicableInstaller) { throw }
             Write-ToolboxLog 'INFO' "$Id has no $scope-scope installer; retrying with the manifest default scope."
             Invoke-External $winget ($arguments + $Extra) $RepoRoot
@@ -351,10 +358,12 @@ function Install-Node {
     $node = Get-Tool @('node.exe')
     if ($node) {
         $actual = ((& $node --version) -replace '^v', '').Trim()
-        if ($actual -match '^24\.\d+\.\d+$' -and [version]$actual -ge [version]$NodeVersion) {
+        $major = ([version]$NodeVersion).Major
+        if ($actual -match "^$major\.\d+\.\d+$" -and [version]$actual -ge [version]$NodeVersion) {
             Write-ToolboxLog 'OK' "Node $actual -> $node"
             return $node
         }
+        Write-ToolboxLog 'INFO' "Node $actual at $node is not Node $major >= $NodeVersion; using a user-level Node $NodeVersion."
     }
     $name = "node-v$NodeVersion-win-x64"
     $installDir = Join-Path $env:LOCALAPPDATA "gen-audio\toolbox\tools\$name"
@@ -414,8 +423,42 @@ function Install-Uv {
     Write-ToolboxLog 'OK' "uv $actual"
 }
 
+# This entry point runs standalone (downloaded to %TEMP%) before a checkout
+# exists, so it carries its own copy of the check in scripts\lib\devenv.ps1.
+$script:MsvcBuildToolsInstallCommand = 'winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
+
+function Test-ToolboxMsvc {
+    if (Get-Command cl.exe -ErrorAction SilentlyContinue) { return $true }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { return $false }
+    $install = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    return ($LASTEXITCODE -eq 0 -and [bool]$install)
+}
+
+function Test-ToolboxElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Assert-MsvcBuildToolsAvailable {
+    # VS 2022 Build Tools are a machine-scope install that needs UAC. Check first,
+    # before Node, uv or Rust are fetched, so an unelevated run without them stops
+    # in seconds with the exact command instead of failing at the first link.
+    if (Test-ToolboxMsvc) { return }
+    $command = $script:MsvcBuildToolsInstallCommand
+    if ($AcceptPackageAgreement -notcontains 'Microsoft.VisualStudio.2022.BuildTools') {
+        throw ("Visual Studio 2022 Build Tools (C++ workload) are not installed; the Rust and Tauri builds need them. " +
+            "From an elevated prompt run: $command, or rerun this toolbox elevated with -AcceptPackageAgreement Microsoft.VisualStudio.2022.BuildTools.")
+    }
+    if (-not (Test-ToolboxElevated)) {
+        throw ("Visual Studio 2022 Build Tools need an elevated (UAC) install and this session is not elevated. " +
+            "From an elevated prompt run: $command, then rerun the toolbox.")
+    }
+}
+
 function Install-DependencySet {
     Write-ToolboxLog 'STEP' 'Installing system dependencies.'
+    Assert-MsvcBuildToolsAvailable
     $git = Get-Tool @('git.exe')
     if (-not $git) { Install-WingetPackage -Id 'Git.Git' }
     $node = Install-Node
@@ -431,13 +474,7 @@ function Install-DependencySet {
         Add-PathPrefix (Join-Path $env:USERPROFILE '.cargo\bin')
         Invoke-External (Get-Tool @('rustup.exe')) @('default', 'stable') $RepoRoot
     }
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    $hasMsvc = $false
-    if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
-        $install = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-        $hasMsvc = $LASTEXITCODE -eq 0 -and $install
-    }
-    if (-not $hasMsvc) {
+    if (-not (Test-ToolboxMsvc)) {
         Install-WingetPackage -Id 'Microsoft.VisualStudio.2022.BuildTools' -Machine -Extra @(
             '--override', '--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
         )

@@ -117,6 +117,18 @@ def test_toolbox_cleanup_terminates_process_tree_and_verifies_port_release():
     assert service_block.count("Stop-Process -Id $process.Id") == 0
 
 
+def test_toolbox_never_accepts_a_package_agreement_unless_the_operator_named_it():
+    text = (REPO / "scripts" / "toolbox.ps1").read_text(encoding="utf-8")
+    assert "[string[]]$AcceptPackageAgreement = @()" in text
+    block = text[text.index("function Install-WingetPackage"):text.index("function Test-Checkout")]
+    gate = block.index("if ($AcceptPackageAgreement -notcontains $Id)")
+    accept = block.index("'--accept-package-agreements'")
+    assert gate < accept, "the opt-in check must run before winget is given the accept flag"
+    assert "throw (" in block[gate:accept]
+    assert "-AcceptPackageAgreement $Id" in block[gate:accept]
+    assert text.count("--accept-package-agreements") == 1
+
+
 @pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
 def test_native_build_entry_point_parses():
     path = str(REPO / "scripts" / "build-tauri-windows.ps1").replace("'", "''")

@@ -22,7 +22,12 @@ The `Node` path:
 
 1. Clones the selected ref when needed and preserves an existing checkout.
 2. Installs Node 24, `uv`, Python 3.14, Git, FFmpeg, Rust, WebView2, and the
-   Visual Studio C++ build tools.
+   Visual Studio C++ build tools. Node 24 and Python come from checksum-checked
+   archives or `uv`. A missing WinGet package (Git, uv, FFmpeg, Rustup, Build
+   Tools, WebView2) is installed only when its id is passed to
+   `-AcceptPackageAgreement`, for example `-AcceptPackageAgreement Rustlang.Rustup`
+   after you have reviewed that package's license. Otherwise the run stops and
+   prints the exact `winget install` command so you can install it yourself.
 3. Runs `uv sync --frozen --all-extras`, installs the desktop npm lockfile, and
    builds the MCP, ACP, and harness Rust crates.
 4. Stages checksum-verified Kokoro ONNX and voice-pack files in `models/`. It

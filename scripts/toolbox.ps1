@@ -15,6 +15,11 @@ lease. Skipped validation or best-effort warnings produce a degraded exit code.
 pwsh -NoProfile -File .\scripts\toolbox.ps1 -Step Node -RepoRoot G:\gen-audio
 .EXAMPLE
 pwsh -NoProfile -File $env:TEMP\gen-audio-toolbox.ps1 -Step Node -RepoRoot G:\gen-audio
+.PARAMETER AcceptPackageAgreement
+WinGet package ids whose package license the operator has reviewed and accepts
+for this run, for example 'Rustlang.Rustup'. A missing dependency whose id is
+not listed stops the run with the exact install command instead of accepting
+its agreement automatically.
 #>
 [CmdletBinding()]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Entry-point parameters are consumed by the nested implementation functions.')]
@@ -31,6 +36,7 @@ param(
     [ValidateRange(0, 65535)][int]$McpPort = 0,
     [ValidateRange(0, 65535)][int]$PreviewPort = 0,
     [string]$LogRoot = (Join-Path $env:LOCALAPPDATA 'gen-audio\toolbox\logs'),
+    [string[]]$AcceptPackageAgreement = @(),
     [switch]$SkipTests,
     [switch]$NoBrowser,
     [switch]$Help
@@ -236,13 +242,19 @@ function Install-WingetPackage {
     )
     $winget = Get-Tool @('winget.exe')
     if (-not $winget) { throw 'WinGet is required to install system dependencies.' }
+    $scope = if ($Machine) { 'machine' } else { 'user' }
+    if ($AcceptPackageAgreement -notcontains $Id) {
+        throw ("$Id is required but not installed, and its package agreement has not been accepted for this run. " +
+            "Review the license (winget show --id $Id --exact --source winget), then either install it yourself " +
+            "(winget install --id $Id --exact --source winget --scope $scope) or rerun this toolbox with " +
+            "-AcceptPackageAgreement $Id.")
+    }
     $arguments = @(
         'install', '--id', $Id, '--exact', '--source', 'winget',
         '--silent', '--disable-interactivity',
-        '--accept-source-agreements', '--accept-package-agreements'
+        '--accept-source-agreements', '--accept-package-agreements',
+        '--scope', $scope
     )
-    if ($Machine) { $arguments += @('--scope', 'machine') }
-    else { $arguments += @('--scope', 'user') }
     $arguments += $Extra
     try { Invoke-External $winget $arguments $RepoRoot }
     catch {

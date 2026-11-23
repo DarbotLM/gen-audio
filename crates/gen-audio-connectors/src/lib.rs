@@ -69,6 +69,19 @@ pub trait Connector {
     fn id(&self) -> &'static str;
     fn health(&self) -> HealthReport;
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError>;
+    fn complete_with_limit(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<Completion, ConnectorError> {
+        check_completion_limit(max_tokens)?;
+        if max_tokens != 256 {
+            return Err(ConnectorError::new(
+                "connector does not support adjustable output limits",
+            ));
+        }
+        self.complete(prompt)
+    }
 }
 
 type ConnectorFactory = fn() -> Box<dyn Connector>;
@@ -207,6 +220,18 @@ pub fn complete_one(id: &str, prompt: &str) -> Result<Completion, ConnectorError
     connector.complete(prompt)
 }
 
+pub fn complete_one_with_limit(
+    id: &str,
+    prompt: &str,
+    max_tokens: u32,
+) -> Result<Completion, ConnectorError> {
+    check_completion_limit(max_tokens)?;
+    let connector = default_registry()?
+        .connector(id)
+        .ok_or_else(|| ConnectorError::new(format!("unknown connector {id}")))?;
+    connector.complete_with_limit(prompt, max_tokens)
+}
+
 struct LocalConnector {
     id: &'static str,
     detail: &'static str,
@@ -258,6 +283,14 @@ impl Connector for CopilotConnector {
         )
     }
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError> {
+        self.complete_with_limit(prompt, 256)
+    }
+    fn complete_with_limit(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<Completion, ConnectorError> {
+        check_completion_limit(max_tokens)?;
         check_prompt(prompt)?;
         let token = first_env(&["COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]);
         if !live_enabled() || token.is_none() {
@@ -266,9 +299,18 @@ impl Connector for CopilotConnector {
         let token = token.unwrap();
         if let Ok(studio) = std::env::var("COPILOT_STUDIO_ENDPOINT") {
             let url = require_https_or_loopback(&studio)?;
-            let body = json!({"prompt": prompt, "source": "gen-audio"});
+            let body = json!({
+                "prompt": prompt,
+                "source": "gen-audio",
+                "max_tokens": max_tokens
+            });
             let authorization = "Bearer ".to_owned() + &token;
-            let text = send_json(&url, &[("authorization", &authorization)], &body)?;
+            let text = send_completion_json(
+                &url,
+                &[("authorization", &authorization)],
+                &body,
+                Provider::Studio,
+            )?;
             return Ok(Completion {
                 connector_id: "copilot".into(),
                 text,
@@ -278,15 +320,16 @@ impl Connector for CopilotConnector {
         }
         let model = std::env::var("COPILOT_GITHUB_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
         check_model(&model)?;
-        let body = chat_body(&model, prompt);
+        let body = chat_body_with_limit(&model, prompt, max_tokens);
         let authorization = "Bearer ".to_owned() + &token;
-        let text = send_json(
+        let text = send_completion_json(
             "https://models.github.ai/inference/chat/completions",
             &[
                 ("authorization", &authorization),
                 ("accept", "application/vnd.github+json"),
             ],
             &body,
+            Provider::OpenAi,
         )?;
         Ok(Completion {
             connector_id: "copilot".into(),
@@ -331,8 +374,21 @@ impl Connector for ClaudeConnector {
         )
     }
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError> {
+        self.complete_with_limit(prompt, 256)
+    }
+    fn complete_with_limit(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<Completion, ConnectorError> {
+        check_completion_limit(max_tokens)?;
         check_prompt(prompt)?;
         if claude_code_enabled() {
+            if max_tokens != 256 {
+                return Err(ConnectorError::new(
+                    "drafting requires the Anthropic API; Claude CLI does not expose the requested token budget",
+                ));
+            }
             if !live_enabled() {
                 return Ok(mock_completion("claude", "claude-code-cli", prompt));
             }
@@ -349,13 +405,14 @@ impl Connector for ClaudeConnector {
         check_model(&model)?;
         let body = json!({
             "model": model,
-            "max_tokens": 256,
+            "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}]
         });
-        let text = send_json(
+        let text = send_completion_json(
             "https://api.anthropic.com/v1/messages",
             &[("x-api-key", &key), ("anthropic-version", "2023-06-01")],
             &body,
+            Provider::Anthropic,
         )?;
         Ok(Completion {
             connector_id: "claude".into(),
@@ -378,6 +435,14 @@ impl Connector for GptConnector {
         )
     }
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError> {
+        self.complete_with_limit(prompt, 256)
+    }
+    fn complete_with_limit(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<Completion, ConnectorError> {
+        check_completion_limit(max_tokens)?;
         check_prompt(prompt)?;
         let Some(key) = first_env(&["OPENAI_API_KEY"]) else {
             return Ok(mock_completion("gpt", "openai", prompt));
@@ -390,12 +455,13 @@ impl Connector for GptConnector {
         let base =
             std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
         let base = require_https_or_loopback(base.trim_end_matches('/'))?;
-        let body = chat_body(&model, prompt);
+        let body = chat_body_with_limit(&model, prompt, max_tokens);
         let authorization = "Bearer ".to_owned() + &key;
-        let text = send_json(
+        let text = send_completion_json(
             &format!("{base}/chat/completions"),
             &[("authorization", &authorization)],
             &body,
+            Provider::OpenAi,
         )?;
         Ok(Completion {
             connector_id: "gpt".into(),
@@ -418,6 +484,14 @@ impl Connector for GeminiConnector {
         )
     }
     fn complete(&self, prompt: &str) -> Result<Completion, ConnectorError> {
+        self.complete_with_limit(prompt, 256)
+    }
+    fn complete_with_limit(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<Completion, ConnectorError> {
+        check_completion_limit(max_tokens)?;
         check_prompt(prompt)?;
         let key = first_env(&["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
         let Some(key) = key else {
@@ -432,9 +506,11 @@ impl Connector for GeminiConnector {
             "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         );
         let body = json!({
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}]
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": max_tokens}
         });
-        let text = send_json(&url, &[("x-goog-api-key", &key)], &body)?;
+        let text =
+            send_completion_json(&url, &[("x-goog-api-key", &key)], &body, Provider::Gemini)?;
         Ok(Completion {
             connector_id: "gemini".into(),
             text,
@@ -445,10 +521,14 @@ impl Connector for GeminiConnector {
 }
 
 pub fn chat_body(model: &str, prompt: &str) -> Value {
+    chat_body_with_limit(model, prompt, 256)
+}
+
+fn chat_body_with_limit(model: &str, prompt: &str, max_tokens: u32) -> Value {
     json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 256
+        "max_tokens": max_tokens
     })
 }
 
@@ -681,6 +761,15 @@ fn check_prompt(prompt: &str) -> Result<(), ConnectorError> {
     Ok(())
 }
 
+fn check_completion_limit(max_tokens: u32) -> Result<(), ConnectorError> {
+    if !(256..=4096).contains(&max_tokens) {
+        return Err(ConnectorError::new(
+            "completion token budget must be 256 to 4096",
+        ));
+    }
+    Ok(())
+}
+
 fn check_model(model: &str) -> Result<(), ConnectorError> {
     if model.is_empty()
         || model.len() > 80
@@ -857,28 +946,122 @@ fn ip_blocked(ip: std::net::IpAddr) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Provider {
+    OpenAi,
+    Anthropic,
+    Gemini,
+    Studio,
+}
+
+fn completion_text(provider: Provider, value: &Value) -> Result<String, ConnectorError> {
+    let truncated = match provider {
+        Provider::OpenAi => value.pointer("/choices/0/finish_reason") == Some(&json!("length")),
+        Provider::Anthropic => value.get("stop_reason") == Some(&json!("max_tokens")),
+        Provider::Gemini => {
+            value.pointer("/candidates/0/finishReason") == Some(&json!("MAX_TOKENS"))
+        }
+        Provider::Studio => value.get("truncated") == Some(&json!(true)),
+    };
+    if truncated {
+        return Err(ConnectorError::new(
+            "provider reached its output limit; incomplete text was not accepted",
+        ));
+    }
+    if matches!(provider, Provider::Studio)
+        && (value.get("mock") == Some(&json!(true)) || value.get("local") == Some(&json!(true)))
+    {
+        return Err(ConnectorError::new(
+            "drafting requires live provider text; mock/local output was not accepted",
+        ));
+    }
+    let text = match provider {
+        Provider::OpenAi => value
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        Provider::Studio => value.get("text").and_then(Value::as_str).map(str::to_owned),
+        Provider::Anthropic => value
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|block| block.get("type") == Some(&json!("text")))
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }),
+        Provider::Gemini => value
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter(|part| part.get("thought") != Some(&json!(true)))
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }),
+    }
+    .filter(|text| !text.trim().is_empty())
+    .ok_or_else(|| ConnectorError::new("vendor returned no completion text"))?;
+    if text.len() > 64 * 1024 {
+        return Err(ConnectorError::new("vendor completion exceeds byte limit"));
+    }
+    Ok(redact_secrets(&text))
+}
+
+fn send_completion_json(
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+    provider: Provider,
+) -> Result<String, ConnectorError> {
+    let raw = send_json_raw(url, headers, body)?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|_| ConnectorError::new("vendor returned invalid JSON"))?;
+    completion_text(provider, &value)
+}
+
+#[cfg(test)]
 fn send_json(url: &str, headers: &[(&str, &str)], body: &Value) -> Result<String, ConnectorError> {
+    send_json_raw(url, headers, body).map(|text| redact_secrets(&tail(&text)))
+}
+
+fn send_json_raw(
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+) -> Result<String, ConnectorError> {
     require_https_or_loopback(url)?;
     for (_, value) in headers {
         header_value_ok(value)?;
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(8))
-        .timeout_read(Duration::from_secs(25))
-        .timeout_write(Duration::from_secs(8))
-        .redirects(0)
-        .build();
-    let mut request = agent.request("POST", url);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(8)))
+        .timeout_send_request(Some(Duration::from_secs(8)))
+        .timeout_send_body(Some(Duration::from_secs(8)))
+        .timeout_recv_response(Some(Duration::from_secs(25)))
+        .timeout_recv_body(Some(Duration::from_secs(25)))
+        .max_redirects(0)
+        .build()
+        .into();
+    let mut request = agent.post(url);
     for (name, value) in headers {
-        request = request.set(name, value);
+        request = request.header(*name, *value);
     }
     let response = request
-        .send_json(body.clone())
+        .send_json(body)
         .map_err(|err| ConnectorError::new(format!("vendor request failed: {err}")))?;
     let text = response
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|err| ConnectorError::new(format!("vendor response: {err}")))?;
-    Ok(redact_secrets(&tail(&text)))
+    if text.len() > 128 * 1024 {
+        return Err(ConnectorError::new("vendor response exceeds byte limit"));
+    }
+    Ok(text)
 }
 
 fn tail(text: &str) -> String {
@@ -889,6 +1072,8 @@ fn tail(text: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     fn credentials_absent() -> BTreeMap<String, Option<String>> {
         [
@@ -909,6 +1094,43 @@ mod tests {
     }
 
     #[test]
+    fn draft_token_budgets_are_explicit_and_truncated_completions_fail() {
+        assert!(check_completion_limit(256).is_ok());
+        assert!(check_completion_limit(4096).is_ok());
+        assert!(check_completion_limit(255).is_err());
+        assert!(check_completion_limit(4097).is_err());
+        assert_eq!(
+            chat_body_with_limit("test-model", "dialogue", 2048)["max_tokens"],
+            2048
+        );
+        for (provider, response) in [
+            (
+                Provider::OpenAi,
+                json!({"choices":[{"finish_reason":"length","message":{"content":"Speaker 1: Truncated"}}]}),
+            ),
+            (
+                Provider::Anthropic,
+                json!({"stop_reason":"max_tokens","content":[{"type":"text","text":"Speaker 1: Truncated"}]}),
+            ),
+            (
+                Provider::Gemini,
+                json!({"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"Speaker 1: Truncated"}]}}]}),
+            ),
+            (
+                Provider::Studio,
+                json!({"truncated":true,"text":"Speaker 1: Truncated"}),
+            ),
+        ] {
+            assert!(completion_text(provider, &response)
+                .unwrap_err()
+                .message
+                .contains("incomplete"));
+        }
+        assert!(completion_text(Provider::Studio, &json!({"mock":true,"text":"mock"})).is_err());
+        assert!(completion_text(Provider::Studio, &json!({"local":true,"text":"local"})).is_err());
+    }
+
+    #[test]
     fn seven_connectors_and_vendor_mocks_do_not_pretend_to_be_models() {
         let reports = health_all();
         assert_eq!(reports.len(), 7);
@@ -919,8 +1141,12 @@ mod tests {
             let done = complete_one(id, "status please").unwrap();
             assert!(done.mock);
             assert!(done.text.contains("not model output"));
+            let limited = complete_one_with_limit(id, "status please", 1024).unwrap();
+            assert!(limited.mock);
+            assert!(limited.text.contains("not model output"));
         }
         assert_eq!(health_one("mcp").unwrap().mode, Mode::Local);
+        assert!(complete_one_with_limit("mcp", "local", 1024).is_err());
     }
 
     #[test]
@@ -1057,5 +1283,57 @@ mod tests {
         assert!(!args
             .iter()
             .any(|arg| arg.contains("ping") || arg.contains("sh -c")));
+    }
+
+    #[test]
+    fn vendor_requests_do_not_follow_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (followed_tx, followed_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/follow\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_millis(300);
+            let mut followed = false;
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok(_) => {
+                        followed = true;
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("redirect listener failed: {error}"),
+                }
+            }
+            let _ = followed_tx.send(followed);
+        });
+
+        let body = send_json(
+            &format!("http://{address}/start"),
+            &[],
+            &json!({"prompt": "hello"}),
+        )
+        .unwrap();
+        assert_eq!(body, "");
+        assert!(!followed_rx.recv().unwrap());
+        server.join().unwrap();
     }
 }

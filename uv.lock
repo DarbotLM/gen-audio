@@ -481,17 +481,17 @@ requires-dist = [
     { name = "jaconv", marker = "extra == 'kokoro-onnx'", specifier = ">=0.5.0,<1" },
     { name = "jaconv", marker = "extra == 'kokoro-torch'", specifier = ">=0.5.0,<1" },
     { name = "jaconv", marker = "extra == 'misaki'", specifier = ">=0.5.0,<1" },
-    { name = "kokoro", marker = "extra == 'kokoro'", url = "https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl" },
-    { name = "kokoro", marker = "extra == 'kokoro-torch'", url = "https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl" },
-    { name = "kokoro-onnx", marker = "extra == 'kokoro'", url = "https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl" },
-    { name = "kokoro-onnx", marker = "extra == 'kokoro-gpu'", url = "https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl" },
-    { name = "kokoro-onnx", marker = "extra == 'kokoro-onnx'", url = "https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl" },
+    { name = "kokoro", marker = "extra == 'kokoro'", url = "https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl" },
+    { name = "kokoro", marker = "extra == 'kokoro-torch'", url = "https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl" },
+    { name = "kokoro-onnx", marker = "extra == 'kokoro'", url = "https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl" },
+    { name = "kokoro-onnx", marker = "extra == 'kokoro-gpu'", url = "https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl" },
+    { name = "kokoro-onnx", marker = "extra == 'kokoro-onnx'", url = "https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl" },
     { name = "librosa", marker = "extra == 'vibevoice'", specifier = ">=1.0.0" },
     { name = "matplotlib", specifier = ">=3.8" },
-    { name = "misaki", extras = ["en", "ko", "zh", "vi"], marker = "extra == 'kokoro'", url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" },
-    { name = "misaki", extras = ["en", "ko", "zh", "vi"], marker = "extra == 'kokoro-onnx'", url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" },
-    { name = "misaki", extras = ["en", "ko", "zh", "vi"], marker = "extra == 'misaki'", url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" },
-    { name = "misaki", extras = ["en", "zh"], marker = "extra == 'kokoro-torch'", url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" },
+    { name = "misaki", extras = ["en", "ko", "zh", "vi"], marker = "extra == 'kokoro'", url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" },
+    { name = "misaki", extras = ["en", "ko", "zh", "vi"], marker = "extra == 'kokoro-onnx'", url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" },
+    { name = "misaki", extras = ["en", "ko", "zh", "vi"], marker = "extra == 'misaki'", url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" },
+    { name = "misaki", extras = ["en", "zh"], marker = "extra == 'kokoro-torch'", url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "onnxruntime-gpu", extras = ["cuda", "cudnn"], marker = "(platform_machine == 'AMD64' and sys_platform != 'darwin' and extra == 'kokoro-gpu') or (platform_machine == 'x86_64' and sys_platform != 'darwin' and extra == 'kokoro-gpu')", specifier = ">=1.30.0,<2" },
     { name = "pyopenjtalk-plus", marker = "extra == 'kokoro'", specifier = ">=0.4.1.post9,<1" },
@@ -674,7 +674,7 @@ wheels = [
 [[package]]
 name = "kokoro"
 version = "0.9.4"
-source = { url = "https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl" }
+source = { url = "https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "loguru" },
@@ -684,7 +684,7 @@ dependencies = [
     { name = "transformers" },
 ]
 wheels = [
-    { filename = "kokoro-0.9.4-py3-none-any.whl", hash = "sha256:f43902798ad657b619f6a955f4ea3d9cead771b1a58e4082023c29bfd486626f" },
+    { filename = "kokoro-0.9.4-py3-none-any.whl", hash = "sha256:bcc402e20cf898aaa39e29d8ba604e72a8ae077e43eb348c8f4ba5ccd116ae96" },
 ]
 
 [package.metadata]
@@ -703,7 +703,7 @@ provides-extras = ["ja", "zh"]
 [[package]]
 name = "kokoro-onnx"
 version = "0.6.1"
-source = { url = "https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl" }
+source = { url = "https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl" }
 dependencies = [
     { name = "espeakng-loader" },
     { name = "numpy" },
@@ -711,7 +711,7 @@ dependencies = [
     { name = "phonemizer" },
 ]
 wheels = [
-    { filename = "kokoro_onnx-0.6.1-py3-none-any.whl", hash = "sha256:398c623fa238acb508798a2887022d5a5216de58c7bbe0f2a0d7f28f9de08c1d" },
+    { filename = "kokoro_onnx-0.6.1-py3-none-any.whl", hash = "sha256:24e7a6c743fae51a72bd565837d9545de9b1b99223bffaa9a37f6aa613dbc538" },
 ]
 
 [package.metadata]
@@ -866,14 +866,14 @@ wheels = [
 [[package]]
 name = "misaki"
 version = "0.9.4+py314.1"
-source = { url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" }
+source = { url = "https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl" }
 dependencies = [
     { name = "addict" },
     { name = "pip" },
     { name = "regex" },
 ]
 wheels = [
-    { filename = "misaki-0.9.4+py314.1-py3-none-any.whl", hash = "sha256:931dad3ff39b246a3920963b2812f03994f6cef49de71467670f39a10f964c2f" },
+    { filename = "misaki-0.9.4+py314.1-py3-none-any.whl", hash = "sha256:82f66b4a0d910ce0cf6836153543f96f33b1499610976b7834ee4fe1d152d31e" },
 ]
 
 [package.optional-dependencies]

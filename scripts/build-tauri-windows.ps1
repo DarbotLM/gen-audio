@@ -4,7 +4,10 @@ Release-build Gen-Audio for Windows. This is the only supported build path.
 
 .DESCRIPTION
 -Mode Full (default): NSIS and MSI installers that contain gen-audio.exe (tray
-app) and the gen-audio-mcp sidecar.
+app), the gen-audio-mcp sidecar and the gen-audio-acp agent, plus an MSIX and
+a tools NuGet package of the same verified binaries
+(scripts\pack-windows-msix-nuget.ps1). Packages stay unsigned unless
+-CertificateThumbprint names an existing code-signing certificate.
 -Mode NoBundle: `tauri build --no-bundle`. Same release exe with the embedded
 frontendDist, no installers. Faster, for local checks.
 
@@ -27,14 +30,16 @@ pwsh -NoProfile -File scripts/build-tauri-windows.ps1 -Mode NoBundle
 [CmdletBinding()]
 param(
     [ValidateSet('Full', 'NoBundle')]
-    [string]$Mode = 'Full'
+    [string]$Mode = 'Full',
+    [string]$CertificateThumbprint
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'lib\devenv.ps1')
 
-$TauriCli = '@tauri-apps/cli@2.12.1'
+# The CLI is installed by npm ci from the exact devDependency in apps/desktop.
+$TauriCli = 'tauri'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'lib\runtime-config.ps1')
 $runtimeConfig = Read-GenAudioRuntimeConfig -RepoRoot $root
@@ -167,6 +172,46 @@ try {
         }
     }
 
+    Write-Step 'build gen-audio-acp agent'
+    $acpArtifact = Invoke-CargoBinBuild -Package gen-audio-acp -Bin gen-audio-acp -ExtraArgs @('--release')
+    $acp = Get-Item -LiteralPath $acpArtifact.Executable
+    $acpHash = Get-Sha256 -LiteralPath $acp.FullName
+    Write-Step "acp $($acp.FullName) $($acp.Length) bytes sha256 $acpHash; cargo: $(if ($acpArtifact.Fresh) { 'up to date (fingerprint fresh)' } else { 'rebuilt' })"
+
+    # ACP uses stdio JSON-RPC, not MCP's HTTP listener. Prove the built binary
+    # negotiates protocol 1 before allowing Tauri to package it as externalBin.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo $acp.FullName
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.WorkingDirectory = $root
+    $acpProc = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $acpProc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}')
+        $acpProc.StandardInput.Flush()
+        $line = $acpProc.StandardOutput.ReadLineAsync()
+        if (-not $line.Wait(15000) -or [string]::IsNullOrWhiteSpace($line.Result)) {
+            throw 'gen-audio-acp did not answer initialize within 15 s'
+        }
+        $acpInit = $line.Result | ConvertFrom-Json
+        if ($acpInit.result.protocolVersion -ne 1) {
+            throw "gen-audio-acp negotiated protocolVersion '$($acpInit.result.protocolVersion)', expected 1"
+        }
+        if ($acpInit.result.agentInfo.name -ne 'gen-audio') {
+            throw "gen-audio-acp agentInfo.name was '$($acpInit.result.agentInfo.name)', expected gen-audio"
+        }
+        $acpProc.StandardInput.Close()
+        if (-not $acpProc.WaitForExit(5000)) { throw 'gen-audio-acp did not exit when stdin closed' }
+        if ($acpProc.ExitCode -ne 0) {
+            throw "gen-audio-acp exited with $($acpProc.ExitCode): $($acpProc.StandardError.ReadToEnd())"
+        }
+    } finally {
+        if ($acpProc -and -not $acpProc.HasExited) { Stop-Process -Id $acpProc.Id -Force -ErrorAction Stop }
+        if ($acpProc) { $acpProc.Dispose() }
+    }
+    Write-Step 'acp handshake ok (protocol 1, gen-audio)'
+
     # Stage the sidecar where tauri externalBin expects it. Never copy a file
     # onto itself (the old script copied target\release\gen-audio-mcp.exe onto
     # the same path and failed).
@@ -178,6 +223,16 @@ try {
     $stagedHash = Get-Sha256 -LiteralPath $staged
     if ($stagedHash -ne $sidecarHash) { throw "staged sidecar $staged has sha256 $stagedHash, but cargo's binary has $sidecarHash" }
     Write-Step "staged sidecar $staged (sha256 $stagedHash, same bytes as cargo's binary)"
+    $stagedAcp = Join-Path $binDir "gen-audio-acp-$triple.exe"
+    if ([System.IO.Path]::GetFullPath($stagedAcp) -eq [System.IO.Path]::GetFullPath($acp.FullName)) {
+        throw "refusing to copy $stagedAcp onto itself"
+    }
+    Copy-Item -LiteralPath $acp.FullName -Destination $stagedAcp -Force
+    $stagedAcpHash = Get-Sha256 -LiteralPath $stagedAcp
+    if ($stagedAcpHash -ne $acpHash) {
+        throw "staged sidecar $stagedAcp has sha256 $stagedAcpHash, but cargo's binary has $acpHash"
+    }
+    Write-Step "staged sidecar $stagedAcp (sha256 $stagedAcpHash, same bytes as cargo's binary)"
 
     Write-Step 'frontend dependencies (npm ci)'
     Push-Location $desktop
@@ -209,7 +264,7 @@ try {
 
     # tauri build runs beforeBuildCommand (npm run build) in apps/desktop, so
     # dist is rebuilt before cargo compiles the WebView.
-    $tauriArgs = @('--yes', $TauriCli, 'build')
+    $tauriArgs = @('--no', '--', $TauriCli, 'build')
     if ($Mode -eq 'Full') { $tauriArgs += @('--bundles', 'nsis,msi') } else { $tauriArgs += '--no-bundle' }
     Write-Step "npx $($tauriArgs -join ' ')"
     Push-Location $srcTauri
@@ -331,6 +386,17 @@ try {
                 Remove-Item -LiteralPath (Join-Path $releaseDir 'payload-check') -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
+
+        # Run only after the NSIS and MSI outputs (including the app payload)
+        # have passed their content/provenance gates. Pass those exact hashes so
+        # MSIX and NuGet cannot silently package different release binaries.
+        $packArgs = @{
+            ExpectedExeSha256 = $exe.Sha256
+            ExpectedMcpSha256 = $sidecarHash
+            ExpectedAcpSha256 = $acpHash
+        }
+        if ($CertificateThumbprint) { $packArgs.CertificateThumbprint = $CertificateThumbprint }
+        & (Join-Path $PSScriptRoot 'pack-windows-msix-nuget.ps1') @packArgs
     }
 
     Write-Output "BUILD_OK mode=$Mode exe=$($exe.Path) size=$($exe.Length) sha256=$($exe.Sha256) state=$($exe.State) log=$buildLog"

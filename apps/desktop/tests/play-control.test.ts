@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { controlBackoffMs, controlDisconnectedNotice, controlPlayOrigin, McpFailureCounter, mcpRequestBody, postMcp, reportAsync, seekReportControl, setReportSink, surfaceUiError, userPlayControl } from "../src/play-control.ts";
+import { consumeMcpControlStream, controlBackoffMs, controlDisconnectedNotice, controlPlayOrigin, McpFailureCounter, mcpRequestBody, postMcp, reportAsync, seekReportControl, setReportSink, surfaceUiError, userPlayControl } from "../src/play-control.ts";
 import { Seeker } from "../src/seek.ts";
 
 const repo = (path: string) => fileURLToPath(new URL(`../../../${path}`, import.meta.url));
@@ -73,7 +73,8 @@ test("contract: the Play button's ui_playback body is schemas/examples/control/d
   const main = readFileSync(repo("apps/desktop/src/main.ts"), "utf8");
   // mcpCall goes through postMcp on the discovered origin (8765–8770), which posts
   // exactly mcpRequestBody (tested against a live listener below).
-  assert.match(main, /postMcp\(fetch, `\$\{origin\}\/mcp`, name, args, mcpFailures\)/);
+  assert.match(main, /postMcp\(fetch, `\$\{origin\}\/mcp`, name, args, mcpFailures, mcpToken\)/);
+  assert.match(main, /if \(!mcpToken\).*?return null;/s);
   assert.match(main, /const origin = await mcpReady/);
   const control = readFileSync(repo("apps/desktop/src/play-control.ts"), "utf8");
   assert.match(control, /body: JSON\.stringify\(mcpRequestBody\(name, args\)\)/);
@@ -134,10 +135,11 @@ async function listener(reply: (req: IncomingMessage, body: string, res: ServerR
   return { url: `http://127.0.0.1:${port}/mcp`, close: () => new Promise((resolve) => server.close(() => resolve())) };
 }
 
-test("observability: a rejected POST increments the MCP failure counter and warns once per kind", async () => {
-  const seen: Array<{ type: string | undefined; body: string }> = [];
+test("observability: a rejected authenticated POST increments the counter and warns once per kind", async () => {
+  const token = "ab".repeat(32);
+  const seen: Array<{ type: string | undefined; authorization: string | undefined; body: string }> = [];
   const server = await listener((req, body, res) => {
-    seen.push({ type: req.headers["content-type"], body });
+    seen.push({ type: req.headers["content-type"], authorization: req.headers.authorization, body });
     res.writeHead(415, { "content-type": "application/json" }).end('{"error":"content-type must be application/json"}');
   });
   const warnings: string[] = [];
@@ -145,8 +147,8 @@ test("observability: a rejected POST increments the MCP failure counter and warn
   const failures = new McpFailureCounter((message) => warnings.push(message), (snapshot) => snapshots.push(snapshot));
   const report = seekReportControl(2, 60, { ok: true, actual: 60, status: "seeked to 1:00" });
   try {
-    assert.equal(await postMcp(fetch, server.url, report.name, report.args, failures), null);
-    assert.equal(await postMcp(fetch, server.url, report.name, report.args, failures), null);
+    assert.equal(await postMcp(fetch, server.url, report.name, report.args, failures, token), null);
+    assert.equal(await postMcp(fetch, server.url, report.name, report.args, failures, token), null);
   } finally {
     await server.close();
   }
@@ -156,6 +158,8 @@ test("observability: a rejected POST increments the MCP failure counter and warn
   assert.deepEqual(snapshots.at(-1), { "ui_seek_report:http_415": 2 });
   // What went on the wire is the contract body, typed application/json.
   assert.equal(seen[0].type, "application/json");
+  assert.equal(seen[0].authorization, `Bearer ${token}`);
+  assert.ok(!server.url.includes(token), "credential stays out of the URL");
   assert.deepEqual(JSON.parse(seen[0].body), mcpRequestBody(report.name, report.args));
 });
 
@@ -169,17 +173,54 @@ test("observability: network errors and JSON-RPC errors are counted too; success
   });
   const failures = new McpFailureCounter(() => {});
   let closedUrl = "";
+  const token = "ef".repeat(32);
   try {
-    const rpc = await postMcp(fetch, server.url, "ui_navigate", { slide: "slide:nope" }, failures);
+    const rpc = await postMcp(fetch, server.url, "ui_navigate", { slide: "slide:nope" }, failures, token);
     assert.equal((rpc as { error: { code: number } }).error.code, -32602, "the payload still reaches the caller");
-    assert.notEqual(await postMcp(fetch, server.url, "library_rename", { clipId: "x" }, failures), null);
+    assert.notEqual(await postMcp(fetch, server.url, "library_rename", { clipId: "x" }, failures, token), null);
     closedUrl = server.url;
   } finally {
     await server.close();
   }
-  assert.equal(await postMcp(fetch, closedUrl, "ui_generate", {}, failures), null);
+  assert.equal(await postMcp(fetch, closedUrl, "ui_generate", {}, failures, token), null);
   assert.deepEqual(failures.snapshot(), { "ui_navigate:rpc_-32602": 1, "ui_generate:TypeError": 1 });
   assert.equal(failures.total(), 2);
+});
+
+test("SSE keeps the bearer token in one header and never in the URL", async () => {
+  const token = "cd".repeat(32);
+  const frames = [
+    'event: control\ndata: {"seq":1,"op":"navigate","args":{"slide":"library"}}\n\n',
+    'event: gap\ndata: {"gap":true,"after":1}\n\n',
+    'event: end\ndata: {"stateless":true}\n\n',
+  ].join("");
+  let requested = "";
+  let authorization = "";
+  const controls: string[] = [];
+  const gaps: string[] = [];
+  const fetcher = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    requested = String(url);
+    authorization = new Headers(init?.headers).get("authorization") ?? "";
+    return new Response(frames, { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  let opened = false;
+  await consumeMcpControlStream(
+    fetcher,
+    "http://127.0.0.1:8766/control/stream",
+    token,
+    0,
+    new McpFailureCounter(() => {}),
+    {
+      onOpen: () => { opened = true; },
+      onControl: (data) => controls.push(data),
+      onGap: async (data) => { gaps.push(data); },
+    },
+  );
+  assert.equal(opened, true);
+  assert.equal(authorization, `Bearer ${token}`);
+  assert.ok(!requested.includes(token), requested);
+  assert.equal(controls.length, 1);
+  assert.equal(gaps.length, 1);
 });
 
 // CSP: the window may connect to itself, Tauri's IPC, and the loopback MCP it posts to. Nothing else, no wildcards.
@@ -197,10 +238,10 @@ test("csp: connect-src is exactly self, Tauri IPC and the MCP origin mcpCall pos
   assert.ok(!csp.includes("*"), csp);
   const main = readFileSync(repo("apps/desktop/src/main.ts"), "utf8");
   const control = readFileSync(repo("apps/desktop/src/play-control.ts"), "utf8");
-  assert.match(main, /postMcp\(fetch, `\$\{origin\}\/mcp`, name, args, mcpFailures\)/);
+  assert.match(main, /postMcp\(fetch, `\$\{origin\}\/mcp`, name, args, mcpFailures, mcpToken\)/);
   assert.equal(main.match(/fetch\(/g)?.length ?? 0, 0, "main.ts does not open its own fetch");
   assert.equal(main.match(/fetchLibraryBlob\(fetch,/g)?.length, 1, "library media is the only other fetch");
-  assert.equal(control.match(/fetchImpl\(/g)?.length, 2, "tool POST and library GET");
+  assert.equal(control.match(/fetchImpl\(/g)?.length, 3, "tool POST, library GET, and SSE GET");
   // Only connect-src changed.
   assert.deepEqual(directives.get("default-src"), ["'self'"]);
   assert.deepEqual(directives.get("script-src"), ["'self'"]);

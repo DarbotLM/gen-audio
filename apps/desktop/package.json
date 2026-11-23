@@ -1,6 +1,9 @@
 {
   "name": "gen-audio-desktop",
   "private": true,
+  "engines": {
+    "node": ">=26.0.0 <27"
+  },
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -10,12 +13,13 @@
     "test": "node --import tsx --test tests/*.test.ts src/clock-bind.test.ts"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.1.1"
+    "@tauri-apps/api": "2.12.5"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "2.12.6",
     "ajv": "^8.20.0",
     "tsx": "^4.23.15",
     "typescript": "~7.0.2",
-    "vite": "^6.0.7"
+    "vite": "^6.4.5"
   }
 }

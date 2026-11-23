@@ -6,10 +6,30 @@ Darbot Gen-Audio is a desktop app plus a Python SDK for multi-speaker podcast to
 
 This repo does not ship model weights, voice binaries, API keys, or podcast renders. The spectrogram panel draws a browser formant map for the agent, voice, duration, perspectives, and loaded engine in the side pane. That map is not speech and not the Python spectrogram. The cube view stays a sine fixture tone.
 
+## Releases
+
+`v0.1.0` is the initial public Gen-Audio release. The GitHub release carries
+the Python wheel and source archive, Windows NSIS/MSI installers, an unsigned
+by default MSIX, a tools-only NuGet package, native MCP, ACP, and harness
+executables, checksums, and source provenance. The release does not bundle
+model weights or generated audio.
+
+The optional speech forks are published separately under the pinned
+`py314-2026.11.22` tag in
+[`DarbotLM/misaki`](https://github.com/DarbotLM/misaki/releases/tag/py314-2026.11.22),
+[`DarbotLM/kokoro`](https://github.com/DarbotLM/kokoro/releases/tag/py314-2026.11.22),
+and
+[`DarbotLM/kokoro-onnx`](https://github.com/DarbotLM/kokoro-onnx/releases/tag/py314-2026.11.22).
+Those repositories are private, so installers use authenticated GitHub CLI
+access; the public Gen-Audio package cannot anonymously download their wheels.
+
+See [docs/RELEASES.md](docs/RELEASES.md) for the release matrix, verification
+procedure, known limitations, and complete release notes.
+
 ## Synthesis engines
 
 The Python 3.14 Kokoro stack is pinned to the DarbotLM forks and their
-`py314-2026.09.17` release wheels:
+`py314-2026.11.22` release wheels:
 [misaki](https://github.com/DarbotLM/misaki) `0.9.4+py314.1`,
 [kokoro](https://github.com/DarbotLM/kokoro) `0.9.4`, and
 [kokoro-onnx](https://github.com/DarbotLM/kokoro-onnx) `0.6.1`.
@@ -100,20 +120,22 @@ transcript QA path sends both to the local NeMo Speech runtime.
 
 ## Desktop app
 
-Targets: Windows (WebView2, NSIS and MSI), macOS (WebKit, dmg), Linux (webkit2gtk 4.1, deb/appimage). Ship the installer from the build script. Do not launch `target/release/gen-audio-desktop.exe` from a bare `cargo build -p gen-audio-desktop`: that compile leaves the `custom-protocol` feature off, so the WebView loads `devUrl` `http://localhost:1420` and Edge reports `ERR_CONNECTION_REFUSED`. MCP on `127.0.0.1:8765` can still be healthy while that window is dead.
+Targets: Windows (WebView2, NSIS, MSI, MSIX and a tools NuGet package), macOS (WebKit, dmg), Linux (webkit2gtk 4.1, deb/appimage). Ship the installer from the build script. Do not launch `target/release/gen-audio-desktop.exe` from a bare `cargo build -p gen-audio-desktop`: that compile leaves the `custom-protocol` feature off, so the WebView loads `devUrl` `http://localhost:1420` and Edge reports `ERR_CONNECTION_REFUSED`. MCP on `127.0.0.1:8765` can still be healthy while that window is dead.
 
-Release builds embed `apps/desktop/dist` (`frontendDist`: `../dist`). `devUrl` is only for `tauri dev`. The scripts build the Vite app and refuse to continue if `apps/desktop/dist/index.html` is missing, then run `tauri build`. The installed app keeps a tray icon and a taskbar button while the window is open. It starts `gen-audio-mcp` beside the executable on `127.0.0.1:8765` (or `GEN_AUDIO_MCP_ADDR`). Closing the window hides it. Quit is on the tray menu and stops the sidecar. On Windows, a successful sidecar start registers the app under the current user's Run key unless `GEN_AUDIO_AUTOSTART=0`.
+Release builds embed `apps/desktop/dist` (`frontendDist`: `../dist`). `devUrl` is only for `tauri dev`. The scripts build the Vite app and refuse to continue if `apps/desktop/dist/index.html` is missing, then run `tauri build`. The installed app keeps a tray icon and a taskbar button while the window is open. It starts and authenticates its own `gen-audio-mcp` beside the executable on `127.0.0.1:8765` (or a configured `GEN_AUDIO_MCP_ADDR` inside the CSP-approved `8765`-`8770` range), choosing another loopback port in that range when the address is occupied rather than attaching to an unrelated listener. The random bearer credential is sent only in child environment, IPC, HTTP headers, and an owner-restricted `mcp.addr` descriptor; it is never in a URL or process argument. The child must prove the boot nonce through an authenticated `initialize`. The app carries `gen-audio-acp` as another external sidecar. Closing the window hides it. Quit stops the owned MCP sidecar and removes the descriptor. On Windows, login autostart is disabled unless `GEN_AUDIO_AUTOSTART=1` is explicitly set.
 
 ```bash
 # Windows: scripts\build-tauri-windows.ps1 -Mode Full|NoBundle (see Scripts below), the only build script.
 # There is no Linux or macOS build script; CI's rust job runs `cargo check -p gen-audio-desktop` on Linux.
 
-scripts/build-tauri.sh                 # Linux: mcp handshake, npm run build, then tauri build --bundles deb
 # Windows, from Windows PowerShell 5.1 or PowerShell 7:
-# scripts/build-tauri-windows.ps1      # mcp handshake, npm run build, then tauri build --bundles nsis,msi
+# scripts/build-tauri-windows.ps1      # MCP/ACP checks, npm run build, NSIS/MSI, MSIX/NuGet
 ```
 
-`scripts/build-tauri-windows.ps1` pins `@tauri-apps/cli` at 2.12.1 (the `tauri` version in `Cargo.lock`) and prints the newest NSIS and MSI by last write time.
+`apps/desktop` declares Node `>=26.0.0 <27`, pins `@tauri-apps/cli` 2.12.6 and
+`@tauri-apps/api` 2.12.5, and resolves through the public npm registry named by
+`.npmrc`. `scripts/build-tauri-windows.ps1` runs the installed CLI with
+`npx --no -- tauri`; it never downloads a Tauri CLI during a build.
 
 ```bash
 # library crates and ACP / MCP / harness tests
@@ -122,7 +144,7 @@ cargo check -p gen-audio-desktop
 
 # UI
 cd apps/desktop
-npm install
+npm ci
 npm run build
 npm run dev   # browser preview on :1420, or `cargo tauri dev` inside src-tauri
 ```
@@ -144,7 +166,7 @@ cargo run -p gen-audio-acp -- --smoke
 cargo run -p gen-audio-harness -- --fixture
 ```
 
-MCP is stateless: `initialize` stores no session, HTTP does not set `Mcp-Session-Id`, and the listener refuses non-loopback binds unless `GEN_AUDIO_MCP_HTTP_ALLOW_REMOTE=1`. `GET /health` is liveness, and it also counts the HTTP requests this listener refused: `rejected` (per status, e.g. `{"400":0,"403":2,"411":0,"415":1}`) and `last_rejected` (`{method, path, status, t}`, with no request body or headers). Every refusal is also one stderr line `gen-audio-mcp http: rejected <method> <path or tool> <code> <reason> peer=<addr> seq=<n>`, where `<n>` numbers this process's refusals from 1, so no two lines are the same text. When the desktop starts the sidecar, it keeps that stderr in `gen-audio-mcp.log` in the Tauri app log dir (on Windows `%LOCALAPPDATA%\labs.darbot.genaudio\logs`), rotating at 1 MiB with three files kept. A line it cannot write (a failed rotation) is counted, never dropped silently: the next line that can be written is preceded by one `gen-audio-desktop: sidecar log dropped <n> line(s): <reason>` marker. Each line gets a unix-ms stamp and is redacted whole before it is capped at 512 bytes: no request bodies, header values, query strings, `token=`/`key=`/`password=` values, emails, home-directory user names or token-shaped strings. `GET /ready` means this MCP listener is up (`speech` is false, models are not loaded). It is not genaid-audio `/ready`. `GET /control` and `GET /control/stream` expose a short loopback command ring (SSE, no session id) for the desktop window. UI tools (`ui_navigate`, `ui_select_tile`, `ui_flip`, `ui_playback`, `ui_set_sidepane`, `ui_generate`, `library_list`, `library_rename`, `library_harvest`, `voice_profile_get`, `voice_profile_list`, `cube_layers`) queue that ring or return catalog data. They do not write speech. `ui_playback` takes `origin` (`user` or `auto`, play only). A `ui_playback` seek waits up to `waitMs` (default 2000, max 10000) for the window, which posts `ui_seek_report` once its seek finishes, and returns `{requested_t, landed_t, ok, reason}`: where the clock actually landed, or `ok: false` with the reason (including "no window reported"). The exact bodies the window posts live in `schemas/examples/control/`; the npm tests assert the desktop builds them and the cargo tests assert the server accepts them. `ui_cube {mode: "single"|"compare", tileId?|uid?}` sets the Cube tab mode (Compare: the clip's Library cube, `library_r3`, beside the same WAV's `pipeline_r2` cube on one playback slice); the Compare button posts the same tool, and `viewport_get` reads `cube_mode` and `cube_compare` back (contract: `schemas/examples/ui_cube.contract.json`). `ui_generate` records a running or unavailable phase and does not call `synth`. `synth` still refuses when the Kokoro model env vars are unset and publishes `phase: refused` with `synthesizedSpeech: false`. The voice-profile contract is `schemas/voice_profile.schema.json`.
+MCP is stateless: `initialize` stores no session, HTTP does not set `Mcp-Session-Id`, and the listener refuses non-loopback binds. A desktop-owned listener requires a 64-hex bearer token for `/mcp`, control, health, and library reads; the browser uses an `Authorization` header for both fetch and SSE (the token is never placed in the URL). `GET /health` is liveness, and it also counts the HTTP requests this listener refused: `rejected` (per status, e.g. `{"400":0,"401":1,"403":2,"411":0,"415":1}`) and `last_rejected` (`{method, path, status, t}`, with no request body or headers). Every refusal is also one stderr line `gen-audio-mcp http: rejected <method> <path or tool> <code> <reason> peer=<addr> seq=<n>`, where `<n>` numbers this process's refusals from 1, so no two lines are the same text. When the desktop starts the sidecar, it keeps that stderr in `gen-audio-mcp.log` in the Tauri app log dir (on Windows `%LOCALAPPDATA%\labs.darbot.genaudio\logs`), rotating at 1 MiB with three files kept. A line it cannot write (a failed rotation) is counted, never dropped silently: the next line that can be written is preceded by one `gen-audio-desktop: sidecar log dropped <n> line(s): <reason>` marker. Each line gets a unix-ms stamp and is redacted whole before it is capped at 512 bytes: no request bodies, header values, query strings, `token=`/`key=`/`password=` values, emails, home-directory user names or token-shaped strings. `GET /ready` means this MCP listener is up (`speech` is false, models are not loaded). It is not genaid-audio `/ready`. `GET /control` and `GET /control/stream` expose a short loopback command ring (SSE, no session id) for the desktop window. UI tools (`ui_navigate`, `ui_select_tile`, `ui_flip`, `ui_playback`, `ui_set_sidepane`, `ui_generate`, `library_list`, `library_rename`, `library_harvest`, `voice_profile_get`, `voice_profile_list`, `cube_layers`) queue that ring or return catalog data. They do not write speech. `ui_playback` takes `origin` (`user` or `auto`, play only). A `ui_playback` seek waits up to `waitMs` (default 2000, max 10000) for the window, which posts `ui_seek_report` once its seek finishes, and returns `{requested_t, landed_t, ok, reason}`: where the clock actually landed, or `ok: false` with the reason (including "no window reported"). The exact bodies the window posts live in `schemas/examples/control/`; the npm tests assert the desktop builds them and the cargo tests assert the server accepts them. `ui_cube {mode: "single"|"compare", tileId?|uid?}` sets the Cube tab mode (Compare: the clip's Library cube, `library_r3`, beside the same WAV's `pipeline_r2` cube on one playback slice); the Compare button posts the same tool, and `viewport_get` reads `cube_mode` and `cube_compare` back (contract: `schemas/examples/ui_cube.contract.json`). `ui_generate` records a running or unavailable phase and does not call `synth`. `synth` still refuses when the Kokoro model env vars are unset and publishes `phase: refused` with `synthesizedSpeech: false`. The voice-profile contract is `schemas/voice_profile.schema.json`.
 
 ACP is session-scoped because that protocol requires `sessionId`. `session/new` can bind persona agents and a Voice model. A prompt such as `profile alice`, `agent alice rocky voice kokoro_onnx`, or `generate` calls those MCP tools and emits `tool_call` updates. `generate` also calls `synth` when the Voice model has an adapter, and the result stays a refusal until model files are configured. Prompt audio is false. The exact prompts `health` and `status` still return connector health. The harness prints JSONL. It skips synthesis instead of inventing speech. `--fixture` writes a labeled sine WAV. `--improve` runs the Python publish chain on that fixture when the checkout is available.
 
@@ -285,7 +307,9 @@ From any working directory, run the checkout's `scripts\run.ps1`:
 
 Each invocation runs in the foreground; use a separate terminal or your service
 supervisor. `-Port` overrides that service's port. `-Check` prints paths and
-arguments without changing files or starting a process. The launcher configures
+arguments without changing files or starting a process. Before an actual MCP,
+Node or Preview launch, `run.ps1` reports the PID and process name already
+listening on the requested port. The launcher configures
 the native app and its child MCP/Python processes with the same checkout,
 `.venv`, and `models/` paths, without changing user-wide environment variables.
 Model path and checksum guards remain enabled for synthesis, including when
@@ -377,13 +401,14 @@ Health: `http://<node>:8002/genaid-audio/health`
 
 ## Scripts
 
-Windows tooling has six entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend these with a parameter instead of adding a new script: `scripts/test.ps1` fails on any other `*.ps1`, `*.bat`, `*.cmd` or `*.py` outside the allowlist, including untracked and gitignored files such as anything under `artifacts/`.
+Windows tooling has seven canonical entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend an existing entry point with a parameter instead of adding an arbitrary script: `scripts/test.ps1` fails on scripts outside its explicit allowlist, including untracked and gitignored files such as anything under `artifacts/`.
 
 | Entry point | What it does |
 |---|---|
 | `scripts\toolbox.ps1 -Step Node -RepoRoot <path>` | Fresh-node bootstrap: clone or preserve the checkout, install the complete framework and model files, build, test, persist local configuration, launch Node/MCP/preview, and verify health. |
 | `scripts\run.ps1 -Service Mcp\|Node\|Desktop\|Preview [-Port n] [-Check]` | Launches against checkout-local `models/`, `.venv/` and `artifacts/runtime/`. Native desktop children inherit the same configuration. `-Check` prints the launch plan without side effects. |
-| `scripts\build-tauri-windows.ps1 [-Mode Full\|NoBundle]` | The only build path. Imports the MSVC environment (`Import-VsDevEnv`), then fails unless every library WAV in `schemas/asset-object/media.lock.json` is staged with the locked sha256 and byte count (they are gitignored and the release embeds them), builds and handshakes `gen-audio-mcp` (fresh means cargo's own fingerprint verdict from `--message-format=json` plus a sha256 check of the staged copy, never the file mtime), stages it for `externalBin`, runs `npm ci`, then the pinned tauri CLI (`@tauri-apps/cli@2.12.1`). `Full` (default) makes NSIS and MSI. `NoBundle` runs `tauri build --no-bundle`, which still embeds `frontendDist`. It judges `dist`, `gen-audio.exe` and the installers by content, never mtime: each must exist after the build and is reported by sha256 as `rebuilt` or `unchanged` (a no-op rebuild is not stale), `dist` must hold every `apps/desktop/public` file byte for byte, and the installers are the ones for this `tauri.conf.json` version. It also checks that `dist/index.html` has the header markers, that the build is not a dev build (`cargo:rustc-cfg=dev`, which would load `localhost:1420`), and that `target\release` holds one `gen-audio-desktop` fingerprint. It prints one `BUILD_OK` line, and only on success. Every run, failed ones included, saves its full transcript (native tool output too) to `target/logs/build-<sha>-<timestamp>.log`; the first line `BUILD_LOG`, `BUILD_OK ... log=` and `BUILD_FAIL log=` name it. |
+| `scripts\build-tauri-windows.ps1 [-Mode Full\|NoBundle] [-CertificateThumbprint thumb]` | The only build path. Imports the MSVC environment (`Import-VsDevEnv`), checks every locked library WAV, builds and handshakes both `gen-audio-mcp` and `gen-audio-acp`, hash-checks their `externalBin` staging, runs `npm ci`, and invokes the locally installed Tauri CLI. `Full` (default) builds and verifies NSIS/MSI payloads first, then creates MSIX and NuGet packages from those exact proven hashes. `NoBundle` runs `tauri build --no-bundle`, which still embeds `frontendDist`. Packages default to unsigned; an operator may opt into signing with an existing code-signing certificate. The build judges `dist`, `gen-audio.exe`, installer payloads and the staged sidecars by content, never mtime, and prints `BUILD_OK` only after every output and provenance gate passes. Every run, failed ones included, saves its transcript to `target/logs/build-<sha>-<timestamp>.log`. |
+| `scripts\pack-windows-msix-nuget.ps1` | Allowlisted packaging helper called by `build-tauri-windows.ps1 -Mode Full` after NSIS/MSI verification. It creates `bundle\msix` and `bundle\nuget` from verified `gen-audio.exe`, MCP and ACP release binaries, rechecks archive payload hashes, and signs both only when `-CertificateThumbprint` names an existing certificate with a private key. |
 | `scripts\test.ps1 [-Tag name] [-Skip Pssa,Sprawl,Regen,Cargo,Npm,Python] [-SprawlExclude path] [-FromLock \| -WithWav]` | An EOL preflight first (`git ls-files --eol`: a tracked file with `eol=lf` in `.gitattributes` but CRLF in the working copy fails the run, is listed, and the fix is printed; nothing is rewritten), then PSScriptAnalyzer 1.24.0 with `PSScriptAnalyzerSettings.psd1` (any finding fails), the sprawl gate, a regen check (reruns the `build_assets` and `asset_vectors` examples and `cube_revision.py manifest`, then `git diff --exit-code` over `assets.json`, `manifest.json`, `assets.dev.json`, `media.lock.json`, `fixtures_v1.json`, `v1.json` and `viewport.{example,release}.json`; a missing gitignored library WAV fails the step, and `-FromLock` (CI) takes the WAV facts from `schemas/asset-object/media.lock.json`; PNGs are checked by pixels in pytest because zlib-ng makes their bytes vary), `cargo test --workspace`, `npm test` and `tsc --noEmit` in `apps/desktop`, and `pytest`. `-WithWav` is the merge check that the PR template requires. It first proves the staged WAVs are the `media.lock.json` bytes (Wavs step), then runs pytest with `GEN_AUDIO_REQUIRE_WAVS=1`, so a WAV test that would skip fails instead: the byte-for-byte cube regeneration, inv_hdr and strip tests must run. Prints a `TEST_SUMMARY` line. Logs go to `artifacts/test-logs/`. |
 | `scripts\mcp-call.ps1 -Tool <name> [-ArgsJson <json>] [-Port <n>]` | One MCP `tools/call` over HTTP. Finds the server from `-Port`, `GEN_AUDIO_MCP_ADDR`, `127.0.0.1:8765`, then the loopback ports a `gen-audio` process listens on, and checks `initialize` says `gen-audio`. Example: `scripts\mcp-call.ps1 -Tool ui_navigate -ArgsJson '{"slide":"slide:library"}'`. |
 | `scripts\ui-shot.ps1 -Out <png>` | Captures the Gen-Audio window with Win32 `PrintWindow`. No input injection and no screen-scrape fallback. Fails on a blank capture and prints the PNG's sha256. |

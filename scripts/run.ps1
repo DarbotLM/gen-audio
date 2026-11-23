@@ -64,6 +64,17 @@ if ($Check) {
     } | ConvertTo-Json -Depth 5
     return
 }
+# The desktop app owns the sidecar listener; every other service binds $Port.
+# Fail before runtime or log setup with the owner named, rather than hiding a
+# bare bind error deep in the service log.
+if ($Service -ne 'Desktop') {
+    $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($listener) {
+        $owner = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+        $name = if ($owner) { $owner.ProcessName } else { 'unknown' }
+        throw "Port $Port is already in use by PID $($listener.OwningProcess) ($name). Stop it or pass -Port <free port>."
+    }
+}
 if ($Service -ne 'Preview') {
     foreach ($file in @($exe, $python)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {

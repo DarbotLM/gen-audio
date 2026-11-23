@@ -1,5 +1,4 @@
-import { backKindLabel, hiddenFace } from "./face-a11y";
-import { glyphBadge } from "./glyph";
+import { copyUidButton, flipGlyph, flipGlyphLabel, glyphMark } from "./glyph";
 import type { LibraryCatalog, ModelCubes } from "./library-assets";
 import { emptyStrip } from "./livestrip";
 import { renderTransport } from "./playback";
@@ -16,6 +15,59 @@ export type SlideSchema = {
   cardIds: string[];
   layer: string;
 };
+
+export interface CardFace {
+  id: string;
+  name: string;
+}
+
+const CLIP_FACES: readonly CardFace[] = [
+  { id: "clip", name: "Clip" },
+  { id: "cube", name: "Cube" },
+  { id: "layers", name: "Layers" },
+  { id: "spectrogram", name: "Spectrogram" },
+  { id: "relations", name: "Relations" },
+];
+const MODEL_FACES: readonly CardFace[] = [
+  { id: "model", name: "Model" },
+  { id: "cubes", name: "Cubes" },
+  { id: "relations", name: "Relations" },
+];
+const PROFILE_FACES: readonly CardFace[] = [
+  { id: "profile", name: "Profile" },
+  { id: "persona", name: "Persona" },
+  { id: "relations", name: "Relations" },
+];
+
+const MODEL_FACE_IDS: Record<string, readonly string[]> = {
+  kokoro_onnx: ["model", "cubes", "relations"],
+  kokoro_dayour: ["model", "cubes", "relations"],
+  vibevoice: ["model", "cubes", "relations"],
+  misaki: ["model", "relations"],
+  magpie: ["model"],
+  pocket_tts: ["model"],
+};
+
+/** Provisional faces from the card document. viewport_get replaces these with reducer-owned values. */
+export function facesForCard(card: ViewportCard): CardFace[] {
+  if (card.kind === "LibraryClip") {
+    const ids = card.body.synthesizedSpeech === true && typeof card.body.wavUrl === "string"
+      ? CLIP_FACES.map((face) => face.id)
+      : ["clip", "relations"];
+    return ids.map((id) => CLIP_FACES.find((face) => face.id === id) as CardFace);
+  }
+  if (card.kind === "EngineStatus") {
+    const engineId = String(card.body.engineId ?? "");
+    const ids = MODEL_FACE_IDS[engineId] ?? ["model"];
+    return ids.map((id) => MODEL_FACES.find((face) => face.id === id) as CardFace);
+  }
+  if (card.kind === "ConnectorStatus") return [{ id: "connector", name: "Connector" }];
+  if (card.kind === "VoiceProfile") return PROFILE_FACES.map((face) => ({ ...face }));
+  return [
+    { id: "summary", name: "Summary" },
+    { id: "details", name: "Details" },
+  ];
+}
 
 /** Snap slides. Layers group voice models, clips, and an honest empty video pane. */
 export const SLIDE_SCHEMAS: SlideSchema[] = [
@@ -86,7 +138,6 @@ export const SLIDE_SCHEMAS: SlideSchema[] = [
 ];
 
 export function showRejected(board: HTMLElement, empty: HTMLElement, error: string): void {
-  stopLiveCycle(board);
   board.replaceChildren();
   board.hidden = true;
   empty.hidden = false;
@@ -94,10 +145,16 @@ export function showRejected(board: HTMLElement, empty: HTMLElement, error: stri
   syncSlideChrome(0, 0);
 }
 
-const liveTimers = new WeakMap<HTMLElement, number>();
+export interface RenderOptions {
+  onFlip?: (tileId: string) => void;
+}
 
-export function renderBoard(board: HTMLElement, empty: HTMLElement, document: ViewportDocument): void {
-  stopLiveCycle(board);
+export function renderBoard(
+  board: HTMLElement,
+  empty: HTMLElement,
+  document: ViewportDocument,
+  options: RenderOptions = {},
+): void {
   board.replaceChildren();
   empty.hidden = document.cards.length > 0;
   board.hidden = document.cards.length === 0;
@@ -181,14 +238,20 @@ export function renderBoard(board: HTMLElement, empty: HTMLElement, document: Vi
 
       const flip = window.document.createElement("div");
       flip.className = "flip";
-      flip.append(frontFace(card), backFace(card));
+      const faces = facesForCard(card);
+      flip.append(...faces.map((face, index) => cardFace(card, face, index)));
       article.append(flip);
-      article.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        const target = event.target as HTMLElement | null;
-        if (target && target.closest("button, input, audio, select, textarea") && !target.classList.contains("flip-toggle")) return;
-        event.preventDefault();
-        toggleFlip(article);
+      const glyph = flipGlyph(card.uid, () => {
+        article.querySelectorAll(":scope > .profile-status").forEach((node) => node.remove());
+        options.onFlip?.(card.id);
+      });
+      if (glyph) article.append(glyph);
+      setArticleFaceState(article, {
+        face_id: faces[0]?.id ?? "",
+        face_index: 0,
+        face_count: faces.length,
+        ids: faces.map((face) => face.id),
+        names: faces.map((face) => face.name),
       });
       section.append(article);
       globalIndex += 1;
@@ -209,13 +272,21 @@ export function renderBoard(board: HTMLElement, empty: HTMLElement, document: Vi
   const total = slides.length + extra;
   buildSlideDots(total);
   syncSlideChrome(0, total);
-  startLiveCycle(board);
   board.scrollTop = 0;
+}
+
+function cardFace(card: ViewportCard, definition: CardFace, index: number): HTMLElement {
+  const face = index === 0 ? frontFace(card) : detailFace(card, definition);
+  face.dataset.faceId = definition.id;
+  face.classList.toggle("front", index === 0);
+  face.classList.toggle("back", index > 0);
+  markFace(face, index !== 0);
+  return face;
 }
 
 function frontFace(card: ViewportCard): HTMLElement {
   const face = window.document.createElement("div");
-  face.className = "face front";
+  face.className = "face";
   const row = window.document.createElement("div");
   row.className = "live-row";
   const kind = window.document.createElement("div");
@@ -225,22 +296,10 @@ function frontFace(card: ViewportCard): HTMLElement {
   live.className = "live-mark";
   live.textContent = liveLabel(card);
   row.append(kind, live);
-  // Asset object model v1: every card shows its uid glyph (uid on hover, copy on click).
-  const badge = glyphBadge(card.uid, { onCopy: announceCopy });
-  if (badge) row.append(badge);
   const title = window.document.createElement("h2");
   title.textContent = card.title;
   if (card.kind === "SpectrogramPanel") title.classList.add("spec-title");
-  const flip = button("Flip");
-  flip.className = "flip-toggle";
-  flip.setAttribute("aria-pressed", "false");
-  flip.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const article = flip.closest(".card");
-    if (article instanceof HTMLElement) toggleFlip(article);
-  });
-  face.append(row, title, bodyFor(card, card.kind, card.body), flip);
-  markFace(face, false);
+  face.append(row, title, bodyFor(card, card.kind, card.body));
   return face;
 }
 
@@ -272,62 +331,156 @@ function liveLabel(card: ViewportCard): string {
   return "Tile";
 }
 
-function backFace(card: ViewportCard): HTMLElement {
+function detailFace(card: ViewportCard, definition: CardFace): HTMLElement {
   const face = window.document.createElement("div");
-  face.className = "face back";
+  face.className = "face";
   const kind = window.document.createElement("div");
   kind.className = "kind";
-  kind.textContent = backKindLabel(card.kind);
+  kind.textContent = definition.name;
   const title = window.document.createElement("h2");
   title.textContent = card.title;
   face.append(kind, title);
-  if (card.kind === "VoiceProfile") face.append(voiceProfileBack(card));
-  else if (card.kind === "EngineStatus") face.append(engineBack(card));
-  else face.append(adaptiveFace(card));
-  if (card.kind === "LibraryClip") face.append(renameBlock(card));
-  markFace(face, true);
-  const flip = button("Show front");
-  flip.className = "flip-toggle";
-  flip.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const article = flip.closest(".card");
-    if (article instanceof HTMLElement) toggleFlip(article);
-  });
-  face.append(flip);
+  if (card.kind === "EngineStatus" && definition.id === "cubes") {
+    face.append(engineBack(card));
+  } else if (card.kind === "VoiceProfile" && definition.id === "persona") {
+    face.append(voiceProfileBack(card));
+  } else if (card.kind === "LibraryClip" && definition.id === "cube") {
+    face.append(paragraph(String(card.body.cubeJsonUrl ? "Inverse-HDR cube attached to this clip." : "No cube JSON is available.")));
+    if (typeof card.body.inv_hdr === "number") face.append(paragraph(`inv-HDR ${card.body.inv_hdr.toFixed(3)}`));
+    if (typeof card.body.cubePngUrl === "string") {
+      const image = window.document.createElement("img");
+      image.className = "cube-thumb";
+      image.alt = "Inverse-HDR cube layers";
+      image.src = card.body.cubePngUrl;
+      face.append(image);
+    }
+  } else if (card.kind === "LibraryClip" && definition.id === "layers") {
+    face.append(paragraph("Cube layers: signal, tonality, confidence, quality."));
+  } else if (card.kind === "LibraryClip" && definition.id === "spectrogram") {
+    face.append(paragraph("The Clip face's strip follows this tile's audio clock."));
+  } else {
+    face.append(adaptiveFace(card));
+  }
+  if (card.kind === "LibraryClip" && definition.id === "relations") face.append(renameBlock(card));
   return face;
 }
 
-function toggleFlip(article: HTMLElement): void {
-  setCardFlipState(article, !article.classList.contains("is-flipped"));
+export interface CardFaceState {
+  face_id?: string;
+  face_index?: number;
+  face_count?: number;
+  ids?: string[];
+  names?: string[];
+  glyph_label?: string;
 }
 
-export function setCardFlip(board: HTMLElement, tileId: string, flipped: boolean): boolean {
-  const tile = board.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(tileId)}"]`);
-  if (!tile) return false;
-  setCardFlipState(tile, flipped);
+function setArticleFaceState(article: HTMLElement, state: CardFaceState): boolean {
+  const priorIds = (article.dataset.faceIds ?? "").split(" ").filter(Boolean);
+  const ids = state.ids?.length ? state.ids : priorIds;
+  const priorNames = (article.dataset.faceNames ?? "").split("|").filter(Boolean);
+  const names = state.names?.length ? state.names : priorNames.length === ids.length
+    ? priorNames
+    : ids.map((id) => id.slice(0, 1).toUpperCase() + id.slice(1));
+  const count = state.face_count ?? ids.length;
+  if (count < 1 || ids.length < count) return false;
+  let index = Number.isInteger(state.face_index) ? Number(state.face_index) : 0;
+  if (state.face_id) {
+    const named = ids.indexOf(state.face_id);
+    if (named >= 0) index = named;
+  }
+  if (index < 0 || index >= count) return false;
+  article.dataset.faceIds = ids.slice(0, count).join(" ");
+  article.dataset.faces = article.dataset.faceIds;
+  article.dataset.faceNames = names.slice(0, count).join("|");
+  article.dataset.faceId = ids[index];
+  article.dataset.face = article.dataset.faceId;
+  article.dataset.faceIndex = String(index);
+  article.dataset.faceCount = String(count);
+  article.classList.toggle("is-flipped", index !== 0);
+  article.querySelectorAll<HTMLElement>(":scope > .flip > .face").forEach((face) => {
+    markFace(face, face.dataset.faceId !== article.dataset.faceId);
+  });
+  const glyph = article.querySelector<HTMLButtonElement>(":scope > .flip-glyph");
+  if (glyph) {
+    const disabled = count === 1;
+    glyph.setAttribute("aria-disabled", disabled ? "true" : "false");
+    glyph.setAttribute(
+      "aria-label",
+      disabled
+        ? (state.glyph_label ?? `Card has 1 face: ${names[0] ?? ids[0]}`)
+        : flipGlyphLabel(index, names.slice(0, count)),
+    );
+  }
   return true;
 }
 
-function markFace(face: HTMLElement, hidden: boolean): void {
-  if (hidden) {
-    face.setAttribute("aria-hidden", "true");
-    face.setAttribute("inert", "");
-  } else {
-    face.setAttribute("aria-hidden", "false");
-    face.removeAttribute("inert");
-  }
+export function setCardFace(board: HTMLElement, tileId: string, state: CardFaceState): boolean {
+  const tile = board.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(tileId)}"]`);
+  if (!tile) return false;
+  return setArticleFaceState(tile, state);
 }
 
-function setCardFlipState(article: HTMLElement, flipped: boolean): void {
-  article.classList.toggle("is-flipped", flipped);
-  article.querySelectorAll<HTMLButtonElement>(".flip-toggle").forEach((node) => {
-    node.setAttribute("aria-pressed", flipped ? "true" : "false");
-  });
-  const hidden = hiddenFace(flipped);
-  const front = article.querySelector<HTMLElement>(".face.front");
-  const back = article.querySelector<HTMLElement>(".face.back");
-  if (front) markFace(front, hidden.front);
-  if (back) markFace(back, hidden.back);
+/** Compatibility for callers that still send front/back; real state uses setCardFace. */
+export function setCardFlip(board: HTMLElement, tileId: string, flipped: boolean): boolean {
+  return setCardFace(board, tileId, { face_index: flipped ? 1 : 0 });
+}
+
+function markFace(face: HTMLElement, hidden: boolean): void {
+  face.hidden = hidden;
+  face.setAttribute("aria-hidden", hidden ? "true" : "false");
+  if (hidden) face.setAttribute("inert", "");
+  else face.removeAttribute("inert");
+}
+
+export function applyProfileUpdate(board: HTMLElement, profile: Record<string, unknown>): boolean {
+  const personaId = String(profile.personaId ?? "");
+  if (!personaId) return false;
+  const tile = board.querySelector<HTMLElement>(`.card[data-id="profile-${CSS.escape(personaId)}"]`);
+  if (!tile) return false;
+  const refs = Array.isArray(profile.refs) ? profile.refs.map(String) : [];
+  const slot = tile.querySelector<HTMLElement>('[data-field="refs"]');
+  if (slot) slot.textContent = refs.join(", ");
+  const refsFace = slot?.closest<HTMLElement>(".face")?.dataset.faceId
+    ?? (tile.dataset.faceIds ?? "").split(" ").find((id) => id === "persona")
+    ?? "profile";
+  let badge = tile.querySelector<HTMLElement>(":scope > .profile-status");
+  if (!badge) {
+    badge = window.document.createElement("p");
+    badge.className = "profile-status";
+    badge.setAttribute("role", "status");
+    tile.append(badge);
+  }
+  const latest = typeof profile.status === "string" ? profile.status
+    : refs.length ? `Refs are on the ${refsFace} face.` : "Profile refs are up to date.";
+  badge.textContent = refs.length
+    ? `Profile refs updated: ${refs.join(", ")}. ${latest}`
+    : latest;
+  return true;
+}
+
+/** Apply only the reducer echo. Attach/card_status and its legacy alias never select a face. */
+export function applyCardOp(board: HTMLElement, op: string, args: Record<string, unknown>): boolean {
+  const profile = args.profile && typeof args.profile === "object"
+    ? args.profile as Record<string, unknown>
+    : null;
+  if (op === "flip" && typeof args.tileId === "string") {
+    if (profile) applyProfileUpdate(board, profile);
+    const hasFaceState = ["face_id", "face_index", "face_count", "ids"].some((key) => key in args);
+    if (hasFaceState) {
+      return setCardFace(board, args.tileId, {
+        face_id: typeof args.face_id === "string" ? args.face_id : undefined,
+        face_index: typeof args.face_index === "number" ? args.face_index : undefined,
+        face_count: typeof args.face_count === "number" ? args.face_count : undefined,
+        ids: Array.isArray(args.ids) ? args.ids.map(String) : undefined,
+        glyph_label: typeof args.glyph_label === "string" ? args.glyph_label : undefined,
+      });
+    }
+    return setCardFlip(board, args.tileId, args.flipped !== false);
+  }
+  if ((op === "card_status" || op === "flipcard") && profile) {
+    return applyProfileUpdate(board, profile);
+  }
+  return false;
 }
 
 function syncLayerTabs(slideId: string | undefined): void {
@@ -336,38 +489,6 @@ function syncLayerTabs(slideId: string | undefined): void {
   window.document.querySelectorAll<HTMLButtonElement>("#layer-switch [data-layer]").forEach((button) => {
     button.setAttribute("aria-selected", button.dataset.layer === layer ? "true" : "false");
   });
-}
-
-function startLiveCycle(board: HTMLElement): void {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  let cursor = 0;
-  const timer = window.setInterval(() => {
-    const slide = currentSlide(board);
-    const tiles = slide
-      ? Array.from(slide.querySelectorAll<HTMLElement>(".livetile"))
-      : Array.from(board.querySelectorAll<HTMLElement>(".livetile"));
-    // Auto-flip only engine/connector tiles — never fixture theater.
-    const idle = tiles.filter(
-      (tile) =>
-        !tile.matches(":hover") &&
-        !tile.matches(":focus-within") &&
-        tile.dataset.kind !== "SpectrogramPanel" &&
-        tile.dataset.kind !== "Cube3D" &&
-        tile.dataset.kind !== "PodcastCast" &&
-        tile.dataset.kind !== "LibraryClip" &&
-        tile.dataset.kind !== "VoiceProfile",
-    );
-    if (idle.length === 0) return;
-    toggleFlip(idle[cursor % idle.length]);
-    cursor += 1;
-  }, 7000);
-  liveTimers.set(board, timer);
-}
-
-function stopLiveCycle(board: HTMLElement): void {
-  const timer = liveTimers.get(board);
-  if (timer !== undefined) window.clearInterval(timer);
-  liveTimers.delete(board);
 }
 
 function bodyFor(card: ViewportCard, kind: string, body: Record<string, unknown>): HTMLElement {
@@ -487,6 +608,17 @@ function bodyFor(card: ViewportCard, kind: string, body: Record<string, unknown>
     else wrap.append(paragraph("Authenticated: no"));
   }
   return wrap;
+}
+
+export function fillCubeGlyph(
+  slot: HTMLElement,
+  uid: string | null | undefined,
+  onCopy?: (uid: string, copied: boolean) => void,
+): void {
+  const mark = uid ? glyphMark(uid, { role: "cube" }) : null;
+  const copy = mark ? copyUidButton(uid, { label: "Copy cube uid", onCopy }) : null;
+  if (mark && copy) slot.replaceChildren(mark, copy);
+  else slot.replaceChildren();
 }
 
 export function announceCopy(uid: string, copied: boolean): void {

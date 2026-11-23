@@ -1,8 +1,8 @@
 //! Optional loopback HTTP transport. One JSON-RPC request per POST. No session id.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -17,7 +17,11 @@ use crate::{handle, Server};
 /// macOS/Linux tauri://localhost). Configured loopback Vite origins are accepted
 /// when `GEN_AUDIO_PREVIEW_PORT` is a validated port, including in release.
 #[cfg(not(debug_assertions))]
-pub const ALLOWED_ORIGINS: &[&str] = &["http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"];
+pub const ALLOWED_ORIGINS: &[&str] = &[
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+];
 #[cfg(debug_assertions)]
 pub const ALLOWED_ORIGINS: &[&str] = &[
     "http://tauri.localhost",
@@ -26,6 +30,12 @@ pub const ALLOWED_ORIGINS: &[&str] = &[
     "http://localhost:1420",
     "http://127.0.0.1:1420",
 ];
+
+#[derive(Clone, Default)]
+struct HttpAuth {
+    token: Option<String>,
+    boot_nonce: Option<String>,
+}
 
 fn origin_allowed(origin: &str) -> bool {
     if ALLOWED_ORIGINS.contains(&origin) {
@@ -47,27 +57,161 @@ fn configured_preview_origin_allowed(origin: &str, configured_port: Option<&str>
 }
 
 pub fn serve(addr: &str) -> std::io::Result<()> {
+    let auth = auth_from_environment()?;
     gen_audio_core::paths::reap_stale_mcp_addr();
     let listener = bind_listener(addr)?;
     let bound = listener.local_addr()?;
-    gen_audio_core::paths::publish_mcp_addr(&bound.to_string())
-        .map_err(std::io::Error::other)?;
-    accept_loop(listener);
+    match auth.token.as_deref() {
+        Some(token) => gen_audio_core::paths::publish_mcp_connection(&bound.to_string(), token),
+        None => gen_audio_core::paths::publish_mcp_addr(&bound.to_string()),
+    }
+    .map_err(std::io::Error::other)?;
+    accept_loop_authenticated(listener, auth);
     Ok(())
 }
 
-/// Bind the loopback MCP listener and accept on a background thread.
+/// Bind an explicit, unauthenticated loopback listener for tests and legacy
+/// one-process tooling. The desktop and the sidecar binary launched by it
+/// always use [`spawn_owned_loopback`].
 pub fn spawn_loopback(addr: &str) -> std::io::Result<SocketAddr> {
+    spawn_with_auth(addr, HttpAuth::default())
+}
+
+/// Bind a loopback listener that requires the supplied bearer token.
+pub fn spawn_authenticated_loopback(addr: &str, token: &str) -> std::io::Result<SocketAddr> {
+    validate_token(token)?;
+    spawn_with_auth(
+        addr,
+        HttpAuth {
+            token: Some(token.to_string()),
+            boot_nonce: None,
+        },
+    )
+}
+
+/// Bind a listener owned by the caller and prove that ownership during
+/// initialize without putting the nonce in a request or URL.
+pub fn spawn_owned_loopback(
+    addr: &str,
+    token: &str,
+    boot_nonce: &str,
+) -> std::io::Result<SocketAddr> {
+    validate_token(token)?;
+    validate_token(boot_nonce)?;
+    spawn_with_auth(
+        addr,
+        HttpAuth {
+            token: Some(token.to_string()),
+            boot_nonce: Some(boot_nonce.to_string()),
+        },
+    )
+}
+
+fn spawn_with_auth(addr: &str, auth: HttpAuth) -> std::io::Result<SocketAddr> {
     let listener = bind_listener(addr)?;
     let bound = listener.local_addr()?;
     std::thread::Builder::new()
         .name("gen-audio-mcp".into())
-        .spawn(move || accept_loop(listener))
+        .spawn(move || accept_loop_authenticated(listener, auth))
         .map_err(std::io::Error::other)?;
     Ok(bound)
 }
 
+pub fn generate_token() -> io::Result<String> {
+    let mut bytes = [0u8; 32];
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let mut random = std::fs::File::open("/dev/urandom")?;
+        random.read_exact(&mut bytes)?;
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "advapi32")]
+        extern "system" {
+            fn SystemFunction036(buffer: *mut u8, length: u32) -> i32;
+        }
+        if unsafe { SystemFunction036(bytes.as_mut_ptr(), bytes.len() as u32) } == 0 {
+            return Err(io::Error::other("secure randomness unavailable"));
+        }
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "secure randomness unavailable",
+        ));
+    }
+    Ok(bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>())
+}
+
+fn validate_token(token: &str) -> io::Result<()> {
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MCP credential must contain 64 hexadecimal digits",
+        ));
+    }
+    Ok(())
+}
+
+fn auth_from_environment() -> io::Result<HttpAuth> {
+    let token = match std::env::var("GEN_AUDIO_MCP_TOKEN") {
+        Ok(value) if !value.is_empty() => {
+            validate_token(&value)?;
+            Some(value)
+        }
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty MCP token",
+            ))
+        }
+        Err(std::env::VarError::NotPresent) => None,
+        Err(err) => return Err(io::Error::new(io::ErrorKind::InvalidInput, err.to_string())),
+    };
+    let boot_nonce = match std::env::var("GEN_AUDIO_MCP_BOOT_NONCE") {
+        Ok(value) => {
+            validate_token(&value)?;
+            Some(value)
+        }
+        Err(std::env::VarError::NotPresent) => None,
+        Err(err) => return Err(io::Error::new(io::ErrorKind::InvalidInput, err.to_string())),
+    };
+    if boot_nonce.is_some() && token.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MCP boot nonce requires a bearer token",
+        ));
+    }
+    Ok(HttpAuth { token, boot_nonce })
+}
+
 pub fn initialize_handshake(addr: &str) -> Result<Value, String> {
+    let token = client_token(addr)?;
+    handshake(addr, token.as_deref(), None)
+}
+
+pub fn initialize_authenticated_handshake(addr: &str, token: &str) -> Result<Value, String> {
+    validate_token(token).map_err(|err| err.to_string())?;
+    handshake(addr, Some(token), None)
+}
+
+pub fn initialize_owned_handshake(
+    addr: &str,
+    token: &str,
+    boot_nonce: &str,
+) -> Result<Value, String> {
+    validate_token(token).map_err(|err| err.to_string())?;
+    validate_token(boot_nonce).map_err(|err| err.to_string())?;
+    handshake(addr, Some(token), Some(boot_nonce))
+}
+
+fn handshake(addr: &str, token: Option<&str>, boot_nonce: Option<&str>) -> Result<Value, String> {
+    ensure_bind_allowed(addr).map_err(|err| err.to_string())?;
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -79,26 +223,62 @@ pub fn initialize_handshake(addr: &str) -> Result<Value, String> {
         }
     });
     let body = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
-    let mut stream = TcpStream::connect(addr).map_err(|err| err.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+    let socket: SocketAddr = addr
+        .parse()
+        .map_err(|_| "invalid loopback MCP address".to_string())?;
+    let mut stream = TcpStream::connect_timeout(&socket, Duration::from_millis(250))
         .map_err(|err| err.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let authorization = token
+        .map(|value| format!("Authorization: Bearer {value}\r\n"))
+        .unwrap_or_default();
     let header = format!(
-        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\n{authorization}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
+    stream
+        .set_write_timeout(Some(deadline.saturating_duration_since(Instant::now())))
+        .map_err(|err| err.to_string())?;
     stream
         .write_all(header.as_bytes())
         .map_err(|err| err.to_string())?;
     stream.write_all(&body).map_err(|err| err.to_string())?;
     let mut buf = Vec::new();
-    stream
-        .read_to_end(&mut buf)
-        .map_err(|err| err.to_string())?;
+    let mut chunk = [0u8; 4096];
+    loop {
+        let remaining = deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1));
+        stream
+            .set_read_timeout(Some(remaining))
+            .map_err(|err| err.to_string())?;
+        let read = stream.read(&mut chunk).map_err(|err| err.to_string())?;
+        if read == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..read]);
+        if buf.len() > 64 * 1024 {
+            return Err("handshake response exceeds limit".into());
+        }
+    }
     let text = String::from_utf8_lossy(&buf);
-    let Some((_, rest)) = text.split_once("\r\n\r\n") else {
+    let Some((head, rest)) = text.split_once("\r\n\r\n") else {
         return Err("handshake response had no body".into());
     };
+    if !head.starts_with("HTTP/1.1 200 ") {
+        return Err("MCP handshake refused".into());
+    }
+    if let Some(expected) = boot_nonce {
+        let actual = head
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.trim().eq_ignore_ascii_case("x-gen-audio-boot-nonce"))
+            .map(|(_, value)| value.trim());
+        if actual != Some(expected) {
+            return Err("listener did not prove owned MCP startup".into());
+        }
+    }
     let value: Value = serde_json::from_str(rest.trim()).map_err(|err| err.to_string())?;
     if value["result"]["protocolVersion"].as_str() != Some("2025-03-26") {
         return Err("handshake protocolVersion".into());
@@ -141,57 +321,111 @@ pub fn tools_call(addr: &str, name: &str, args: &Value) -> Result<Value, String>
 }
 
 pub fn get_control(addr: &str, after: u64) -> Result<Value, String> {
-    let mut stream = TcpStream::connect(addr).map_err(|err| err.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|err| err.to_string())?;
-    let req =
-        format!("GET /control?after={after} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-    stream
-        .write_all(req.as_bytes())
-        .map_err(|err| err.to_string())?;
-    let mut buf = Vec::new();
-    stream
-        .read_to_end(&mut buf)
-        .map_err(|err| err.to_string())?;
-    let text = String::from_utf8_lossy(&buf);
-    let Some((_, rest)) = text.split_once("\r\n\r\n") else {
-        return Err("control response had no body".into());
-    };
-    serde_json::from_str(rest.trim()).map_err(|err| err.to_string())
+    client_json_request(addr, "GET", &format!("/control?after={after}"), None)
 }
 
 fn post_mcp(addr: &str, payload: &Value) -> Result<Value, String> {
-    let body = serde_json::to_vec(payload).map_err(|err| err.to_string())?;
-    let mut stream = TcpStream::connect(addr).map_err(|err| err.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+    client_json_request(addr, "POST", "/mcp", Some(payload))
+}
+
+fn client_token(addr: &str) -> Result<Option<String>, String> {
+    match std::env::var("GEN_AUDIO_MCP_TOKEN") {
+        Ok(token) => {
+            validate_token(&token).map_err(|err| err.to_string())?;
+            Ok(Some(token))
+        }
+        Err(std::env::VarError::NotPresent) => {
+            gen_audio_core::paths::read_mcp_token_for(addr).map_err(|err| err.to_string())
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn client_json_request(
+    addr: &str,
+    method: &str,
+    path: &str,
+    payload: Option<&Value>,
+) -> Result<Value, String> {
+    ensure_bind_allowed(addr).map_err(|err| err.to_string())?;
+    let token = client_token(addr)?;
+    let body = payload
+        .map(serde_json::to_vec)
+        .transpose()
+        .map_err(|err| err.to_string())?
+        .unwrap_or_default();
+    let socket: SocketAddr = addr
+        .parse()
+        .map_err(|_| "invalid loopback MCP address".to_string())?;
+    let mut stream = TcpStream::connect_timeout(&socket, Duration::from_secs(2))
         .map_err(|err| err.to_string())?;
-    let header = format!(
-        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let authorization = token
+        .as_deref()
+        .map(|value| format!("Authorization: Bearer {value}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\n{authorization}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
-        .write_all(header.as_bytes())
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|err| err.to_string())?;
+    stream
+        .write_all(request.as_bytes())
         .map_err(|err| err.to_string())?;
     stream.write_all(&body).map_err(|err| err.to_string())?;
     let mut buf = Vec::new();
-    stream
-        .read_to_end(&mut buf)
-        .map_err(|err| err.to_string())?;
+    let mut chunk = [0u8; 4096];
+    loop {
+        let remaining = deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1));
+        stream
+            .set_read_timeout(Some(remaining))
+            .map_err(|err| err.to_string())?;
+        let read = stream.read(&mut chunk).map_err(|err| err.to_string())?;
+        if read == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..read]);
+        if buf.len() > 4 * 1024 * 1024 {
+            return Err("MCP response exceeds limit".into());
+        }
+    }
     let text = String::from_utf8_lossy(&buf);
-    let Some((_, rest)) = text.split_once("\r\n\r\n") else {
-        return Err("mcp response had no body".into());
+    let Some((head, rest)) = text.split_once("\r\n\r\n") else {
+        return Err("MCP response had no body".into());
     };
+    if !head.starts_with("HTTP/1.1 200 ") {
+        return Err("authenticated MCP request refused".into());
+    }
     serde_json::from_str(rest.trim()).map_err(|err| err.to_string())
 }
 
 fn bind_listener(addr: &str) -> std::io::Result<TcpListener> {
     ensure_bind_allowed(addr)?;
-    TcpListener::bind(addr)
+    TcpListener::bind(addr).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::AddrInUse {
+            let port = addr.rsplit(':').next().unwrap_or("?");
+            std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                format!(
+                    "{addr} is already in use (another gen-audio-mcp, or an a2swe ACP server started with --port {port}?). Stop that listener or pass --http 127.0.0.1:<free port>."
+                ),
+            )
+        } else {
+            err
+        }
+    })
 }
 
+#[cfg(test)]
 fn accept_loop(listener: TcpListener) {
+    accept_loop_authenticated(listener, HttpAuth::default());
+}
+
+fn accept_loop_authenticated(listener: TcpListener, auth: HttpAuth) {
     let remote = listener
         .local_addr()
         .map(|socket| !socket.ip().is_loopback())
@@ -206,13 +440,14 @@ fn accept_loop(listener: TcpListener) {
                 let mut isolated = Server::isolated();
                 isolated.rejections = rejections;
                 let dir = isolated.scratch.dir.clone();
-                let _ = handle_connection(&isolated, stream);
+                let _ = handle_connection_authenticated(&isolated, stream, &HttpAuth::default());
                 let _ = std::fs::remove_dir_all(dir);
             });
         } else {
             let shared = std::sync::Arc::clone(&shared);
+            let auth = auth.clone();
             std::thread::spawn(move || {
-                let _ = handle_connection(&shared, stream);
+                let _ = handle_connection_authenticated(&shared, stream, &auth);
             });
         }
     }
@@ -222,14 +457,10 @@ pub fn ensure_bind_allowed(addr: &str) -> std::io::Result<()> {
     let socket: SocketAddr = addr.parse().map_err(|err| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("addr: {err}"))
     })?;
-    let remote_ok = std::env::var("GEN_AUDIO_MCP_HTTP_ALLOW_REMOTE")
-        .ok()
-        .as_deref()
-        == Some("1");
-    if !socket.ip().is_loopback() && !remote_ok {
+    if !socket.ip().is_loopback() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "refusing non-loopback bind; set GEN_AUDIO_MCP_HTTP_ALLOW_REMOTE=1 to override",
+            "remote MCP HTTP is disabled; the listener must be loopback-only",
         ));
     }
     Ok(())
@@ -241,19 +472,32 @@ pub fn ensure_bind_allowed(addr: &str) -> std::io::Result<()> {
 /// address after the previous Server is dropped. Absent from the release
 /// binary: this is `cfg(test)` only.
 #[cfg(test)]
-static HANDLED_SERVERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u16, Vec<u64>>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static HANDLED_SERVERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u16, Vec<u64>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 #[cfg(test)]
 fn note_handled_server(server: &Server, stream: &TcpStream) {
-    let Ok(addr) = stream.local_addr() else { return };
-    let Ok(mut watched) = HANDLED_SERVERS.lock() else { return };
+    let Ok(addr) = stream.local_addr() else {
+        return;
+    };
+    let Ok(mut watched) = HANDLED_SERVERS.lock() else {
+        return;
+    };
     if let Some(ids) = watched.get_mut(&addr.port()) {
         ids.push(server.instance_id);
     }
 }
 
-pub fn handle_connection(server: &Server, mut stream: TcpStream) -> std::io::Result<()> {
+pub fn handle_connection(server: &Server, stream: TcpStream) -> std::io::Result<()> {
+    handle_connection_authenticated(server, stream, &HttpAuth::default())
+}
+
+fn handle_connection_authenticated(
+    server: &Server,
+    mut stream: TcpStream,
+    auth: &HttpAuth,
+) -> std::io::Result<()> {
     #[cfg(test)]
     note_handled_server(server, &stream);
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -262,7 +506,16 @@ pub fn handle_connection(server: &Server, mut stream: TcpStream) -> std::io::Res
         Err((status, body, line)) => {
             let mut parts = line.split_whitespace();
             let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-            return reject(&server.rejections, &mut stream, method, path, status, body, "", "read");
+            return reject(
+                &server.rejections,
+                &mut stream,
+                method,
+                path,
+                status,
+                body,
+                "",
+                "read",
+            );
         }
     };
     let mut lines = head.lines();
@@ -273,15 +526,51 @@ pub fn handle_connection(server: &Server, mut stream: TcpStream) -> std::io::Res
     // DNS rebinding: a page on evil.example:<port> that resolves to 127.0.0.1
     // sends Host evil.example:<port>. Only the listener's own address passes.
     if !host_allowed(header(&head, "host"), stream.local_addr().ok()) {
-        return reject(&server.rejections, &mut stream, method, path, 403, br#"{"error":"host not allowed"}"#, "", "host");
+        return reject(
+            &server.rejections,
+            &mut stream,
+            method,
+            path,
+            403,
+            br#"{"error":"host not allowed"}"#,
+            "",
+            "host",
+        );
     }
     let cors = match header(&head, "origin") {
         None => String::new(),
         Some(origin) if origin_allowed(origin) => cors_headers(&stream, origin),
-        Some(_) => return reject(&server.rejections, &mut stream, method, path, 403, br#"{"error":"origin not allowed"}"#, "", "origin"),
+        Some(_) => {
+            return reject(
+                &server.rejections,
+                &mut stream,
+                method,
+                path,
+                403,
+                br#"{"error":"origin not allowed"}"#,
+                "",
+                "origin",
+            )
+        }
     };
     if method == "OPTIONS" {
         return write_response(&mut stream, 204, b"", &cors);
+    }
+    if auth
+        .token
+        .as_deref()
+        .is_some_and(|expected| !bearer_matches(header(&head, "authorization"), expected))
+    {
+        return reject(
+            &server.rejections,
+            &mut stream,
+            method,
+            path,
+            401,
+            br#"{"error":"bearer token required"}"#,
+            &cors,
+            "authorization",
+        );
     }
     if method == "GET" && path == "/health" {
         let (rejected, last_rejected) = server.rejections.snapshot();
@@ -326,44 +615,147 @@ pub fn handle_connection(server: &Server, mut stream: TcpStream) -> std::io::Res
         }
     }
     if method != "POST" || path != "/mcp" {
-        return reject(&server.rejections, &mut stream, method, path, 404, br#"{"error":"not found"}"#, &cors, "route");
+        return reject(
+            &server.rejections,
+            &mut stream,
+            method,
+            path,
+            404,
+            br#"{"error":"not found"}"#,
+            &cors,
+            "route",
+        );
     }
     // A text/plain (or untyped) POST is a CORS "simple request": a page can
     // send it with no preflight. JSON-RPC here is application/json only.
     if !is_json_content_type(header(&head, "content-type")) {
-        return reject(&server.rejections, &mut stream, method, path, 415, br#"{"error":"content-type must be application/json"}"#, &cors, "content-type");
+        return reject(
+            &server.rejections,
+            &mut stream,
+            method,
+            path,
+            415,
+            br#"{"error":"content-type must be application/json"}"#,
+            &cors,
+            "content-type",
+        );
     }
     if head.to_ascii_lowercase().contains("transfer-encoding:") {
-        return reject(&server.rejections, &mut stream, method, path, 400, br#"{"error":"chunked bodies are not accepted"}"#, &cors, "chunked");
+        return reject(
+            &server.rejections,
+            &mut stream,
+            method,
+            path,
+            400,
+            br#"{"error":"chunked bodies are not accepted"}"#,
+            &cors,
+            "chunked",
+        );
     }
     let Some(length) = content_length(&head) else {
-        return reject(&server.rejections, &mut stream, method, path, 411, br#"{"error":"content-length required"}"#, &cors, "length");
+        return reject(
+            &server.rejections,
+            &mut stream,
+            method,
+            path,
+            411,
+            br#"{"error":"content-length required"}"#,
+            &cors,
+            "length",
+        );
     };
     if body.len() != length {
-        return reject(&server.rejections, &mut stream, method, path, 400, br#"{"error":"incomplete body"}"#, &cors, "body");
+        return reject(
+            &server.rejections,
+            &mut stream,
+            method,
+            path,
+            400,
+            br#"{"error":"incomplete body"}"#,
+            &cors,
+            "body",
+        );
     }
     let message: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
-        Err(_) => return reject(&server.rejections, &mut stream, method, path, 400, br#"{"error":"invalid json"}"#, &cors, "json"),
+        Err(_) => {
+            return reject(
+                &server.rejections,
+                &mut stream,
+                method,
+                path,
+                400,
+                br#"{"error":"invalid json"}"#,
+                &cors,
+                "json",
+            )
+        }
     };
-    let rpc_method = message.get("method").and_then(Value::as_str).unwrap_or("").to_string();
-    let tool = message.pointer("/params/name").and_then(Value::as_str).unwrap_or("").to_string();
+    let rpc_method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let tool = message
+        .pointer("/params/name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     match handle(server, message) {
         Ok(Some(response)) => {
             if let Some(code) = response.pointer("/error/code") {
                 // A JSON-RPC rejection: name the tool (or the RPC method).
-                let target = if tool.is_empty() { rpc_method.clone() } else { format!("{rpc_method} {tool}") };
+                let target = if tool.is_empty() {
+                    rpc_method.clone()
+                } else {
+                    format!("{rpc_method} {tool}")
+                };
                 log_rejection(&stream, method, &target, &code.to_string(), "rpc");
             }
             let bytes = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
+            if rpc_method == "initialize" {
+                if let Some(nonce) = auth.boot_nonce.as_deref() {
+                    return write_response_with_extra(
+                        &mut stream,
+                        200,
+                        &bytes,
+                        &cors,
+                        &format!("X-Gen-Audio-Boot-Nonce: {nonce}\r\n"),
+                    );
+                }
+            }
             write_response(&mut stream, 200, &bytes, &cors)
         }
         Ok(None) => write_response(&mut stream, 202, b"{}", &cors),
         Err(err) => {
-            let payload = serde_json::to_vec(&serde_json::json!({"error": err})).unwrap_or_else(|_| b"{}".to_vec());
-            reject(&server.rejections, &mut stream, method, path, 500, &payload, &cors, "handler")
+            let payload = serde_json::to_vec(&serde_json::json!({"error": err}))
+                .unwrap_or_else(|_| b"{}".to_vec());
+            reject(
+                &server.rejections,
+                &mut stream,
+                method,
+                path,
+                500,
+                &payload,
+                &cors,
+                "handler",
+            )
         }
     }
+}
+
+fn bearer_matches(value: Option<&str>, expected: &str) -> bool {
+    let Some(actual) = value.and_then(|value| value.strip_prefix("Bearer ")) else {
+        return false;
+    };
+    if actual.len() != expected.len() {
+        return false;
+    }
+    actual
+        .bytes()
+        .zip(expected.bytes())
+        .fold(0u8, |diff, (left, right)| diff | (left ^ right))
+        == 0
 }
 
 /// First value of a header (case-insensitive name), trimmed.
@@ -377,15 +769,22 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 /// Host must name this listener: 127.0.0.1, localhost or [::1] (or the bound
 /// IP) with the listener's port. Missing Host is refused too.
 fn host_allowed(host: Option<&str>, local: Option<SocketAddr>) -> bool {
-    let (Some(host), Some(local)) = (host, local) else { return false };
+    let (Some(host), Some(local)) = (host, local) else {
+        return false;
+    };
     let port = local.port();
     let ip = match local.ip() {
         std::net::IpAddr::V6(v6) => format!("[{v6}]"),
         std::net::IpAddr::V4(v4) => v4.to_string(),
     };
-    [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}"), format!("{ip}:{port}")]
-        .iter()
-        .any(|allowed| host.eq_ignore_ascii_case(allowed))
+    [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+        format!("{ip}:{port}"),
+    ]
+    .iter()
+    .any(|allowed| host.eq_ignore_ascii_case(allowed))
 }
 
 fn is_json_content_type(value: Option<&str>) -> bool {
@@ -423,17 +822,27 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, Vec<u8>), (u16, &'sta
     };
     let head = String::from_utf8_lossy(&buf[..pos]).into_owned();
     if head.to_ascii_lowercase().contains("transfer-encoding:") {
-        return Err((400, br#"{"error":"chunked bodies are not accepted"}"#, first_line(&buf)));
+        return Err((
+            400,
+            br#"{"error":"chunked bodies are not accepted"}"#,
+            first_line(&buf),
+        ));
     }
     let mut body = buf[pos + 4..].to_vec();
     let Some(length) = content_length(&head) else {
         // GET and OPTIONS carry no body. Chromium's CORS preflight sends no
         // Content-Length, so OPTIONS must pass here or every window POST dies.
         let request_line = head.lines().next().unwrap_or("");
-        if body.is_empty() && (request_line.starts_with("GET ") || request_line.starts_with("OPTIONS ")) {
+        if body.is_empty()
+            && (request_line.starts_with("GET ") || request_line.starts_with("OPTIONS "))
+        {
             return Ok((head, body));
         }
-        return Err((411, br#"{"error":"content-length required"}"#, first_line(&buf)));
+        return Err((
+            411,
+            br#"{"error":"content-length required"}"#,
+            first_line(&buf),
+        ));
     };
     if length > 1024 * 1024 {
         return Err((413, br#"{"error":"body too large"}"#, first_line(&buf)));
@@ -445,7 +854,12 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, Vec<u8>), (u16, &'sta
                 let need = length - body.len();
                 body.extend_from_slice(&tmp[..n.min(need)]);
             }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock || err.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break
+            }
             Err(_) => return Err((400, br#"{"error":"bad request"}"#, first_line(&buf))),
         }
     }
@@ -457,12 +871,17 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, Vec<u8>), (u16, &'sta
 
 /// The request line of whatever was read (for the rejection log).
 fn first_line(buf: &[u8]) -> String {
-    let end = buf.iter().position(|&byte| byte == b'\r' || byte == b'\n').unwrap_or(buf.len()).min(200);
+    let end = buf
+        .iter()
+        .position(|&byte| byte == b'\r' || byte == b'\n')
+        .unwrap_or(buf.len())
+        .min(200);
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
 /// Recent rejection log lines (the same lines go to stderr), newest last.
-static REJECTIONS: std::sync::Mutex<std::collections::VecDeque<String>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+static REJECTIONS: std::sync::Mutex<std::collections::VecDeque<String>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
 
 #[cfg(test)]
 thread_local! {
@@ -479,11 +898,16 @@ static REJECTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// One stderr line per rejected request: method, path or tool, code, reason,
 /// peer and seq. Kept in a small ring so tests (and a future status read) can see it.
 fn log_rejection(stream: &TcpStream, method: &str, target: &str, code: &str, reason: &str) {
-    let peer = stream.peer_addr().map(|addr| addr.to_string()).unwrap_or_else(|_| "?".into());
+    let peer = stream
+        .peer_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|_| "?".into());
     let method = if method.is_empty() { "-" } else { method };
     let target = if target.is_empty() { "-" } else { target };
     let seq = REJECTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    let line = format!("gen-audio-mcp http: rejected {method} {target} {code} {reason} peer={peer} seq={seq}");
+    let line = format!(
+        "gen-audio-mcp http: rejected {method} {target} {code} {reason} peer={peer} seq={seq}"
+    );
     eprintln!("{line}");
     #[cfg(test)]
     LOGGED_ON_THIS_THREAD.with(|lines| lines.borrow_mut().push(line.clone()));
@@ -506,23 +930,34 @@ pub struct RejectionStats {
 
 impl RejectionStats {
     /// The statuses /health always lists, zero or not.
-    const BASELINE: [u16; 4] = [400, 403, 411, 415];
+    const BASELINE: [u16; 5] = [400, 401, 403, 411, 415];
 
     fn note(&self, method: &str, target: &str, status: u16) {
-        let path: String = target.split('?').next().unwrap_or("").chars().take(200).collect();
+        let path: String = target
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect();
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_millis() as u64)
             .unwrap_or(0);
         if let Ok(mut inner) = self.inner.lock() {
             *inner.0.entry(status).or_insert(0) += 1;
-            inner.1 = Some(serde_json::json!({"method": method, "path": path, "status": status, "t": t}));
+            inner.1 =
+                Some(serde_json::json!({"method": method, "path": path, "status": status, "t": t}));
         }
     }
 
     /// `{"rejected": {"400": n, ...}, "last_rejected": {...} | null}`.
     pub fn snapshot(&self) -> (Value, Value) {
-        let (counts, last) = self.inner.lock().map(|inner| (inner.0.clone(), inner.1.clone())).unwrap_or_default();
+        let (counts, last) = self
+            .inner
+            .lock()
+            .map(|inner| (inner.0.clone(), inner.1.clone()))
+            .unwrap_or_default();
         let mut rejected = serde_json::Map::new();
         for status in Self::BASELINE {
             rejected.insert(status.to_string(), Value::from(0u64));
@@ -535,10 +970,22 @@ impl RejectionStats {
 }
 
 pub fn recent_rejections() -> Vec<String> {
-    REJECTIONS.lock().map(|ring| ring.iter().cloned().collect()).unwrap_or_default()
+    REJECTIONS
+        .lock()
+        .map(|ring| ring.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
-fn reject(stats: &RejectionStats, stream: &mut TcpStream, method: &str, target: &str, status: u16, body: &[u8], cors: &str, reason: &str) -> std::io::Result<()> {
+fn reject(
+    stats: &RejectionStats,
+    stream: &mut TcpStream,
+    method: &str,
+    target: &str,
+    status: u16,
+    body: &[u8],
+    cors: &str,
+    reason: &str,
+) -> std::io::Result<()> {
     log_rejection(stream, method, target, &status.to_string(), reason);
     stats.note(method, target, status);
     write_response(stream, status, body, cors)
@@ -608,9 +1055,12 @@ fn write_control_stream(stream: &mut TcpStream, path: &str, cors: &str) -> std::
 
 /// CORS headers for an allowlisted origin: the origin itself, never `*`.
 fn cors_headers(stream: &TcpStream, origin: &str) -> String {
-    let loopback = stream.local_addr().map(|addr| addr.ip().is_loopback()).unwrap_or(false);
+    let loopback = stream
+        .local_addr()
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or(false);
     if loopback {
-        format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\n")
+        format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: authorization, content-type\r\n")
     } else {
         String::new()
     }
@@ -625,23 +1075,64 @@ fn library_rel(path: &str) -> Option<&str> {
     Some(rel)
 }
 
-fn write_library(stats: &RejectionStats, stream: &mut TcpStream, method: &str, path: &str, rel: &str, cors: &str) -> std::io::Result<()> {
+fn write_library(
+    stats: &RejectionStats,
+    stream: &mut TcpStream,
+    method: &str,
+    path: &str,
+    rel: &str,
+    cors: &str,
+) -> std::io::Result<()> {
     const CAP: u64 = 64 * 1024 * 1024;
     match gen_audio_core::library_store::open_library_media(rel) {
         Ok((file, mime)) => {
-            let meta = std::fs::metadata(&file).map_err(|_| std::io::Error::other("library media"))?;
+            let meta =
+                std::fs::metadata(&file).map_err(|_| std::io::Error::other("library media"))?;
             if meta.len() > CAP {
-                return reject(stats, stream, method, path, 413, br#"{"error":"library media is too large"}"#, cors, "library");
+                return reject(
+                    stats,
+                    stream,
+                    method,
+                    path,
+                    413,
+                    br#"{"error":"library media is too large"}"#,
+                    cors,
+                    "library",
+                );
             }
             let body = std::fs::read(&file).map_err(|_| std::io::Error::other("library media"))?;
             write_typed(stream, 200, mime, &body, cors)
         }
-        Err(_) => reject(stats, stream, method, path, 404, br#"{"error":"not found"}"#, cors, "library"),
+        Err(_) => reject(
+            stats,
+            stream,
+            method,
+            path,
+            404,
+            br#"{"error":"not found"}"#,
+            cors,
+            "library",
+        ),
     }
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, body: &[u8], cors: &str) -> std::io::Result<()> {
-    write_typed(stream, status, "application/json", body, cors)
+fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &[u8],
+    cors: &str,
+) -> std::io::Result<()> {
+    write_response_with_extra(stream, status, body, cors, "")
+}
+
+fn write_response_with_extra(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &[u8],
+    cors: &str,
+    extra: &str,
+) -> std::io::Result<()> {
+    write_typed_with_extra(stream, status, "application/json", body, cors, extra)
 }
 
 fn write_typed(
@@ -651,11 +1142,23 @@ fn write_typed(
     body: &[u8],
     cors: &str,
 ) -> std::io::Result<()> {
+    write_typed_with_extra(stream, status, content_type, body, cors, "")
+}
+
+fn write_typed_with_extra(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    cors: &str,
+    extra: &str,
+) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
         202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         411 => "Length Required",
@@ -663,8 +1166,13 @@ fn write_typed(
         415 => "Unsupported Media Type",
         _ => "Error",
     };
+    let challenge = if status == 401 {
+        "WWW-Authenticate: Bearer\r\n"
+    } else {
+        ""
+    };
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nX-Gen-Audio-Stateless: 1\r\n{cors}\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nX-Gen-Audio-Stateless: 1\r\n{challenge}{extra}{cors}\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes())?;
@@ -690,7 +1198,10 @@ mod tests {
         });
         let mut stream = TcpStream::connect(addr).unwrap();
         stream
-            .write_all(format!("GET /health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes())
+            .write_all(
+                format!("GET /health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
             .unwrap();
         let mut text = String::new();
         stream.read_to_string(&mut text).unwrap();
@@ -703,7 +1214,12 @@ mod tests {
     fn health_of(port: u16) -> Value {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream
-            .write_all(format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes())
+            .write_all(
+                format!(
+                    "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
             .unwrap();
         let mut text = String::new();
         stream.read_to_string(&mut text).unwrap();
@@ -726,10 +1242,17 @@ mod tests {
             stream.write_all(request.as_bytes()).unwrap();
             let mut text = String::new();
             stream.read_to_string(&mut text).unwrap();
-            text.split_whitespace().nth(1).and_then(|code| code.parse::<u16>().ok()).unwrap_or(0)
+            text.split_whitespace()
+                .nth(1)
+                .and_then(|code| code.parse::<u16>().ok())
+                .unwrap_or(0)
         };
         let before = health_of(port);
-        assert_eq!(before["rejected"], serde_json::json!({"400": 0, "403": 0, "411": 0, "415": 0}), "{before}");
+        assert_eq!(
+            before["rejected"],
+            serde_json::json!({"400": 0, "401": 0, "403": 0, "411": 0, "415": 0}),
+            "{before}"
+        );
         assert!(before["last_rejected"].is_null(), "{before}");
 
         // A page on another origin: 403, and the tool does not run.
@@ -739,19 +1262,44 @@ mod tests {
         let after_403 = health_of(port);
         assert_eq!(after_403["rejected"]["403"], 1, "{after_403}");
         let last = &after_403["last_rejected"];
-        assert_eq!((last["method"].as_str(), last["path"].as_str(), last["status"].as_u64()), (Some("POST"), Some("/mcp"), Some(403)), "{last}");
-        assert!(last["t"].as_u64().is_some_and(|t| t > 1_700_000_000_000), "unix ms: {last}");
-        assert_eq!(last.as_object().unwrap().len(), 4, "method, path, status, t and nothing else: {last}");
+        assert_eq!(
+            (
+                last["method"].as_str(),
+                last["path"].as_str(),
+                last["status"].as_u64()
+            ),
+            (Some("POST"), Some("/mcp"), Some(403)),
+            "{last}"
+        );
+        assert!(
+            last["t"].as_u64().is_some_and(|t| t > 1_700_000_000_000),
+            "unix ms: {last}"
+        );
+        assert_eq!(
+            last.as_object().unwrap().len(),
+            4,
+            "method, path, status, t and nothing else: {last}"
+        );
 
         // A CORS simple request (text/plain): 415.
-        assert_eq!(send(post(port, "Content-Type: text/plain\r\n", NAVIGATE)), 415);
+        assert_eq!(
+            send(post(port, "Content-Type: text/plain\r\n", NAVIGATE)),
+            415
+        );
         let after_415 = health_of(port);
-        assert_eq!(after_415["rejected"], serde_json::json!({"400": 0, "403": 1, "411": 0, "415": 1}), "{after_415}");
+        assert_eq!(
+            after_415["rejected"],
+            serde_json::json!({"400": 0, "401": 0, "403": 1, "411": 0, "415": 1}),
+            "{after_415}"
+        );
         assert_eq!(after_415["last_rejected"]["status"], 415);
         assert_eq!(after_415["last_rejected"]["path"], "/mcp");
         let text = after_415.to_string();
         for leaked in [marker, "header-marker", "evil.example", "text/plain"] {
-            assert!(!text.contains(leaked), "/health must not echo request bodies or headers ({leaked}): {text}");
+            assert!(
+                !text.contains(leaked),
+                "/health must not echo request bodies or headers ({leaked}): {text}"
+            );
         }
         assert_eq!(after_415["status"], "ok");
     }
@@ -768,12 +1316,18 @@ mod tests {
             stream.write_all(request.as_bytes()).unwrap();
             let mut text = String::new();
             stream.read_to_string(&mut text).unwrap();
-            text.split_whitespace().nth(1).and_then(|code| code.parse::<u16>().ok()).unwrap_or(0)
+            text.split_whitespace()
+                .nth(1)
+                .and_then(|code| code.parse::<u16>().ok())
+                .unwrap_or(0)
         };
         assert_eq!(send(post(port, "Content-Type: text/plain\r\n", "{}")), 415);
         assert_eq!(send(post(port, "Content-Type: text/plain\r\n", "{}")), 415);
         let health = health_of(port);
-        assert_eq!(health["rejected"]["415"], 2, "remote connections dropped the shared stats: {health}");
+        assert_eq!(
+            health["rejected"]["415"], 2,
+            "remote connections dropped the shared stats: {health}"
+        );
     }
 
     #[test]
@@ -783,13 +1337,27 @@ mod tests {
         // again, so a pointer compare stays green.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        super::HANDLED_SERVERS.lock().unwrap().insert(port, Vec::new());
+        super::HANDLED_SERVERS
+            .lock()
+            .unwrap()
+            .insert(port, Vec::new());
         std::thread::spawn(move || accept_loop(listener));
         let _ = health_of(port);
         let _ = health_of(port);
-        let ids = super::HANDLED_SERVERS.lock().unwrap().remove(&port).unwrap_or_default();
-        assert_eq!(ids.len(), 2, "expected one server id per connection, got {ids:?}");
-        assert_eq!(ids[0], ids[1], "local connections were given different Server instances: {ids:?}");
+        let ids = super::HANDLED_SERVERS
+            .lock()
+            .unwrap()
+            .remove(&port)
+            .unwrap_or_default();
+        assert_eq!(
+            ids.len(),
+            2,
+            "expected one server id per connection, got {ids:?}"
+        );
+        assert_eq!(
+            ids[0], ids[1],
+            "local connections were given different Server instances: {ids:?}"
+        );
     }
 
     #[test]
@@ -802,7 +1370,10 @@ mod tests {
         });
         let mut stream = TcpStream::connect(addr).unwrap();
         stream
-            .write_all(format!("GET /ready HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes())
+            .write_all(
+                format!("GET /ready HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
             .unwrap();
         let mut text = String::new();
         stream.read_to_string(&mut text).unwrap();
@@ -839,7 +1410,11 @@ mod tests {
 
     #[test]
     fn serve_logs_mcp_addr_write_failure() {
-        if std::env::var("GEN_AUDIO_MCP_ADDR_SERVE_FAIL").ok().as_deref() == Some("1") {
+        if std::env::var("GEN_AUDIO_MCP_ADDR_SERVE_FAIL")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             let _ = serve("127.0.0.1:0");
             return;
         }
@@ -906,7 +1481,11 @@ mod tests {
         // Wait until that directory exists, then kill. Killing is SIGKILL, so
         // the child's Drop and atexit do not run.
         let appeared = std::time::Instant::now();
-        while work_dirs_for_prefix(&format!("gen-audio-{pid}-")).difference(&before).next().is_none() {
+        while work_dirs_for_prefix(&format!("gen-audio-{pid}-"))
+            .difference(&before)
+            .next()
+            .is_none()
+        {
             if appeared.elapsed() > std::time::Duration::from_millis(300) {
                 break;
             }
@@ -921,7 +1500,10 @@ mod tests {
             text.contains("gen-audio-mcp: mcp.addr write failed:"),
             "{text}"
         );
-        assert!(!work_path.exists(), "parent TempWorkDir did not remove {work_path:?}");
+        assert!(
+            !work_path.exists(),
+            "parent TempWorkDir did not remove {work_path:?}"
+        );
         let after = work_dirs_for_prefix(&format!("gen-audio-{pid}-"));
         let leaked: Vec<_> = after.difference(&before).cloned().collect();
         assert!(
@@ -991,11 +1573,18 @@ mod tests {
         let mut text = String::new();
         stream.read_to_string(&mut text).unwrap();
         let served = worker.join().unwrap();
-        let status = text.split_whitespace().nth(1).and_then(|code| code.parse().ok()).unwrap_or(0);
+        let status = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
         (status, text, peer, served)
     }
 
-    fn roundtrip_seeded(build: impl FnOnce(u16) -> String, seed: impl FnOnce(&str)) -> (u16, String, String, Vec<String>) {
+    fn roundtrip_seeded(
+        build: impl FnOnce(u16) -> String,
+        seed: impl FnOnce(&str),
+    ) -> (u16, String, String, Vec<String>) {
         roundtrip_prepared(build, || {}, seed)
     }
 
@@ -1026,82 +1615,163 @@ mod tests {
 
     #[test]
     fn configured_preview_origin_is_exact_loopback_in_all_builds() {
-        assert!(configured_preview_origin_allowed("http://localhost:18888", Some("18888")));
-        assert!(configured_preview_origin_allowed("http://127.0.0.1:18888", Some(" 18888 ")));
-        assert!(!configured_preview_origin_allowed("https://localhost:18888", Some("18888")));
-        assert!(!configured_preview_origin_allowed("http://evil.example:18888", Some("18888")));
-        assert!(!configured_preview_origin_allowed("http://localhost:18889", Some("18888")));
-        assert!(!configured_preview_origin_allowed("http://localhost:0", Some("0")));
-        assert!(!configured_preview_origin_allowed("http://localhost:1420", Some("not-a-port")));
+        assert!(configured_preview_origin_allowed(
+            "http://localhost:18888",
+            Some("18888")
+        ));
+        assert!(configured_preview_origin_allowed(
+            "http://127.0.0.1:18888",
+            Some(" 18888 ")
+        ));
+        assert!(!configured_preview_origin_allowed(
+            "https://localhost:18888",
+            Some("18888")
+        ));
+        assert!(!configured_preview_origin_allowed(
+            "http://evil.example:18888",
+            Some("18888")
+        ));
+        assert!(!configured_preview_origin_allowed(
+            "http://localhost:18889",
+            Some("18888")
+        ));
+        assert!(!configured_preview_origin_allowed(
+            "http://localhost:0",
+            Some("0")
+        ));
+        assert!(!configured_preview_origin_allowed(
+            "http://localhost:1420",
+            Some("not-a-port")
+        ));
     }
 
     #[test]
     fn preflight_from_an_allowed_origin_echoes_that_origin_and_varies_on_it() {
         for origin in ALLOWED_ORIGINS {
-            let (status, text) = roundtrip(|port| format!(
+            let (status, text) = roundtrip(|port| {
+                format!(
                 "OPTIONS /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            ));
+            )
+            });
             assert!((200..300).contains(&status), "{origin}: {text}");
-            assert_eq!(response_header(&text, "access-control-allow-origin"), Some(*origin), "{text}");
+            assert_eq!(
+                response_header(&text, "access-control-allow-origin"),
+                Some(*origin),
+                "{text}"
+            );
             assert_eq!(response_header(&text, "vary"), Some("Origin"), "{text}");
-            assert!(response_header(&text, "access-control-allow-headers").is_some_and(|v| v.contains("content-type")), "{text}");
+            assert!(
+                response_header(&text, "access-control-allow-headers")
+                    .is_some_and(|v| v.contains("content-type")),
+                "{text}"
+            );
         }
         assert!(!ALLOWED_ORIGINS.contains(&"*"));
     }
 
     #[test]
     fn preflight_from_another_origin_is_403() {
-        let (status, text) = roundtrip(|port| format!(
+        let (status, text) = roundtrip(|port| {
+            format!(
             "OPTIONS /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        ));
+        )
+        });
         assert_eq!(status, 403, "{text}");
-        assert!(response_header(&text, "access-control-allow-origin").is_none(), "{text}");
+        assert!(
+            response_header(&text, "access-control-allow-origin").is_none(),
+            "{text}"
+        );
     }
 
     #[test]
     fn post_that_is_not_application_json_is_415_and_runs_nothing() {
         // text/plain needs no preflight: a page can send it with fetch(no-cors).
-        let (status, text) = roundtrip(|port| post(port, "Origin: https://evil.example\r\nContent-Type: text/plain\r\n", NAVIGATE));
-        assert_ne!(status, 200, "ATTACK text/plain simple POST from evil origin ran the tool: {text}");
+        let (status, text) = roundtrip(|port| {
+            post(
+                port,
+                "Origin: https://evil.example\r\nContent-Type: text/plain\r\n",
+                NAVIGATE,
+            )
+        });
+        assert_ne!(
+            status, 200,
+            "ATTACK text/plain simple POST from evil origin ran the tool: {text}"
+        );
         for headers in ["Content-Type: text/plain;charset=UTF-8\r\n", ""] {
             let (status, text) = roundtrip(|port| post(port, headers, NAVIGATE));
             assert_eq!(status, 415, "POST with {headers:?}: {text}");
         }
-        let (status, text) = roundtrip(|port| post(port, "Content-Type: application/json; charset=utf-8\r\n", NAVIGATE));
+        let (status, text) = roundtrip(|port| {
+            post(
+                port,
+                "Content-Type: application/json; charset=utf-8\r\n",
+                NAVIGATE,
+            )
+        });
         assert_eq!(status, 200, "{text}");
     }
 
     #[test]
     fn post_from_a_disallowed_origin_is_403() {
-        let (status, text) = roundtrip(|port| post(port, "Origin: https://evil.example\r\nContent-Type: application/json\r\n", NAVIGATE));
+        let (status, text) = roundtrip(|port| {
+            post(
+                port,
+                "Origin: https://evil.example\r\nContent-Type: application/json\r\n",
+                NAVIGATE,
+            )
+        });
         assert_eq!(status, 403, "ATTACK cross-origin JSON POST: {text}");
     }
 
     #[test]
     fn host_other_than_this_listener_is_403() {
         // DNS rebinding: evil.example resolves to 127.0.0.1, the browser still sends its own name.
-        let (status, text) = roundtrip(|port| post(port, "Content-Type: application/json\r\n", NAVIGATE).replace(&format!("Host: 127.0.0.1:{port}"), &format!("Host: evil.example:{port}")));
-        assert_eq!(status, 403, "ATTACK rebinding Host evil.example accepted: {text}");
+        let (status, text) = roundtrip(|port| {
+            post(port, "Content-Type: application/json\r\n", NAVIGATE).replace(
+                &format!("Host: 127.0.0.1:{port}"),
+                &format!("Host: evil.example:{port}"),
+            )
+        });
+        assert_eq!(
+            status, 403,
+            "ATTACK rebinding Host evil.example accepted: {text}"
+        );
         for host in ["localhost:{port}", "127.0.0.1:{port}"] {
-            let (status, text) = roundtrip(|port| post(port, "Content-Type: application/json\r\n", NAVIGATE).replace(&format!("Host: 127.0.0.1:{port}"), &format!("Host: {}", host.replace("{port}", &port.to_string()))));
+            let (status, text) = roundtrip(|port| {
+                post(port, "Content-Type: application/json\r\n", NAVIGATE).replace(
+                    &format!("Host: 127.0.0.1:{port}"),
+                    &format!("Host: {}", host.replace("{port}", &port.to_string())),
+                )
+            });
             assert_eq!(status, 200, "{host}: {text}");
         }
     }
 
     #[test]
     fn post_with_no_origin_still_works_for_agent_clients() {
-        let (status, text) = roundtrip(|port| post(port, "Content-Type: application/json\r\n", NAVIGATE));
+        let (status, text) =
+            roundtrip(|port| post(port, "Content-Type: application/json\r\n", NAVIGATE));
         assert_eq!(status, 200, "{text}");
         assert!(text.contains("\"result\""), "{text}");
-        assert!(response_header(&text, "access-control-allow-origin").is_none(), "no Origin, no CORS grant: {text}");
+        assert!(
+            response_header(&text, "access-control-allow-origin").is_none(),
+            "no Origin, no CORS grant: {text}"
+        );
     }
 
     #[test]
     fn control_stream_from_a_disallowed_origin_is_403() {
-        let (status, text) = roundtrip(|port| format!(
+        let (status, text) = roundtrip(|port| {
+            format!(
             "GET /control/stream?after=0&wait=0 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n"
-        ));
-        assert_eq!(status, 403, "ATTACK evil origin read the control stream: {}", text.lines().take(12).collect::<Vec<_>>().join(" | "));
+        )
+        });
+        assert_eq!(
+            status,
+            403,
+            "ATTACK evil origin read the control stream: {}",
+            text.lines().take(12).collect::<Vec<_>>().join(" | ")
+        );
     }
 
     /// The preflight WebView2/Chromium really sends (captured by CDP on SMAX,
@@ -1109,16 +1779,28 @@ mod tests {
     /// itself, which is why PowerShell checks never saw the 411.
     #[test]
     fn chromium_preflight_without_content_length_is_2xx_with_cors() {
-        let (status, text) = roundtrip(|port| format!(
+        let (status, text) = roundtrip(|port| {
+            format!(
             "OPTIONS /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: keep-alive\r\nAccept: */*\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\nOrigin: http://tauri.localhost\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Site: cross-site\r\nSec-Fetch-Dest: empty\r\nReferer: http://tauri.localhost/\r\nAccept-Encoding: gzip, deflate, br, zstd\r\nAccept-Language: en-US,en;q=0.9\r\n\r\n"
-        ));
+        )
+        });
         assert!((200..300).contains(&status), "{text}");
-        assert_eq!(response_header(&text, "access-control-allow-origin"), Some("http://tauri.localhost"), "{text}");
-        assert!(response_header(&text, "access-control-allow-headers").is_some_and(|v| v.contains("content-type")), "{text}");
+        assert_eq!(
+            response_header(&text, "access-control-allow-origin"),
+            Some("http://tauri.localhost"),
+            "{text}"
+        );
+        assert!(
+            response_header(&text, "access-control-allow-headers")
+                .is_some_and(|v| v.contains("content-type")),
+            "{text}"
+        );
         // A POST without Content-Length still needs one.
-        let (status, text) = roundtrip(|port| format!(
+        let (status, text) = roundtrip(|port| {
+            format!(
             "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
-        ));
+        )
+        });
         assert_eq!(status, 411, "{text}");
     }
 
@@ -1130,32 +1812,68 @@ mod tests {
     /// request goes out.
     #[test]
     fn a_rejection_is_counted_for_its_own_connection_even_on_a_reused_client_port() {
-        let request = |port: u16| format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n");
-        let stale = |peer: &str| REJECTIONS.lock().unwrap().push_back(format!("gen-audio-mcp http: rejected POST /mcp 403 host peer={peer}"));
+        let request = |port: u16| {
+            format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+        };
+        let stale = |peer: &str| {
+            REJECTIONS.lock().unwrap().push_back(format!(
+                "gen-audio-mcp http: rejected POST /mcp 403 host peer={peer}"
+            ))
+        };
         let (status, text, peer, served) = roundtrip_seeded(request, stale);
         let lines = rejection_lines(&peer, &served);
         assert_eq!(lines.len(), 1, "status {status}: {lines:?} {text}");
-        assert!(lines[0].starts_with("gen-audio-mcp http: rejected POST /mcp 411 read "), "{lines:?}");
+        assert!(
+            lines[0].starts_with("gen-audio-mcp http: rejected POST /mcp 411 read "),
+            "{lines:?}"
+        );
     }
 
     /// The five rejection classes and the start of each one's log line.
     fn rejection_cases() -> Vec<(Box<dyn FnOnce(u16) -> String>, &'static str)> {
         vec![
-            (Box::new(|port| format!("OPTIONS /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n")),
-             "rejected OPTIONS /mcp 403 origin"),
-            (Box::new(|port| post(port, "Content-Type: text/plain\r\n", NAVIGATE)), "rejected POST /mcp 415 content-type"),
-            (Box::new(|port| post(port, "Content-Type: application/json\r\n", NAVIGATE).replace(&format!("Host: 127.0.0.1:{port}"), "Host: evil.example")),
-             "rejected POST /mcp 403 host"),
-            (Box::new(|port| format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")),
-             "rejected POST /mcp 411 read"),
-            (Box::new(|port| post(port, "Content-Type: application/json\r\n", r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ui_navigate","arguments":{"slide":"slide:nope"}}}"#)),
-             "rejected POST tools/call ui_navigate -32602 rpc"),
+            (
+                Box::new(|port| {
+                    format!("OPTIONS /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n")
+                }),
+                "rejected OPTIONS /mcp 403 origin",
+            ),
+            (
+                Box::new(|port| post(port, "Content-Type: text/plain\r\n", NAVIGATE)),
+                "rejected POST /mcp 415 content-type",
+            ),
+            (
+                Box::new(|port| {
+                    post(port, "Content-Type: application/json\r\n", NAVIGATE)
+                        .replace(&format!("Host: 127.0.0.1:{port}"), "Host: evil.example")
+                }),
+                "rejected POST /mcp 403 host",
+            ),
+            (
+                Box::new(|port| {
+                    format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+                }),
+                "rejected POST /mcp 411 read",
+            ),
+            (
+                Box::new(|port| {
+                    post(
+                        port,
+                        "Content-Type: application/json\r\n",
+                        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ui_navigate","arguments":{"slide":"slide:nope"}}}"#,
+                    )
+                }),
+                "rejected POST tools/call ui_navigate -32602 rpc",
+            ),
         ]
     }
 
     /// How many times this exact line is in the production ring (`recent_rejections()`).
     fn ring_copies_of(line: &str) -> usize {
-        recent_rejections().iter().filter(|ring_line| *ring_line == line).count()
+        recent_rejections()
+            .iter()
+            .filter(|ring_line| *ring_line == line)
+            .count()
     }
 
     /// The thread-local hook scopes lines to their connection; it must not
@@ -1177,27 +1895,54 @@ mod tests {
             };
             let (status, text, peer, served) = roundtrip_seeded(build, same_port);
             let lines = rejection_lines(&peer, &served);
-            assert_eq!(lines.len(), 1, "one line per rejection ({want}), status {status}: {lines:?} {text}");
-            assert!(lines[0].starts_with(&format!("gen-audio-mcp http: {want} ")), "{lines:?}");
-            assert!(lines[0].contains(&format!(" peer={peer} seq=")), "the line still names the peer, then its seq: {lines:?}");
-            let seq: u64 = lines[0].rsplit(" seq=").next().and_then(|n| n.parse().ok()).unwrap_or(0);
-            assert!(seq > last_seq, "seq rises with each rejection ({want}): {seq} after {last_seq}: {lines:?}");
+            assert_eq!(
+                lines.len(),
+                1,
+                "one line per rejection ({want}), status {status}: {lines:?} {text}"
+            );
+            assert!(
+                lines[0].starts_with(&format!("gen-audio-mcp http: {want} ")),
+                "{lines:?}"
+            );
+            assert!(
+                lines[0].contains(&format!(" peer={peer} seq=")),
+                "the line still names the peer, then its seq: {lines:?}"
+            );
+            let seq: u64 = lines[0]
+                .rsplit(" seq=")
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+            assert!(
+                seq > last_seq,
+                "seq rises with each rejection ({want}): {seq} after {last_seq}: {lines:?}"
+            );
             last_seq = seq;
-            assert_eq!(ring_copies_of(&lines[0]), 1, "recent_rejections() holds the logged line verbatim, once ({want}): {lines:?}");
+            assert_eq!(
+                ring_copies_of(&lines[0]),
+                1,
+                "recent_rejections() holds the logged line verbatim, once ({want}): {lines:?}"
+            );
         }
         // Accepted requests log nothing. log_rejection is the only writer of
         // both this thread's lines and the ring, and the stderr test compares
         // the whole sequence, accepted request included.
-        let (status, _text, peer, served) = roundtrip_seeded(|port| post(port, "Content-Type: application/json\r\n", NAVIGATE), |_| {});
+        let (status, _text, peer, served) = roundtrip_seeded(
+            |port| post(port, "Content-Type: application/json\r\n", NAVIGATE),
+            |_| {},
+        );
         assert_eq!(status, 200);
         assert!(rejection_lines(&peer, &served).is_empty());
     }
 
     #[test]
     fn library_404_and_413_are_one_rejection_line() {
-        let (status, text, peer, served) = roundtrip_seeded(|port| {
-            format!("GET /library/missing.wav HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
-        }, |_| {});
+        let (status, text, peer, served) = roundtrip_seeded(
+            |port| {
+                format!("GET /library/missing.wav HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+            },
+            |_| {},
+        );
         assert_eq!(status, 404, "{text}");
         let lines = rejection_lines(&peer, &served);
         assert_eq!(lines.len(), 1, "{lines:?} {text}");
@@ -1205,7 +1950,10 @@ mod tests {
             lines[0].starts_with("gen-audio-mcp http: rejected GET /library/missing.wav 404 "),
             "{lines:?}"
         );
-        assert!(lines[0].contains(&format!(" peer={peer} seq=")), "{lines:?}");
+        assert!(
+            lines[0].contains(&format!(" peer={peer} seq=")),
+            "{lines:?}"
+        );
 
         let dir = std::env::temp_dir().join(format!(
             "gen-audio-lib-413-{}-{}",
@@ -1224,7 +1972,10 @@ mod tests {
         let _remove = RemoveDir(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("big.wav");
-        std::fs::File::create(&wav).unwrap().set_len(64 * 1024 * 1024 + 1).unwrap();
+        std::fs::File::create(&wav)
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
         let library = dir.clone();
         let (status, text, peer, served) = roundtrip_on_worker(
             |port| {
@@ -1241,7 +1992,10 @@ mod tests {
             lines[0].starts_with("gen-audio-mcp http: rejected GET /library/big.wav 413 "),
             "{lines:?}"
         );
-        assert!(lines[0].contains(&format!(" peer={peer} seq=")), "{lines:?}");
+        assert!(
+            lines[0].contains(&format!(" peer={peer} seq=")),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -1293,7 +2047,10 @@ mod tests {
                 println!("SERVED\t{line}");
             }
         }
-        let (_, _, _, served) = roundtrip_seeded(|port| post(port, "Content-Type: application/json\r\n", NAVIGATE), |_| {});
+        let (_, _, _, served) = roundtrip_seeded(
+            |port| post(port, "Content-Type: application/json\r\n", NAVIGATE),
+            |_| {},
+        );
         for line in served {
             println!("SERVED\t{line}");
         }
@@ -1305,10 +2062,26 @@ mod tests {
     /// stderr, so dropping the eprintln! turns this red.
     #[test]
     fn every_rejection_reaches_stderr_exactly_once() {
-        let module = module_path!().split_once("::").map(|(_, rest)| rest).unwrap_or(module_path!());
-        let nonce = format!("{}-{:?}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let module = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .unwrap_or(module_path!());
+        let nonce = format!(
+            "{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &format!("{module}::rejection_stderr_child"), "--ignored", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                &format!("{module}::rejection_stderr_child"),
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(STDERR_CHILD_ENV, &nonce)
             .output()
             .unwrap();
@@ -1316,10 +2089,26 @@ mod tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "child failed: {stdout}\n{stderr}");
         assert!(stdout.contains("1 passed"), "the child test ran: {stdout}");
-        assert!(stdout.contains(&format!("CHILD\t{nonce}")), "this run's child, not a quiet one: {stdout}");
-        let served: Vec<&str> = stdout.lines().filter_map(|line| line.split_once("SERVED\t").map(|(_, rest)| rest)).collect();
-        let logged: Vec<&str> = stderr.lines().filter(|line| line.starts_with("gen-audio-mcp http: ")).collect();
-        assert_eq!(served.len(), rejection_cases().len(), "one served line per rejection class: {served:?}");
-        assert_eq!(logged, served, "stderr carries each rejection line exactly once, in order\nstderr: {stderr}");
+        assert!(
+            stdout.contains(&format!("CHILD\t{nonce}")),
+            "this run's child, not a quiet one: {stdout}"
+        );
+        let served: Vec<&str> = stdout
+            .lines()
+            .filter_map(|line| line.split_once("SERVED\t").map(|(_, rest)| rest))
+            .collect();
+        let logged: Vec<&str> = stderr
+            .lines()
+            .filter(|line| line.starts_with("gen-audio-mcp http: "))
+            .collect();
+        assert_eq!(
+            served.len(),
+            rejection_cases().len(),
+            "one served line per rejection class: {served:?}"
+        );
+        assert_eq!(
+            logged, served,
+            "stderr carries each rejection line exactly once, in order\nstderr: {stderr}"
+        );
     }
 }

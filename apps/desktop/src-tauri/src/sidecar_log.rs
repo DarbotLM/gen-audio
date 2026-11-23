@@ -65,7 +65,10 @@ pub struct RotatingLog {
 impl RotatingLog {
     pub fn open(dir: &Path, max_bytes: u64, files: usize) -> io::Result<Self> {
         fs::create_dir_all(dir)?;
-        let file = OpenOptions::new().create(true).append(true).open(log_path(dir, 0))?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path(dir, 0))?;
         let size = file.metadata()?.len();
         Ok(Self {
             dir: dir.to_path_buf(),
@@ -110,7 +113,12 @@ impl RotatingLog {
         if self.dropped == 0 {
             return Ok(());
         }
-        let marker = format!("{} gen-audio-desktop: sidecar log dropped {} line(s): {}", now_ms(), self.dropped, self.drop_reason);
+        let marker = format!(
+            "{} gen-audio-desktop: sidecar log dropped {} line(s): {}",
+            now_ms(),
+            self.dropped,
+            self.drop_reason
+        );
         self.append(&marker)?;
         self.dropped = 0;
         Ok(())
@@ -121,7 +129,8 @@ impl RotatingLog {
         let line = cut(line, max);
         let bytes = line.len() as u64 + 1;
         if self.file.is_none() || (self.size > 0 && self.size + bytes > self.max_bytes) {
-            self.rotate().map_err(|err| io::Error::new(err.kind(), format!("rotate failed: {err}")))?;
+            self.rotate()
+                .map_err(|err| io::Error::new(err.kind(), format!("rotate failed: {err}")))?;
         }
         let file = match self.file.as_mut() {
             Some(file) => file,
@@ -142,12 +151,21 @@ impl RotatingLog {
             let (from, to) = (log_path(&self.dir, index), log_path(&self.dir, index + 1));
             match fs::rename(&from, &to) {
                 Err(err) if err.kind() != io::ErrorKind::NotFound => {
-                    return Err(io::Error::new(err.kind(), format!("rename {} -> {}: {err}", from.display(), to.display())));
+                    return Err(io::Error::new(
+                        err.kind(),
+                        format!("rename {} -> {}: {err}", from.display(), to.display()),
+                    ));
                 }
                 _ => {}
             }
         }
-        self.file = Some(OpenOptions::new().create(true).write(true).truncate(true).open(log_path(&self.dir, 0))?);
+        self.file = Some(
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(log_path(&self.dir, 0))?,
+        );
         self.size = 0;
         Ok(())
     }
@@ -241,7 +259,9 @@ fn token_char(c: char) -> bool {
 fn token_shaped(run: &str) -> bool {
     let digits = run.chars().filter(char::is_ascii_digit).count();
     let letters = run.chars().filter(char::is_ascii_alphabetic).count();
-    let mixed = run.chars().any(|c| c.is_ascii_uppercase()) && run.chars().any(|c| c.is_ascii_lowercase()) && digits > 0;
+    let mixed = run.chars().any(|c| c.is_ascii_uppercase())
+        && run.chars().any(|c| c.is_ascii_lowercase())
+        && digits > 0;
     run.len() >= 32 || (run.len() >= 16 && ((digits >= 3 && letters >= 3) || mixed))
 }
 
@@ -249,7 +269,12 @@ fn token_shaped(run: &str) -> bool {
 /// segment of 6+ that mixes upper case, lower case and digits (base64), so no
 /// short piece of it survives. Paths (`/tmp/gen-audio/library`) don't mix.
 fn slash_secret(run: &str) -> bool {
-    let mixed = |seg: &str| seg.len() >= 6 && seg.chars().any(|c| c.is_ascii_uppercase()) && seg.chars().any(|c| c.is_ascii_lowercase()) && seg.chars().any(|c| c.is_ascii_digit());
+    let mixed = |seg: &str| {
+        seg.len() >= 6
+            && seg.chars().any(|c| c.is_ascii_uppercase())
+            && seg.chars().any(|c| c.is_ascii_lowercase())
+            && seg.chars().any(|c| c.is_ascii_digit())
+    };
     run.contains('/') && run.len() >= 16 && run.split('/').any(mixed)
 }
 
@@ -291,7 +316,14 @@ fn name_byte(b: u8) -> bool {
 fn separator_len(bytes: &[u8], at: usize) -> usize {
     match bytes[at] {
         b'=' | b':' => 1,
-        b'%' if bytes.get(at + 1) == Some(&b'3') && matches!(bytes.get(at + 2).map(u8::to_ascii_uppercase), Some(b'D' | b'A')) => 3,
+        b'%' if bytes.get(at + 1) == Some(&b'3')
+            && matches!(
+                bytes.get(at + 2).map(u8::to_ascii_uppercase),
+                Some(b'D' | b'A')
+            ) =>
+        {
+            3
+        }
         _ => 0,
     }
 }
@@ -330,7 +362,11 @@ fn redact_values(line: &str, word: &str) -> String {
         while name_start > 0 && name_byte(bytes[name_start - 1]) {
             name_start -= 1;
         }
-        if name_start == name_end || !line[name_start..name_end].to_ascii_lowercase().ends_with(word) {
+        if name_start == name_end
+            || !line[name_start..name_end]
+                .to_ascii_lowercase()
+                .ends_with(word)
+        {
             at += sep;
             continue;
         }
@@ -339,7 +375,9 @@ fn redact_values(line: &str, word: &str) -> String {
             start += 1;
         }
         let end = match bytes.get(start) {
-            Some(&quote @ (b'"' | b'\'')) => line[start + 1..].find(quote as char).map_or(bytes.len(), |i| start + 1 + i + 1),
+            Some(&quote @ (b'"' | b'\'')) => line[start + 1..]
+                .find(quote as char)
+                .map_or(bytes.len(), |i| start + 1 + i + 1),
             Some(_) => plain_value_end(bytes, start),
             None => start,
         };
@@ -361,7 +399,9 @@ fn redact_userinfo(line: &str) -> String {
     while let Some(at) = rest.find("://") {
         let tail = &rest[at + 3..];
         out.push_str(&rest[..at + 3]);
-        let authority = tail.find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace()).unwrap_or(tail.len());
+        let authority = tail
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .unwrap_or(tail.len());
         match tail[..authority].rfind('@') {
             Some(user_end) if user_end > 0 => {
                 out.push_str("<redacted>");
@@ -387,8 +427,12 @@ fn redact_emails(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
     while let Some(at) = rest.find('@') {
-        let local_start = rest[..at].rfind(|c: char| !email_local(c)).map_or(0, |i| i + 1);
-        let domain_len = rest[at + 1..].find(|c: char| !email_domain(c)).unwrap_or(rest.len() - at - 1);
+        let local_start = rest[..at]
+            .rfind(|c: char| !email_local(c))
+            .map_or(0, |i| i + 1);
+        let domain_len = rest[at + 1..]
+            .find(|c: char| !email_domain(c))
+            .unwrap_or(rest.len() - at - 1);
         let domain = rest[at + 1..at + 1 + domain_len].trim_end_matches('.');
         if local_start < at && domain.contains('.') && !domain.starts_with('.') {
             out.push_str(&rest[..local_start]);
@@ -415,7 +459,11 @@ fn redact_home_paths(line: &str) -> String {
             while matches!(line.as_bytes().get(start), Some(b'\\' | b'/')) {
                 start += 1;
             }
-            let len = line[start..].find(|c: char| matches!(c, '\\' | '/' | '"' | '\'' | ':' | ';' | ',') || c.is_whitespace()).unwrap_or(line.len() - start);
+            let len = line[start..]
+                .find(|c: char| {
+                    matches!(c, '\\' | '/' | '"' | '\'' | ':' | ';' | ',') || c.is_whitespace()
+                })
+                .unwrap_or(line.len() - start);
             if len > 0 {
                 cuts.push((start, start + len));
             }
@@ -439,7 +487,10 @@ fn redact_home_paths(line: &str) -> String {
 
 fn apply(rule: Rule, mut line: String) -> String {
     match rule {
-        Rule::Control => line.chars().map(|c| if c.is_control() { ' ' } else { c }).collect(),
+        Rule::Control => line
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect(),
         Rule::Body => {
             if let Some(start) = line.find('{') {
                 line.truncate(start);
@@ -451,7 +502,9 @@ fn apply(rule: Rule, mut line: String) -> String {
             let mut from = 0;
             while let Some(found) = line[from..].find('?') {
                 let start = from + found;
-                let end = line[start..].find(char::is_whitespace).map_or(line.len(), |i| start + i);
+                let end = line[start..]
+                    .find(char::is_whitespace)
+                    .map_or(line.len(), |i| start + i);
                 line.replace_range(start..end, "?<redacted>");
                 from = start + "?<redacted>".len();
             }
@@ -476,12 +529,17 @@ fn apply(rule: Rule, mut line: String) -> String {
 /// the whole line; only then is it capped at MAX_LINE bytes on a char
 /// boundary, so no cut can separate a secret from what marks it.
 pub fn redact(raw: &str) -> String {
-    let line = CLASSES.iter().fold(raw.to_string(), |line, (_, rule)| apply(*rule, line));
+    let line = CLASSES
+        .iter()
+        .fold(raw.to_string(), |line, (_, rule)| apply(*rule, line));
     cut(&line, MAX_LINE).trim_end().to_string()
 }
 
 fn now_ms() -> u128 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0)
 }
 
 /// Reads `reader` to its end, writing each line, redacted and prefixed with a
@@ -491,7 +549,11 @@ pub fn pump(mut reader: impl BufRead, mut log: Option<RotatingLog>) {
     let mut buf = Vec::new();
     loop {
         buf.clear();
-        match reader.by_ref().take(MAX_PIPE_LINE as u64).read_until(b'\n', &mut buf) {
+        match reader
+            .by_ref()
+            .take(MAX_PIPE_LINE as u64)
+            .read_until(b'\n', &mut buf)
+        {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
@@ -534,7 +596,10 @@ fn drain_line(reader: &mut impl BufRead) -> bool {
 /// Starts the thread that drains the sidecar's stderr into
 /// `<dir>/gen-audio-mcp.log` (MAX_BYTES x FILES). With no dir, or a dir that
 /// cannot be opened, it still drains.
-pub fn spawn_pump(stderr: impl Read + Send + 'static, dir: Option<PathBuf>) -> std::thread::JoinHandle<()> {
+pub fn spawn_pump(
+    stderr: impl Read + Send + 'static,
+    dir: Option<PathBuf>,
+) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("gen-audio-mcp-stderr".into())
         .spawn(move || {
@@ -552,7 +617,10 @@ mod tests {
     use std::process::{Command, Stdio};
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gen-audio-sidecar-log-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "gen-audio-sidecar-log-{name}-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&dir);
         dir
     }
@@ -570,19 +638,36 @@ mod tests {
         let dir = scratch("rotate");
         let mut log = RotatingLog::open(&dir, 1024, FILES).unwrap();
         for i in 0..2000 {
-            log.write_line(&format!("line {i:05} {}", "x".repeat(40))).unwrap();
+            log.write_line(&format!("line {i:05} {}", "x".repeat(40)))
+                .unwrap();
         }
         drop(log);
-        let mut names: Vec<String> = fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         names.sort();
-        assert_eq!(names, ["gen-audio-mcp.log", "gen-audio-mcp.log.1", "gen-audio-mcp.log.2"]);
+        assert_eq!(
+            names,
+            [
+                "gen-audio-mcp.log",
+                "gen-audio-mcp.log.1",
+                "gen-audio-mcp.log.2"
+            ]
+        );
         for name in &names {
             let size = fs::metadata(dir.join(name)).unwrap().len();
             assert!(size > 0 && size <= 1024, "{name} is {size} bytes");
         }
         let current = fs::read_to_string(log_path(&dir, 0)).unwrap();
-        assert!(current.ends_with(&format!("line 01999 {}\n", "x".repeat(40))), "newest line is in the current file");
-        assert!(!log_text(&dir).contains("line 00000 "), "the oldest lines rotated out");
+        assert!(
+            current.ends_with(&format!("line 01999 {}\n", "x".repeat(40))),
+            "newest line is in the current file"
+        );
+        assert!(
+            !log_text(&dir).contains("line 00000 "),
+            "the oldest lines rotated out"
+        );
         // Reopening appends to the current file and still honours the cap.
         let mut log = RotatingLog::open(&dir, 1024, FILES).unwrap();
         log.write_line("after reopen").unwrap();
@@ -605,11 +690,21 @@ mod tests {
         for (raw, secret) in cases {
             let line = redact(raw);
             assert!(!line.contains(secret), "{raw:?} -> {line:?}");
-            assert!(line.contains("<redacted>") || line.contains("<body redacted>"), "{line:?} says it redacted");
+            assert!(
+                line.contains("<redacted>") || line.contains("<body redacted>"),
+                "{line:?} says it redacted"
+            );
         }
         let plain = "gen-audio-mcp http: rejected POST /mcp 415 content-type peer=127.0.0.1:51234";
-        assert_eq!(redact(plain), plain, "an ordinary rejection line is kept whole");
-        assert_eq!(redact("gen-audio-mcp: listening on library_kokoro_cube3d"), "gen-audio-mcp: listening on library_kokoro_cube3d");
+        assert_eq!(
+            redact(plain),
+            plain,
+            "an ordinary rejection line is kept whole"
+        );
+        assert_eq!(
+            redact("gen-audio-mcp: listening on library_kokoro_cube3d"),
+            "gen-audio-mcp: listening on library_kokoro_cube3d"
+        );
         assert!(redact(&"a".repeat(5000)).len() <= MAX_LINE + "<redacted>".len());
         assert!(!redact("a\u{1b}[31mred\rb").contains(['\u{1b}', '\r']));
     }
@@ -622,11 +717,16 @@ mod tests {
     fn a_failed_rotation_is_counted_and_marked_not_silent() {
         let dir = scratch("rotate-fail");
         let mut log = RotatingLog::open(&dir, 256, FILES).unwrap();
-        log.write_line(&format!("first line {}", "x".repeat(200))).unwrap();
+        log.write_line(&format!("first line {}", "x".repeat(200)))
+            .unwrap();
         fs::write(log_path(&dir, 1), "older\n").unwrap();
         fs::create_dir_all(log_path(&dir, 2).join("blocker")).unwrap();
         for i in 0..3 {
-            assert!(log.write_line(&format!("lost {i} {}", "y".repeat(100))).is_err(), "rotation should fail");
+            assert!(
+                log.write_line(&format!("lost {i} {}", "y".repeat(100)))
+                    .is_err(),
+                "rotation should fail"
+            );
         }
         assert_eq!(log.dropped(), 3);
         fs::remove_dir_all(log_path(&dir, 2)).unwrap();
@@ -634,7 +734,10 @@ mod tests {
         assert_eq!(log.dropped(), 0, "the marker reported them");
         let current = fs::read_to_string(log_path(&dir, 0)).unwrap();
         let retained = log_text(&dir);
-        let marker = retained.lines().find(|line| line.contains("sidecar log dropped 3 line(s)")).unwrap_or_else(|| panic!("no drop marker in {retained:?}"));
+        let marker = retained
+            .lines()
+            .find(|line| line.contains("sidecar log dropped 3 line(s)"))
+            .unwrap_or_else(|| panic!("no drop marker in {retained:?}"));
         assert!(marker.contains("rotate failed"), "{marker}");
         assert!(current.ends_with("after recovery\n"), "{current:?}");
         let _ = fs::remove_dir_all(&dir);
@@ -667,29 +770,58 @@ mod tests {
     #[test]
     fn an_outage_is_noticed_once_and_its_reason_is_redacted() {
         let secret = "Zk3Qx9Lm2R";
-        let dir = scratch("notice").join("Users").join("dayour").join(format!("token={secret}"));
+        let dir = scratch("notice")
+            .join("Users")
+            .join("dayour")
+            .join(format!("token={secret}"));
         let notices = Captured::default();
-        let mut log = RotatingLog::open(&dir, 256, FILES).unwrap().notice_to(notices.clone());
-        log.write_line(&format!("first line {}", "x".repeat(200))).unwrap();
+        let mut log = RotatingLog::open(&dir, 256, FILES)
+            .unwrap()
+            .notice_to(notices.clone());
+        log.write_line(&format!("first line {}", "x".repeat(200)))
+            .unwrap();
         fs::write(log_path(&dir, 1), "older\n").unwrap();
         fs::create_dir_all(log_path(&dir, 2).join("blocker")).unwrap();
         for i in 0..5 {
-            assert!(log.write_line(&format!("lost {i} {}", "y".repeat(100))).is_err(), "rotation should fail");
+            assert!(
+                log.write_line(&format!("lost {i} {}", "y".repeat(100)))
+                    .is_err(),
+                "rotation should fail"
+            );
         }
         let said = notices.text();
-        assert_eq!(said.matches("sidecar log write failed").count(), 1, "one notice for 5 lost lines: {said:?}");
+        assert_eq!(
+            said.matches("sidecar log write failed").count(),
+            1,
+            "one notice for 5 lost lines: {said:?}"
+        );
         fs::remove_dir_all(log_path(&dir, 2)).unwrap();
         log.write_line("after recovery").unwrap();
         // Force a rotation (200 more bytes on a 256-byte cap), so the marker is
         // read from a rotated file: reading only the current file misses it.
-        log.write_line(&format!("after rotation {}", "w".repeat(185))).unwrap();
+        log.write_line(&format!("after rotation {}", "w".repeat(185)))
+            .unwrap();
         let newest = fs::read_to_string(log_path(&dir, 0)).unwrap();
-        assert!(!newest.contains("sidecar log dropped"), "the marker rotated out of the current file: {newest:?}");
+        assert!(
+            !newest.contains("sidecar log dropped"),
+            "the marker rotated out of the current file: {newest:?}"
+        );
         let current = log_text(&dir);
-        let marker = current.lines().find(|line| line.contains("sidecar log dropped 5 line(s)")).unwrap_or_else(|| panic!("no drop marker in {current:?}"));
+        let marker = current
+            .lines()
+            .find(|line| line.contains("sidecar log dropped 5 line(s)"))
+            .unwrap_or_else(|| panic!("no drop marker in {current:?}"));
         for (what, text) in [("marker", marker), ("notice", said.as_str())] {
-            assert!(text.contains("rotate failed") && (text.contains("Users/<user>/token=<redacted>") || text.contains("Users\\<user>\\token=<redacted>")), "{what} names the redacted path: {text:?}");
-            assert!(!text.contains("dayour") && !text.contains(secret), "{what} leaks: {text:?}");
+            assert!(
+                text.contains("rotate failed")
+                    && (text.contains("Users/<user>/token=<redacted>")
+                        || text.contains("Users\\<user>\\token=<redacted>")),
+                "{what} names the redacted path: {text:?}"
+            );
+            assert!(
+                !text.contains("dayour") && !text.contains(secret),
+                "{what} leaks: {text:?}"
+            );
         }
         // A second outage is a new one: one more notice, not one per line.
         let _ = fs::remove_file(log_path(&dir, 2));
@@ -697,7 +829,12 @@ mod tests {
         for _ in 0..3 {
             let _ = log.write_line(&"z".repeat(200));
         }
-        assert_eq!(notices.text().matches("sidecar log write failed").count(), 2, "{:?}", notices.text());
+        assert_eq!(
+            notices.text().matches("sidecar log write failed").count(),
+            2,
+            "{:?}",
+            notices.text()
+        );
         let _ = fs::remove_dir_all(scratch("notice"));
     }
 
@@ -707,7 +844,13 @@ mod tests {
         let dir = scratch(name);
         let log = RotatingLog::open(&dir, MAX_BYTES, FILES).unwrap();
         pump(std::io::Cursor::new(input.as_bytes().to_vec()), Some(log));
-        let lines = log_text(&dir).lines().map(|line| line.split_once(' ').map_or(String::new(), |(_, rest)| rest.to_string())).collect();
+        let lines = log_text(&dir)
+            .lines()
+            .map(|line| {
+                line.split_once(' ')
+                    .map_or(String::new(), |(_, rest)| rest.to_string())
+            })
+            .collect();
         (lines, dir)
     }
 
@@ -720,7 +863,10 @@ mod tests {
         let token = "Zk3Qx9Lm2Rt7Vb4NwY8pH6cJ"; // token-shaped whole, not in halves
         let token_filler = "ok ".repeat(1362 - 4);
         for (secret_line, secret) in [
-            (format!("{filler}password=SECRETxyz tail-marker"), "SECRETxyz"),
+            (
+                format!("{filler}password=SECRETxyz tail-marker"),
+                "SECRETxyz",
+            ),
             (format!("{token_filler}error: key {token} refused"), token),
         ] {
             let (lines, dir) = pumped("straddle", &format!("{secret_line}\nsecond line\n"));
@@ -729,14 +875,26 @@ mod tests {
             let text = lines.join("\n");
             for start in 0..secret.len() - 2 {
                 let fragment = &secret[start..];
-                assert!(!text.contains(fragment), "{fragment:?} of {secret:?} reached the log");
+                assert!(
+                    !text.contains(fragment),
+                    "{fragment:?} of {secret:?} reached the log"
+                );
             }
             let _ = fs::remove_dir_all(&dir);
         }
         // Past the 64 KiB read ceiling the rest of the line is drained, never logged.
-        let long = format!("{}password=SECRETxyz {}", "ok ".repeat(64 * 1024 / 3), "tail ".repeat(10));
+        let long = format!(
+            "{}password=SECRETxyz {}",
+            "ok ".repeat(64 * 1024 / 3),
+            "tail ".repeat(10)
+        );
         let (lines, dir) = pumped("ceiling", &format!("{long}\nafter\n"));
-        assert_eq!(lines.len(), 2, "{:?}", lines.iter().map(String::len).collect::<Vec<_>>());
+        assert_eq!(
+            lines.len(),
+            2,
+            "{:?}",
+            lines.iter().map(String::len).collect::<Vec<_>>()
+        );
         assert!(!lines.join("\n").contains("ECRET") && lines[1] == "after");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -744,14 +902,42 @@ mod tests {
     #[test]
     fn redact_covers_emails_home_paths_query_values_and_auth_of_any_length() {
         let cases = [
-            ("error: notify dayour@example.com failed", "dayour@example.com", "<email>"),
-            (r"open C:\Users\dayour\AppData\Local\x.wav failed", "dayour", r"C:\Users\<user>\AppData"),
-            ("open c:/users/dayour/x.wav failed", "dayour", "c:/users/<user>/x.wav"),
-            ("open /home/dayour/gen-audio/x.wav failed", "dayour", "/home/<user>/gen-audio/x.wav"),
-            ("open /Users/dayour/x.wav failed", "dayour", "/Users/<user>/x.wav"),
+            (
+                "error: notify dayour@example.com failed",
+                "dayour@example.com",
+                "<email>",
+            ),
+            (
+                r"open C:\Users\dayour\AppData\Local\x.wav failed",
+                "dayour",
+                r"C:\Users\<user>\AppData",
+            ),
+            (
+                "open c:/users/dayour/x.wav failed",
+                "dayour",
+                "c:/users/<user>/x.wav",
+            ),
+            (
+                "open /home/dayour/gen-audio/x.wav failed",
+                "dayour",
+                "/home/<user>/gen-audio/x.wav",
+            ),
+            (
+                "open /Users/dayour/x.wav failed",
+                "dayour",
+                "/Users/<user>/x.wav",
+            ),
             ("fetch failed token=abc 403", "abc", "token=<redacted> 403"),
-            ("fetch failed access_token=t0 403", "t0", "access_token=<redacted> 403"),
-            ("fetch failed key=k1 status 403", "k1", "key=<redacted> status 403"),
+            (
+                "fetch failed access_token=t0 403",
+                "t0",
+                "access_token=<redacted> 403",
+            ),
+            (
+                "fetch failed key=k1 status 403",
+                "k1",
+                "key=<redacted> status 403",
+            ),
             ("fetch failed api_key=k2&x=1 403", "k2", "<redacted>"),
             ("fetch failed password=pw 403", "pw 403", "<redacted>"),
             ("Authorization: zz9", "zz9", "<redacted>"),
@@ -759,11 +945,21 @@ mod tests {
         ];
         for (raw, secret, kept) in cases {
             let line = redact(raw);
-            assert!(!line.contains(secret), "{raw:?} -> {line:?} still has {secret:?}");
-            assert!(line.contains(kept), "{raw:?} -> {line:?} should keep {kept:?}");
+            assert!(
+                !line.contains(secret),
+                "{raw:?} -> {line:?} still has {secret:?}"
+            );
+            assert!(
+                line.contains(kept),
+                "{raw:?} -> {line:?} should keep {kept:?}"
+            );
         }
         let plain = "gen-audio-mcp http: rejected POST /mcp 403 origin peer=127.0.0.1:51234";
-        assert_eq!(redact(plain), plain, "a peer address is not an email or a secret");
+        assert_eq!(
+            redact(plain),
+            plain,
+            "a peer address is not an email or a secret"
+        );
     }
 
     /// Optimus's L1 probe: a secret and an email that straddle the 512-byte
@@ -775,53 +971,189 @@ mod tests {
         let token = "Zk3Qx9Lm2Rt7Vb4NwY8pH6cJ";
         let email = "dayour@microsoft.com";
         let mut leaks = Vec::new();
-        for (lead, secret, head, marker) in [("error: key ", token, "Zk3Qx9Lm2R", "<redacted>"), ("error: notify ", email, "dayour@micro", "<email>")] {
+        for (lead, secret, head, marker) in [
+            ("error: key ", token, "Zk3Qx9Lm2R", "<redacted>"),
+            ("error: notify ", email, "dayour@micro", "<email>"),
+        ] {
             let pad = MAX_LINE - head.len() - lead.len();
-            let raw = format!("{}{}{lead}{secret} refused", "ok ".repeat(pad / 3), " ".repeat(pad % 3));
-            assert!(raw[..MAX_LINE].ends_with(head), "{secret:?} straddles byte {MAX_LINE}");
+            let raw = format!(
+                "{}{}{lead}{secret} refused",
+                "ok ".repeat(pad / 3),
+                " ".repeat(pad % 3)
+            );
+            assert!(
+                raw[..MAX_LINE].ends_with(head),
+                "{secret:?} straddles byte {MAX_LINE}"
+            );
             let line = redact(&raw);
             assert!(line.len() <= MAX_LINE, "{} bytes", line.len());
             // The longest piece (4+ bytes) of the secret that reached the line.
-            let leaked = (0..secret.len()).flat_map(|start| (start + 4..=secret.len()).map(move |end| &secret[start..end])).filter(|piece| line.contains(piece)).max_by_key(|piece| piece.len());
+            let leaked = (0..secret.len())
+                .flat_map(|start| (start + 4..=secret.len()).map(move |end| &secret[start..end]))
+                .filter(|piece| line.contains(piece))
+                .max_by_key(|piece| piece.len());
             if let Some(piece) = leaked {
                 leaks.push(format!("{piece:?} of {secret:?}"));
             } else if !line.contains(marker) {
                 leaks.push(format!("no {marker} for {secret:?}"));
             }
         }
-        assert!(leaks.is_empty(), "leaked across the {MAX_LINE}-byte cap: {leaks:?}");
+        assert!(
+            leaks.is_empty(),
+            "leaked across the {MAX_LINE}-byte cap: {leaks:?}"
+        );
     }
 
     /// One row per redaction class: (class, raw line, what must go, what
     /// must stay). Adding a class to CLASSES without a row here fails
     /// `every_redaction_class_has_a_row`.
     const ROWS: &[(&str, &str, &[&str], &str)] = &[
-        ("control characters", "a\u{1b}[31mred\rb", &["\u{1b}", "\r"], "red"),
-        ("request body", "rejected {\"params\":{\"x\":\"body-marker\"}} - 400", &["body-marker"], "rejected <body redacted>"),
-        ("query string", "rejected POST /mcp?q=find-me 403", &["find-me"], "/mcp?<redacted> 403"),
-        ("url userinfo", "fetch http://u:p4ss@localhost:8080/x failed", &["u:p4ss", "p4ss"], "http://<redacted>@localhost:8080/x failed"),
-        ("token", "fetch failed token=t0k 403", &["t0k"], "token=<redacted> 403"),
-        ("key", "fetch failed key=k1 status 403", &["k1"], "key=<redacted> status 403"),
-        ("passwd", "login passwd=pw1 next", &["pw1"], "passwd=<redacted> next"),
+        (
+            "control characters",
+            "a\u{1b}[31mred\rb",
+            &["\u{1b}", "\r"],
+            "red",
+        ),
+        (
+            "request body",
+            "rejected {\"params\":{\"x\":\"body-marker\"}} - 400",
+            &["body-marker"],
+            "rejected <body redacted>",
+        ),
+        (
+            "query string",
+            "rejected POST /mcp?q=find-me 403",
+            &["find-me"],
+            "/mcp?<redacted> 403",
+        ),
+        (
+            "url userinfo",
+            "fetch http://u:p4ss@localhost:8080/x failed",
+            &["u:p4ss", "p4ss"],
+            "http://<redacted>@localhost:8080/x failed",
+        ),
+        (
+            "token",
+            "fetch failed token=t0k 403",
+            &["t0k"],
+            "token=<redacted> 403",
+        ),
+        (
+            "key",
+            "fetch failed key=k1 status 403",
+            &["k1"],
+            "key=<redacted> status 403",
+        ),
+        (
+            "passwd",
+            "login passwd=pw1 next",
+            &["pw1"],
+            "passwd=<redacted> next",
+        ),
         ("pwd", "login pwd=pw2 next", &["pw2"], "pwd=<redacted> next"),
-        ("pass", "login pass=pw3 next", &["pw3"], "pass=<redacted> next"),
-        ("auth", "proxy auth=au7 next", &["au7"], "auth=<redacted> next"),
-        ("credential", "load credential=cr8 next", &["cr8"], "credential=<redacted> next"),
-        ("session", "resume session=se9 next", &["se9"], "session=<redacted> next"),
+        (
+            "pass",
+            "login pass=pw3 next",
+            &["pw3"],
+            "pass=<redacted> next",
+        ),
+        (
+            "auth",
+            "proxy auth=au7 next",
+            &["au7"],
+            "auth=<redacted> next",
+        ),
+        (
+            "credential",
+            "load credential=cr8 next",
+            &["cr8"],
+            "credential=<redacted> next",
+        ),
+        (
+            "session",
+            "resume session=se9 next",
+            &["se9"],
+            "session=<redacted> next",
+        ),
         ("sig", "blob sig=sg0 next", &["sg0"], "sig=<redacted> next"),
-        ("email", "error: notify dayour@example.com failed", &["dayour", "example.com"], "notify <email> failed"),
-        ("home directory", r"open C:\Users\dayour\AppData\Local\x.wav failed", &["dayour"], r"C:\Users\<user>\AppData"),
-        ("home directory", r#"open "C:\\Users\\dayour\\AppData\\x.wav" failed"#, &["dayour"], r"C:\\Users\\<user>\\AppData"),
-        ("authorization", "Authorization: zz9", &["zz9"], "<redacted>"),
-        ("cookie", "upstream said cookie=c00kie-v", &["c00kie"], "upstream said <redacted>"),
-        ("bearer", "upstream said bearer q7", &["q7"], "upstream said <redacted>"),
-        ("basic", "upstream said basic dTpw", &["dTpw"], "upstream said <redacted>"),
-        ("x-api-key", "header x-api-key: xk1", &["xk1"], "header <redacted>"),
-        ("api_key", "fetch failed api_key=k2&x=1 403", &["k2"], "fetch failed <redacted>"),
-        ("password", "login password: hunter2 next", &["hunter2"], "login <redacted>"),
-        ("secret", "client secret is s3cr", &["s3cr"], "client <redacted>"),
-        ("token-shaped", "error: id ghp_16C7e42F292c6912E7710c838347Ae178B4a refused", &["ghp_16C7"], "error: id <redacted> refused"),
-        ("token-shaped", "error: id Zk3Q/x9Lm2Rt7Vb4/NwY8pH6c refused", &["Zk3Q", "x9Lm", "NwY8"], "error: id <redacted> refused"),
+        (
+            "email",
+            "error: notify dayour@example.com failed",
+            &["dayour", "example.com"],
+            "notify <email> failed",
+        ),
+        (
+            "home directory",
+            r"open C:\Users\dayour\AppData\Local\x.wav failed",
+            &["dayour"],
+            r"C:\Users\<user>\AppData",
+        ),
+        (
+            "home directory",
+            r#"open "C:\\Users\\dayour\\AppData\\x.wav" failed"#,
+            &["dayour"],
+            r"C:\\Users\\<user>\\AppData",
+        ),
+        (
+            "authorization",
+            "Authorization: zz9",
+            &["zz9"],
+            "<redacted>",
+        ),
+        (
+            "cookie",
+            "upstream said cookie=c00kie-v",
+            &["c00kie"],
+            "upstream said <redacted>",
+        ),
+        (
+            "bearer",
+            "upstream said bearer q7",
+            &["q7"],
+            "upstream said <redacted>",
+        ),
+        (
+            "basic",
+            "upstream said basic dTpw",
+            &["dTpw"],
+            "upstream said <redacted>",
+        ),
+        (
+            "x-api-key",
+            "header x-api-key: xk1",
+            &["xk1"],
+            "header <redacted>",
+        ),
+        (
+            "api_key",
+            "fetch failed api_key=k2&x=1 403",
+            &["k2"],
+            "fetch failed <redacted>",
+        ),
+        (
+            "password",
+            "login password: hunter2 next",
+            &["hunter2"],
+            "login <redacted>",
+        ),
+        (
+            "secret",
+            "client secret is s3cr",
+            &["s3cr"],
+            "client <redacted>",
+        ),
+        (
+            "token-shaped",
+            "error: id ghp_16C7e42F292c6912E7710c838347Ae178B4a refused",
+            &["ghp_16C7"],
+            "error: id <redacted> refused",
+        ),
+        (
+            "token-shaped",
+            "error: id Zk3Q/x9Lm2Rt7Vb4/NwY8pH6c refused",
+            &["Zk3Q", "x9Lm", "NwY8"],
+            "error: id <redacted> refused",
+        ),
     ];
 
     /// The forms every `name=value` class is caught in: colon and spaced
@@ -841,10 +1173,16 @@ mod tests {
     #[test]
     fn every_redaction_class_has_a_row() {
         for (class, _) in CLASSES {
-            assert!(ROWS.iter().any(|(row, ..)| row == class), "class {class:?} has no row in ROWS");
+            assert!(
+                ROWS.iter().any(|(row, ..)| row == class),
+                "class {class:?} has no row in ROWS"
+            );
         }
         for (row, ..) in ROWS {
-            assert!(CLASSES.iter().any(|(class, _)| class == row), "row {row:?} names no class");
+            assert!(
+                CLASSES.iter().any(|(class, _)| class == row),
+                "row {row:?} names no class"
+            );
         }
     }
 
@@ -857,7 +1195,13 @@ mod tests {
                 misses.push(format!("{class}: {raw:?} -> {line:?}"));
             }
         }
-        let value_names = CLASSES.iter().filter_map(|(_, rule)| if let Rule::Value(name) = rule { Some(*name) } else { None });
+        let value_names = CLASSES.iter().filter_map(|(_, rule)| {
+            if let Rule::Value(name) = rule {
+                Some(*name)
+            } else {
+                None
+            }
+        });
         for name in value_names {
             for form in FORMS {
                 let raw = form.replace("{n}", name);
@@ -867,8 +1211,17 @@ mod tests {
                 }
             }
         }
-        assert!(misses.is_empty(), "{} miss(es):\n{}", misses.len(), misses.join("\n"));
-        for plain in ["gen-audio-mcp http: rejected POST /mcp 403 origin peer=127.0.0.1:51234", "gen-audio-mcp: listening on 127.0.0.1:8765", "open /tmp/gen-audio/library/x.wav failed: not found"] {
+        assert!(
+            misses.is_empty(),
+            "{} miss(es):\n{}",
+            misses.len(),
+            misses.join("\n")
+        );
+        for plain in [
+            "gen-audio-mcp http: rejected POST /mcp 403 origin peer=127.0.0.1:51234",
+            "gen-audio-mcp: listening on 127.0.0.1:8765",
+            "open /tmp/gen-audio/library/x.wav failed: not found",
+        ] {
             assert_eq!(redact(plain), plain, "kept whole");
         }
     }
@@ -880,9 +1233,16 @@ mod tests {
         for raw in ["é".repeat(300), straddle.clone(), "日本語 ".repeat(200)] {
             let line = redact(&raw);
             assert!(line.len() <= MAX_LINE, "{} bytes > {MAX_LINE}", line.len());
-            assert!(line.len() >= MAX_LINE - 4, "cut at the byte cap, not far before it: {}", line.len());
+            assert!(
+                line.len() >= MAX_LINE - 4,
+                "cut at the byte cap, not far before it: {}",
+                line.len()
+            );
         }
-        assert_eq!(redact(&straddle), format!("{}x", "x ".repeat((MAX_LINE - 1) / 2)));
+        assert_eq!(
+            redact(&straddle),
+            format!("{}x", "x ".repeat((MAX_LINE - 1) / 2))
+        );
     }
 
     /// The child half of the pipe tests: a real loopback server in its own
@@ -904,7 +1264,13 @@ mod tests {
     fn through_the_pipe(name: &str, request: &str) -> (String, PathBuf) {
         let dir = scratch(name);
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["sidecar_log::tests::stand_in_sidecar", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .args([
+                "sidecar_log::tests::stand_in_sidecar",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env("GEN_AUDIO_STAND_IN_SIDECAR", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -915,7 +1281,10 @@ mod tests {
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
         let addr = loop {
             let mut line = String::new();
-            assert!(stdout.read_line(&mut line).unwrap() > 0, "stand-in sidecar exited before it listened");
+            assert!(
+                stdout.read_line(&mut line).unwrap() > 0,
+                "stand-in sidecar exited before it listened"
+            );
             // libtest prints "test ... " without a newline before the line.
             if let Some(at) = line.find("SIDECAR_ADDR=") {
                 break line[at + "SIDECAR_ADDR=".len()..].trim().to_string();
@@ -940,9 +1309,15 @@ mod tests {
             body.len()
         );
         let (text, dir) = through_the_pipe("rejected", &request);
-        let line = text.lines().find(|line| line.contains("rejected POST /mcp 403")).unwrap_or_else(|| panic!("no rejection line in {text:?}"));
+        let line = text
+            .lines()
+            .find(|line| line.contains("rejected POST /mcp 403"))
+            .unwrap_or_else(|| panic!("no rejection line in {text:?}"));
         let stamp = line.split(' ').next().unwrap();
-        assert!(stamp.parse::<u64>().is_ok(), "{line}: starts with a unix-ms stamp");
+        assert!(
+            stamp.parse::<u64>().is_ok(),
+            "{line}: starts with a unix-ms stamp"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -956,9 +1331,23 @@ mod tests {
             body.len()
         );
         let (text, dir) = through_the_pipe("redact", &request);
-        assert!(text.contains("rejected POST /mcp?<redacted> 403"), "the rejection is still logged: {text:?}");
-        for secret in [token, "tok_9f8e", bearer, "sk-ant", "Authorization", "body-marker-7", "tools/call"] {
-            assert!(!text.contains(secret), "{secret:?} reached the log: {text:?}");
+        assert!(
+            text.contains("rejected POST /mcp?<redacted> 403"),
+            "the rejection is still logged: {text:?}"
+        );
+        for secret in [
+            token,
+            "tok_9f8e",
+            bearer,
+            "sk-ant",
+            "Authorization",
+            "body-marker-7",
+            "tools/call",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "{secret:?} reached the log: {text:?}"
+            );
         }
         let _ = fs::remove_dir_all(&dir);
     }
@@ -968,8 +1357,18 @@ mod tests {
         let source = include_str!("lib.rs");
         let spawn = &source[source.find("fn spawn_sidecar").expect("spawn_sidecar")..];
         let spawn = &spawn[..spawn.find("\n}\n").unwrap()];
-        assert!(spawn.contains(".stderr(Stdio::piped())") && spawn.contains("sidecar_log::spawn_pump"), "{spawn}");
-        assert!(!spawn.contains("Stdio::null()) // stderr") && !spawn.contains(".stderr(Stdio::null())"), "{spawn}");
-        assert!(source.contains("app_log_dir()"), "the log lives in the Tauri app_log_dir");
+        assert!(
+            spawn.contains(".stderr(Stdio::piped())") && spawn.contains("sidecar_log::spawn_pump"),
+            "{spawn}"
+        );
+        assert!(
+            !spawn.contains("Stdio::null()) // stderr")
+                && !spawn.contains(".stderr(Stdio::null())"),
+            "{spawn}"
+        );
+        assert!(
+            source.contains("app_log_dir()"),
+            "the log lives in the Tauri app_log_dir"
+        );
     }
 }

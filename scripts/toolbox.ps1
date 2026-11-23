@@ -637,24 +637,24 @@ function Install-DarbotSpeechWheelSet {
     $targets = @(
         @{
             Repository = 'DarbotLM/misaki'
-            Tag = 'py314-2026.09.17'
+            Tag = 'py314-2026.11.22'
             Name = 'misaki-0.9.4+py314.1-py3-none-any.whl'
-            Hash = '931dad3ff39b246a3920963b2812f03994f6cef49de71467670f39a10f964c2f'
-            Url = 'https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl'
+            Hash = '82f66b4a0d910ce0cf6836153543f96f33b1499610976b7834ee4fe1d152d31e'
+            Url = 'https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl'
         },
         @{
             Repository = 'DarbotLM/kokoro'
-            Tag = 'py314-2026.09.17'
+            Tag = 'py314-2026.11.22'
             Name = 'kokoro-0.9.4-py3-none-any.whl'
-            Hash = 'f43902798ad657b619f6a955f4ea3d9cead771b1a58e4082023c29bfd486626f'
-            Url = 'https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl'
+            Hash = 'bcc402e20cf898aaa39e29d8ba604e72a8ae077e43eb348c8f4ba5ccd116ae96'
+            Url = 'https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl'
         },
         @{
             Repository = 'DarbotLM/kokoro-onnx'
-            Tag = 'py314-2026.09.17'
+            Tag = 'py314-2026.11.22'
             Name = 'kokoro_onnx-0.6.1-py3-none-any.whl'
-            Hash = '398c623fa238acb508798a2887022d5a5216de58c7bbe0f2a0d7f28f9de08c1d'
-            Url = 'https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl'
+            Hash = '24e7a6c743fae51a72bd565837d9545de9b1b99223bffaa9a37f6aa613dbc538'
+            Url = 'https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl'
         }
     )
     $requirements = [IO.File]::ReadAllText($RequirementsPath)

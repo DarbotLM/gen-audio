@@ -19,14 +19,7 @@ pub const CARD_KINDS: &[&str] = &[
 ];
 
 pub const CONNECTOR_IDS: &[&str] = &[
-    "mcp",
-    "acp",
-    "harness",
-    "copilot",
-    "claude",
-    "gpt",
-    "gemini",
-    "local",
+    "mcp", "acp", "harness", "copilot", "claude", "gpt", "gemini", "local",
 ];
 
 pub fn validate_viewport(document: &Value) -> Result<(), String> {
@@ -50,7 +43,10 @@ pub fn validate_viewport(document: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_card(card: &Value, seen: &mut std::collections::BTreeSet<String>) -> Result<(), String> {
+fn validate_card(
+    card: &Value,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
     let obj = card.as_object().ok_or("card must be an object")?;
     let id = expect_string(obj.get("id"), "id", 1, 64)?;
     if !id
@@ -67,13 +63,13 @@ fn validate_card(card: &Value, seen: &mut std::collections::BTreeSet<String>) ->
         return Err(format!("card {id} has unknown kind {kind}"));
     }
     expect_string(obj.get("title"), "title", 1, 120)?;
-    if let Some(uid) = obj.get("uid") {
-        // Asset object model v1: the card uid sits alongside the legacy id.
-        let uid = uid.as_str().ok_or_else(|| format!("card {id} uid must be a string"))?;
-        match crate::asset::parse_uid(uid) {
-            Ok(("card", _)) => {}
-            _ => return Err(format!("card {id} uid must be ga:card:<26 base32>")),
-        }
+    let uid = obj
+        .get("uid")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("card {id} uid is required"))?;
+    match crate::asset::parse_uid(uid) {
+        Ok(("card", _)) => {}
+        _ => return Err(format!("card {id} uid must be ga:card:<26 base32>")),
     }
     if let Some(span) = obj.get("span") {
         let n = span.as_u64().ok_or("span must be an integer")?;
@@ -81,7 +77,9 @@ fn validate_card(card: &Value, seen: &mut std::collections::BTreeSet<String>) ->
             return Err(format!("card {id} span must be 1, 2, or 3"));
         }
     }
-    let body = obj.get("body").ok_or_else(|| format!("card {id} is missing body"))?;
+    let body = obj
+        .get("body")
+        .ok_or_else(|| format!("card {id} is missing body"))?;
     validate_body(&id, &kind, body)?;
     if let Some(adaptive) = obj.get("adaptive") {
         validate_adaptive(&id, adaptive)?;
@@ -110,7 +108,9 @@ fn validate_body(id: &str, kind: &str, body: &Value) -> Result<(), String> {
             expect_const(obj.get("notPodcast"), true, "notPodcast")?;
             let disclaimer = expect_string(obj.get("disclaimer"), "disclaimer", 12, 400)?;
             if !disclaimer.to_ascii_lowercase().contains("not") {
-                return Err(format!("card {id} disclaimer must say the visual is not a podcast render"));
+                return Err(format!(
+                    "card {id} disclaimer must say the visual is not a podcast render"
+                ));
             }
         }
         "PodcastCast" => {
@@ -131,13 +131,19 @@ fn validate_body(id: &str, kind: &str, body: &Value) -> Result<(), String> {
         }
         "ServeHealth" => {
             expect_string(obj.get("host"), "host", 1, 80)?;
-            let port = obj.get("port").and_then(Value::as_u64).ok_or("port must be an integer")?;
+            let port = obj
+                .get("port")
+                .and_then(Value::as_u64)
+                .ok_or("port must be an integer")?;
             if !(1..=65535).contains(&port) {
                 return Err("port out of range".into());
             }
             expect_string(obj.get("baseUrl"), "baseUrl", 1, 200)?;
             expect_string(obj.get("healthUrl"), "healthUrl", 1, 220)?;
-            let probed = obj.get("probed").and_then(Value::as_bool).ok_or("probed must be a boolean")?;
+            let probed = obj
+                .get("probed")
+                .and_then(Value::as_bool)
+                .ok_or("probed must be a boolean")?;
             if probed {
                 let ok = obj.get("ok").and_then(Value::as_bool);
                 if ok.is_none() {
@@ -150,7 +156,10 @@ fn validate_body(id: &str, kind: &str, body: &Value) -> Result<(), String> {
             }
         }
         "BenchmarkCompare" => {
-            let measured = obj.get("measuredHere").and_then(Value::as_bool).ok_or("benchmark measuredHere must be a boolean")?;
+            let measured = obj
+                .get("measuredHere")
+                .and_then(Value::as_bool)
+                .ok_or("benchmark measuredHere must be a boolean")?;
             if !measured {
                 let note = expect_string(obj.get("sourceNote"), "sourceNote", 12, 400)?;
                 let lower = note.to_ascii_lowercase();
@@ -158,15 +167,25 @@ fn validate_body(id: &str, kind: &str, body: &Value) -> Result<(), String> {
                 // "not measured". Either phrase is the honesty statement; a note
                 // with neither is rejected.
                 if !lower.contains("not remeasured") && !lower.contains("not measured") {
-                    return Err("benchmark sourceNote must say the figures were not measured in this build".into());
+                    return Err(
+                        "benchmark sourceNote must say the figures were not measured in this build"
+                            .into(),
+                    );
                 }
             }
-            let rows = obj.get("rows").and_then(Value::as_array).ok_or("rows must be an array")?;
+            let rows = obj
+                .get("rows")
+                .and_then(Value::as_array)
+                .ok_or("rows must be an array")?;
             for row in rows {
                 let row = row.as_object().ok_or("benchmark row must be an object")?;
                 expect_string(row.get("engine"), "engine", 1, 40)?;
                 expect_string(row.get("metric"), "metric", 1, 40)?;
-                if !row.get("value").map(|v| v.is_number() || v.is_string()).unwrap_or(false) {
+                if !row
+                    .get("value")
+                    .map(|v| v.is_number() || v.is_string())
+                    .unwrap_or(false)
+                {
                     return Err("benchmark value must be a number or string".into());
                 }
             }
@@ -188,7 +207,7 @@ fn validate_body(id: &str, kind: &str, body: &Value) -> Result<(), String> {
             }
             expect_string(obj.get("detail"), "detail", 1, 400)?;
         }
-        
+
         "LibraryClip" => {
             expect_string(obj.get("engineId"), "engineId", 1, 40)?;
             let status = expect_string(obj.get("status"), "status", 1, 40)?;
@@ -213,7 +232,9 @@ fn validate_body(id: &str, kind: &str, body: &Value) -> Result<(), String> {
                     return Err(format!("card {id} duration_s must be > 0"));
                 }
             } else if obj.get("wavUrl").is_some() {
-                return Err(format!("card {id} must not set wavUrl unless synthesizedSpeech is true"));
+                return Err(format!(
+                    "card {id} must not set wavUrl unless synthesizedSpeech is true"
+                ));
             }
             optional_string(obj.get("semanticName"), "semanticName", 1, 80)?;
             optional_string(obj.get("faceName"), "faceName", 1, 80)?;
@@ -232,7 +253,9 @@ fn validate_voice_profile(id: &str, obj: &serde_json::Map<String, Value>) -> Res
     let person = crate::catalog::persona(&persona_id)
         .ok_or_else(|| format!("card {id} personaId {persona_id} is not a persona"))?;
     if person.name != agent_name {
-        return Err(format!("card {id} agentName must match persona {persona_id}"));
+        return Err(format!(
+            "card {id} agentName must match persona {persona_id}"
+        ));
     }
     let voice_id = expect_string(obj.get("voiceModel"), "voiceModel", 1, 40)?;
     if crate::catalog::voice_model(&voice_id).is_none() {
@@ -271,7 +294,9 @@ fn validate_voice_profile(id: &str, obj: &serde_json::Map<String, Value>) -> Res
     }
     let disclaimer = expect_string(obj.get("disclaimer"), "disclaimer", 12, 400)?;
     if !disclaimer.to_ascii_lowercase().contains("not") {
-        return Err(format!("card {id} disclaimer must say the profile is not a podcast render"));
+        return Err(format!(
+            "card {id} disclaimer must say the profile is not a podcast render"
+        ));
     }
     if obj.get("cubeJsonUrl").is_some() {
         return Err(format!("card {id} must not link a cube on a voice profile"));
@@ -279,7 +304,12 @@ fn validate_voice_profile(id: &str, obj: &serde_json::Map<String, Value>) -> Res
     Ok(())
 }
 
-fn optional_string(value: Option<&Value>, field: &str, min: usize, max: usize) -> Result<(), String> {
+fn optional_string(
+    value: Option<&Value>,
+    field: &str,
+    min: usize,
+    max: usize,
+) -> Result<(), String> {
     if value.is_some() {
         expect_string(value, field, min, max)?;
     }
@@ -302,7 +332,11 @@ fn validate_adaptive(id: &str, adaptive: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn expect_const(value: Option<&Value>, expected: impl Into<Value>, field: &str) -> Result<(), String> {
+fn expect_const(
+    value: Option<&Value>,
+    expected: impl Into<Value>,
+    field: &str,
+) -> Result<(), String> {
     let expected = expected.into();
     match value {
         Some(found) if found == &expected => Ok(()),
@@ -310,7 +344,12 @@ fn expect_const(value: Option<&Value>, expected: impl Into<Value>, field: &str) 
     }
 }
 
-fn expect_string(value: Option<&Value>, field: &str, min: usize, max: usize) -> Result<String, String> {
+fn expect_string(
+    value: Option<&Value>,
+    field: &str,
+    min: usize,
+    max: usize,
+) -> Result<String, String> {
     let text = value
         .and_then(Value::as_str)
         .ok_or_else(|| format!("field {field} must be a string"))?;
@@ -336,7 +375,21 @@ mod tests {
         let raw = include_str!("../../../schemas/examples/viewport.release.json");
         let document: Value = serde_json::from_str(raw).unwrap();
         validate_viewport(&document).unwrap();
-        assert!(document["cards"].as_array().unwrap().iter().all(|card| !matches!(card["id"].as_str(), Some("spec-fixture" | "cube-fixture" | "bench-ref" | "cast-sample" | "serve-node" | "serve-gateway"))));
+        assert!(document["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|card| !matches!(
+                card["id"].as_str(),
+                Some(
+                    "spec-fixture"
+                        | "cube-fixture"
+                        | "bench-ref"
+                        | "cast-sample"
+                        | "serve-node"
+                        | "serve-gateway"
+                )
+            )));
     }
 
     /// AP-OPT-1 parity with validate.ts: nothing renders a persona cube, so
@@ -346,11 +399,18 @@ mod tests {
     fn voice_profile_refuses_the_library_cube_hook() {
         let raw = include_str!("../../../schemas/examples/voice_profile.optimus.json");
         let value: Value = serde_json::from_str(raw).unwrap();
-        for (hook, with_url) in [("library-cube-hook", true), ("library-cube-hook", false), ("fixture-cube", false)] {
+        for (hook, with_url) in [
+            ("library-cube-hook", true),
+            ("library-cube-hook", false),
+            ("fixture-cube", false),
+        ] {
             let mut hooked = value.as_object().unwrap().clone();
             hooked.insert("spectrogram3d".into(), Value::from(hook));
             if with_url {
-                hooked.insert("cubeJsonUrl".into(), Value::from("/library/library_kokoro_cube3d.json"));
+                hooked.insert(
+                    "cubeJsonUrl".into(),
+                    Value::from("/library/library_kokoro_cube3d.json"),
+                );
             }
             let error = validate_voice_profile("profile-optimus", &hooked).expect_err(hook);
             assert!(error.contains("spectrogram3d"), "{error}");
@@ -381,14 +441,17 @@ mod tests {
         assert_eq!(value["notPodcast"], true);
         assert_eq!(value["synthesizedSpeech"], false);
         assert!(value.get("wavUrl").is_none());
-        let public = include_str!("../../../apps/desktop/public/library/voice_profile.optimus.json");
+        let public =
+            include_str!("../../../apps/desktop/public/library/voice_profile.optimus.json");
         assert_eq!(public, raw);
     }
 
     #[test]
     fn voice_profile_rejects_a_pack_id_as_the_voice_model() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../schemas/examples/viewport.example.json")).unwrap();
+        let mut document: Value = serde_json::from_str(include_str!(
+            "../../../schemas/examples/viewport.example.json"
+        ))
+        .unwrap();
         let card = document["cards"]
             .as_array_mut()
             .unwrap()
@@ -402,8 +465,10 @@ mod tests {
 
     #[test]
     fn benchmark_measured_here_is_allowed() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../schemas/examples/viewport.example.json")).unwrap();
+        let mut document: Value = serde_json::from_str(include_str!(
+            "../../../schemas/examples/viewport.example.json"
+        ))
+        .unwrap();
         document["cards"]
             .as_array_mut()
             .unwrap()
@@ -415,8 +480,10 @@ mod tests {
 
     #[test]
     fn card_uid_must_be_a_card_kind_uid() {
-        let mut doc: Value =
-            serde_json::from_str(include_str!("../../../schemas/examples/viewport.example.json")).unwrap();
+        let mut doc: Value = serde_json::from_str(include_str!(
+            "../../../schemas/examples/viewport.example.json"
+        ))
+        .unwrap();
         assert!(validate_viewport(&doc).is_ok());
         doc["cards"][0]["uid"] = Value::String("ga:audio_clip:vtwxksrsuci7zygslimzfy7kdy".into());
         assert!(validate_viewport(&doc).is_err());
@@ -425,12 +492,37 @@ mod tests {
     }
 
     #[test]
+    fn card_uid_is_required() {
+        let negative: Value = serde_json::from_str(include_str!(
+            "../../../schemas/examples/viewport.missing-uid.negative.json"
+        ))
+        .unwrap();
+        let error = validate_viewport(&negative).expect_err("a card without uid must fail");
+        assert!(error.contains("uid"), "{error}");
+        assert!(error.contains("required"), "{error}");
+
+        let mut release: Value = serde_json::from_str(include_str!(
+            "../../../schemas/examples/viewport.release.json"
+        ))
+        .unwrap();
+        release["cards"][0].as_object_mut().unwrap().remove("uid");
+        let error = validate_viewport(&release).expect_err("a shipped card without uid must fail");
+        assert!(error.contains("uid"), "{error}");
+    }
+
+    #[test]
     fn t6_release_card_doc_has_no_fixture_visuals() {
-        let document: Value =
-            serde_json::from_str(include_str!("../../../schemas/examples/viewport.release.json")).unwrap();
+        let document: Value = serde_json::from_str(include_str!(
+            "../../../schemas/examples/viewport.release.json"
+        ))
+        .unwrap();
         validate_viewport(&document).expect("release viewport");
         let cards = document["cards"].as_array().unwrap();
-        assert!(cards.iter().all(|card| card["id"] != "cube-fixture" && card["id"] != "spec-fixture"));
-        assert!(cards.iter().all(|card| card["body"]["source"] != "fixture-tone"));
+        assert!(cards
+            .iter()
+            .all(|card| card["id"] != "cube-fixture" && card["id"] != "spec-fixture"));
+        assert!(cards
+            .iter()
+            .all(|card| card["body"]["source"] != "fixture-tone"));
     }
 }

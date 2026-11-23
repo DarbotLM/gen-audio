@@ -223,7 +223,8 @@ function Invoke-SprawlGate {
     Fails on any finding:
       outside-allowlist  a script (see Get-ScriptFile: any executable script
                          extension, .sh included, or a shebang) outside the allowlist:
-                         scripts/{build-tauri-windows,test,mcp-call,ui-shot,run,toolbox}.ps1,
+                         scripts/{build-tauri-windows,pack-windows-msix-nuget,test,
+                         mcp-call,ui-shot,run,toolbox}.ps1,
                          scripts/lib/*.ps1, scripts/*.py, tests/**/*.py, src/**/*.py,
                          the NSIS installer hook apps/desktop/src-tauri/windows/hooks.nsh
                          (tauri.conf.json installerHooks), apps/desktop/validate.check.mts
@@ -237,7 +238,7 @@ function Invoke-SprawlGate {
     This file defines the patterns, so it is not content-scanned itself.
     #>
     param([Parameter(Mandatory = $true)][string]$Root, [string[]]$Exclude = @())
-    $entryPoints = @('scripts/build-tauri-windows.ps1', 'scripts/test.ps1', 'scripts/mcp-call.ps1', 'scripts/ui-shot.ps1', 'scripts/run.ps1', 'scripts/toolbox.ps1',
+    $entryPoints = @('scripts/build-tauri-windows.ps1', 'scripts/pack-windows-msix-nuget.ps1', 'scripts/test.ps1', 'scripts/mcp-call.ps1', 'scripts/ui-shot.ps1', 'scripts/run.ps1', 'scripts/toolbox.ps1',
         'apps/desktop/src-tauri/windows/hooks.nsh', 'apps/desktop/validate.check.mts')
     $self = 'scripts/test.ps1'
     $vcvarsOwner = 'scripts/lib/devenv.ps1'
@@ -384,13 +385,15 @@ Invoke-Step 'Cargo' {
     param($log)
     $cargoArgs = @('test', '--workspace')
     if (Test-IsWindowsHost) {
-        # tauri-build checks that the externalBin sidecar exists; stage a debug one if none is there.
+        # tauri-build checks that both externalBin sidecars exist; stage debug
+        # copies for missing binaries.
         $triple = ((& rustc -vV) | Select-String -Pattern '^host: ').ToString().Split(':', 2)[1].Trim()
-        $staged = Join-Path $root "apps\desktop\src-tauri\binaries\gen-audio-mcp-$triple.exe"
-        if (-not (Test-Path -LiteralPath $staged)) {
-            if ((Invoke-Logged -Log $log -File 'cargo' -Arguments @('build', '-p', 'gen-audio-mcp')) -ne 0) { throw 'cargo build -p gen-audio-mcp failed' }
+        foreach ($bin in 'gen-audio-mcp', 'gen-audio-acp') {
+            $staged = Join-Path $root "apps\desktop\src-tauri\binaries\$bin-$triple.exe"
+            if (Test-Path -LiteralPath $staged) { continue }
+            if ((Invoke-Logged -Log $log -File 'cargo' -Arguments @('build', '-p', $bin)) -ne 0) { throw "cargo build -p $bin failed" }
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $staged) | Out-Null
-            Copy-Item -LiteralPath (Join-Path $root 'target\debug\gen-audio-mcp.exe') -Destination $staged
+            Copy-Item -LiteralPath (Join-Path $root "target\debug\$bin.exe") -Destination $staged
         }
     } else {
         $cargoArgs += @('--exclude', 'gen-audio-desktop')

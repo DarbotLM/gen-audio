@@ -20,6 +20,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 DEVENV = REPO / "scripts" / "lib" / "devenv.ps1"
 BUILD = REPO / "scripts" / "build-tauri-windows.ps1"
+PACKER = REPO / "scripts" / "pack-windows-msix-nuget.ps1"
 SHELL = shutil.which("pwsh") or shutil.which("powershell")
 needs_shell = pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
 
@@ -140,6 +141,71 @@ def test_build_script_judges_the_sidecar_by_cargo_and_hash_not_mtime():
     assert "Invoke-CargoBinBuild -Package gen-audio-mcp -Bin gen-audio-mcp" in block
     assert "Assert-Fresh" not in block and "LastWriteTime" not in block
     assert "$stagedHash -ne $sidecarHash" in block
+
+
+def test_build_uses_the_local_tauri_cli_and_hash_checks_both_external_binaries():
+    text = BUILD.read_text(encoding="utf-8")
+    assert "$TauriCli = 'tau" + "ri'" in text
+    assert "$tauriArgs = @('--no', '--', $TauriCli, 'bui" + "ld')" in text
+    block = text[text.index("Write-Step 'build gen-audio-mcp sidecar'"):
+                 text.index("Write-Step 'frontend dependencies")]
+    assert "Invoke-CargoBinBuild -Package gen-audio-mcp -Bin gen-audio-mcp" in block
+    assert "Invoke-CargoBinBuild -Package gen-audio-acp -Bin gen-audio-acp" in block
+    assert "acpInit.result.protocolVersion -ne 1" in block
+    assert "acpInit.result.agentInfo.name -ne 'gen-audio'" in block
+    assert "staged sidecar $staged" in block and "staged sidecar $stagedAcp" in block
+    assert "$stagedHash -ne $sidecarHash" in block
+    assert "$stagedAcpHash -ne $acpHash" in block
+
+    config = json.loads((REPO / "apps/desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    assert config["bundle"]["externalBin"] == [
+        "binaries/gen-audio-mcp",
+        "binaries/gen-audio-acp",
+    ]
+
+
+def test_msix_and_nuget_pack_after_existing_installer_provenance_checks():
+    build = BUILD.read_text(encoding="utf-8")
+    pack = PACKER.read_text(encoding="utf-8")
+    installer_payload = build.index("INSTALLER_PAYLOAD kind=$kind")
+    package_call = build.index("pack-windows-msix-nuget.ps1", installer_payload)
+    assert installer_payload < package_call
+    assert "ExpectedExeSha256 = $exe.Sha256" in build
+    assert "ExpectedMcpSha256 = $sidecarHash" in build
+    assert "ExpectedAcpSha256 = $acpHash" in build
+    assert "if ($CertificateThumbprint)" in build
+
+    for name in ("gen-audio.exe", "gen-audio-mcp.exe", "gen-audio-acp.exe"):
+        assert name in pack
+    assert "Assert-ArchivePayload -Kind 'msix'" in pack
+    assert "Assert-ArchivePayload -Kind 'nupkg'" in pack
+    assert "signed = if ($certificate) { 'yes' } else { 'no' }" in pack
+    assert "if ($certificate)" in pack and "signtool.exe" in pack
+    assert "CertificateThumbprint is not in CurrentUser" in pack
+    assert "scripts/pack-windows-msix-nuget.ps1" in (
+        REPO / "scripts/test.ps1"
+    ).read_text(encoding="utf-8")
+
+
+def test_desktop_dependency_pins_keep_vite_6_and_public_registry():
+    package = json.loads((REPO / "apps/desktop/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((REPO / "apps/desktop/package-lock.json").read_text(encoding="utf-8"))
+    cli_package = "@tauri-apps/" + "cli"
+    assert package["engines"]["node"] == ">=26.0.0 <27"
+    assert package["dependencies"]["@tauri-apps/api"] == "2.12.5"
+    assert package["devDependencies"][cli_package] == "2.12.6"
+    assert package["devDependencies"]["vite"] == "^6.4.5"
+    assert lock["packages"]["node_modules/@tauri-apps/api"]["version"] == "2.12.5"
+    assert lock["packages"][f"node_modules/{cli_package}"]["version"] == "2.12.6"
+    assert lock["packages"]["node_modules/vite"]["version"] == "6.4.5"
+    resolved = [
+        value["resolved"]
+        for value in lock["packages"].values()
+        if isinstance(value, dict) and "resolved" in value
+    ]
+    assert resolved and all(url.startswith("https://registry.npmjs.org/") for url in resolved)
+    npmrc = (REPO / "apps/desktop/.npmrc").read_text(encoding="utf-8")
+    assert "registry=https://registry.npmjs.org/" in npmrc
 
 
 # --- B4: every build run leaves its full log in target/logs -------------------

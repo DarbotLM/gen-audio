@@ -251,7 +251,16 @@ def _stub_npm_and_gate(tmp_path: Path, *, fail_gate: bool) -> dict[str, str]:
     if os.name != "nt":
         for name in ("npm", "npx", "python3"):
             (bin_dir / name).chmod(0o755)
-    return {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    # The stubbed python3 must be the gate test.ps1 runs. A host
+    # GEN_AUDIO_PYTHON would otherwise take precedence over PATH.
+    env = {key: value for key, value in os.environ.items() if key != "GEN_AUDIO_PYTHON"}
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+
+def test_stub_npm_and_gate_ignores_host_python(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEN_AUDIO_PYTHON", "host-python")
+    env = _stub_npm_and_gate(tmp_path, fail_gate=False)
+    assert "GEN_AUDIO_PYTHON" not in env
 
 
 @pytest.mark.skipif(SHELL is None or shutil.which("git") is None, reason="needs PowerShell and git")

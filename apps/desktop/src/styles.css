@@ -544,30 +544,28 @@ body.is-dragging { cursor: grabbing; user-select: none; }
   height: 100%;
   perspective: 1100px;
   overflow: hidden;
+  position: relative;
 }
 .flip {
   position: relative;
   height: 100%;
   min-height: 0;
-  transform-style: preserve-3d;
-  transition: transform 0.45s ease;
 }
-.card.is-flipped .flip { transform: rotateY(180deg); }
 
 .face {
+  position: absolute;
+  inset: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--card);
   padding: 0.45rem 0.55rem 0.5rem;
   height: 100%;
   min-height: 0;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
-.face.front { position: relative; }
+.face.front { z-index: 1; }
 .face.front::after {
   content: "";
   position: absolute;
@@ -579,9 +577,6 @@ body.is-dragging { cursor: grabbing; user-select: none; }
   animation: livetile-sheen 7s ease-in-out infinite;
 }
 .face.back {
-  position: absolute;
-  inset: 0;
-  transform: rotateY(180deg);
   background: #101820;
   border-color: var(--accent);
   overflow: hidden;
@@ -612,11 +607,44 @@ body.is-dragging { cursor: grabbing; user-select: none; }
   box-shadow: 0 0 0 0 rgba(62, 224, 197, 0.7);
   animation: livetile-pulse 2.4s ease-out infinite;
 }
-.flip-toggle { margin-top: auto; align-self: start; padding: 0.22rem 0.55rem; font-size: 0.72rem; }
+.card > .flip-glyph {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.45rem;
+  z-index: 3;
+  cursor: pointer;
+  padding: 0.2rem 0.3rem;
+  transition: background-color 0.15s ease;
+}
+.card > .flip-glyph[aria-disabled="true"] { cursor: default; opacity: 0.65; }
+.card > .flip-glyph:hover:not([aria-disabled="true"]) { background: rgba(62, 224, 197, 0.18); }
+.card > .flip > .face > :first-child { margin-right: 2.1rem; }
+.clip-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+}
+.clip-uid { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.copy-uid { flex: 0 0 auto; padding: 0.12rem 0.45rem; font-size: 0.66rem; cursor: copy; }
+.copy-uid.is-copied { background: rgba(62, 224, 197, 0.25); }
+.card > .profile-status {
+  position: absolute;
+  left: 0.45rem;
+  bottom: 0.35rem;
+  z-index: 3;
+  margin: 0;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.3rem;
+  font-size: 0.66rem;
+  background: rgba(62, 224, 197, 0.18);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .board { scroll-behavior: auto; }
-  .flip { transition: none; }
+  .card > .flip-glyph { transition: none; }
   .face.front::after, .live-mark::before { animation: none; }
 }
 
@@ -922,15 +950,12 @@ th, td { text-align: left; padding: 0.12rem 0.25rem; border-bottom: 1px solid va
   line-height: 1;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  cursor: copy;
   flex: 0 0 auto;
 }
 .ga-glyph:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-.ga-glyph.is-copied { background: rgba(62, 224, 197, 0.25); }
 .ga-glyph-svg { width: 1.05rem; height: 0.95rem; display: block; }
 .ga-dot.is-on { fill: currentColor; }
 .ga-dot.is-off { fill: none; stroke: currentColor; stroke-width: 0.3; opacity: 0.28; }
-.live-row .ga-glyph:first-of-type { margin-left: auto; }
 /* Fixed hue per kind; never derived from the hash. */
 .ga-kind-voice_model { color: #7fb4ff; }
 .ga-kind-voice_profile { color: #c99bff; }
@@ -944,6 +969,7 @@ th, td { text-align: left; padding: 0.12rem 0.25rem; border-bottom: 1px solid va
 .ga-kind-mcp_tool { color: #9be37a; }
 .ga-kind-unknown { color: #e2b15a; }
 .library-tile[data-has-wav="1"] .ga-glyph { background: #0f1420; }
+.cube-glyph { display: inline-flex; align-items: center; gap: 0.35rem; }
 .cube-glyph:empty { display: none; }
 .cube-glyph .ga-glyph { font-size: 0.62rem; padding: 0.15rem 0.35rem; }
 .cube-glyph .ga-glyph-svg { width: 1.3rem; height: 1.15rem; }

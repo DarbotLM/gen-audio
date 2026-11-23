@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { validateViewport } from "../src/validate.ts";
 
 const example = JSON.parse(
@@ -30,4 +31,25 @@ test("validate.ts takes no build settings and does not embed the release-gate ne
   const source = readFileSync(fileURLToPath(new URL("../src/validate.ts", import.meta.url)), "utf8");
   assert.equal(source.includes("import.meta.env"), false);
   assert.equal(source.includes("not remeasured"), false);
+});
+
+test("card uid is required by validate.ts and the viewport schema", () => {
+  const negative = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../../../schemas/examples/viewport.missing-uid.negative.json", import.meta.url)), "utf8"),
+  );
+  const error = validateViewport(negative, "allowed");
+  assert.match(error ?? "", /engine-kokoro.*uid|required.*uid/i);
+  const dropped = structuredClone(example);
+  delete dropped.cards[0].uid;
+  assert.match(validateViewport(dropped, "allowed") ?? "", /uid.*required|required.*uid/i);
+
+  const schema = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../../../schemas/card-viewport.schema.json", import.meta.url)), "utf8"),
+  );
+  const validateSchema = new Ajv2020({ strict: false }).compile(schema);
+  assert.equal(validateSchema(negative), false);
+  assert.ok(
+    (validateSchema.errors ?? []).some((issue) =>
+      issue.params && (issue.params as { missingProperty?: string }).missingProperty === "uid"),
+  );
 });

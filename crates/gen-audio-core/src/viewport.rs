@@ -8,9 +8,9 @@
 //! Coverage uses the cube's own `sec_per_bin`. Reject reasons stay in one order:
 //! start < 0, selector end, clip missing from `src`, recorded source duration lie.
 
-use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-support"))]
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
@@ -57,7 +57,6 @@ pub enum FlipTo {
     Next,
     Face(String),
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
@@ -199,22 +198,58 @@ struct FaceDef {
 }
 
 const CLIP_FACES: &[FaceDef] = &[
-    FaceDef { id: "clip", name: "Clip" },
-    FaceDef { id: "cube", name: "Cube" },
-    FaceDef { id: "layers", name: "Layers" },
-    FaceDef { id: "spectrogram", name: "Spectrogram" },
-    FaceDef { id: "relations", name: "Relations" },
+    FaceDef {
+        id: "clip",
+        name: "Clip",
+    },
+    FaceDef {
+        id: "cube",
+        name: "Cube",
+    },
+    FaceDef {
+        id: "layers",
+        name: "Layers",
+    },
+    FaceDef {
+        id: "spectrogram",
+        name: "Spectrogram",
+    },
+    FaceDef {
+        id: "relations",
+        name: "Relations",
+    },
 ];
 const MODEL_FACES: &[FaceDef] = &[
-    FaceDef { id: "model", name: "Model" },
-    FaceDef { id: "cubes", name: "Cubes" },
-    FaceDef { id: "relations", name: "Relations" },
+    FaceDef {
+        id: "model",
+        name: "Model",
+    },
+    FaceDef {
+        id: "cubes",
+        name: "Cubes",
+    },
+    FaceDef {
+        id: "relations",
+        name: "Relations",
+    },
 ];
-const CONNECTOR_FACE: FaceDef = FaceDef { id: "connector", name: "Connector" };
+const CONNECTOR_FACE: FaceDef = FaceDef {
+    id: "connector",
+    name: "Connector",
+};
 const PROFILE_FACES: &[FaceDef] = &[
-    FaceDef { id: "profile", name: "Profile" },
-    FaceDef { id: "persona", name: "Persona" },
-    FaceDef { id: "relations", name: "Relations" },
+    FaceDef {
+        id: "profile",
+        name: "Profile",
+    },
+    FaceDef {
+        id: "persona",
+        name: "Persona",
+    },
+    FaceDef {
+        id: "relations",
+        name: "Relations",
+    },
 ];
 
 /// Release deck tile id → `VoiceModel.id`. Card ids are not catalog engine ids.
@@ -227,7 +262,9 @@ const RELEASE_ENGINES: &[(&str, &str)] = &[
     ("engine-misaki", "misaki"),
 ];
 
-const RELEASE_CONNECTORS: &[&str] = &["mcp", "acp", "harness", "copilot", "claude", "gpt", "gemini"];
+const RELEASE_CONNECTORS: &[&str] = &[
+    "mcp", "acp", "harness", "copilot", "claude", "gpt", "gemini",
+];
 
 #[derive(Clone, Debug)]
 pub struct Viewport {
@@ -248,7 +285,14 @@ pub struct Viewport {
     names: BTreeMap<String, String>,
 }
 
-fn install_deck_view(vp: &mut Viewport, id: &str, title: &str, kind: &str, home: &str, honesty: &str) {
+fn install_deck_view(
+    vp: &mut Viewport,
+    id: &str,
+    title: &str,
+    kind: &str,
+    home: &str,
+    honesty: &str,
+) {
     vp.assets.insert(
         id.to_string(),
         Asset {
@@ -279,7 +323,13 @@ fn install_enveloped_library_views(vp: &mut Viewport, envelopes: &[Value]) -> Re
         let Some(clip) = catalog::library_clip(id) else {
             return Err(format!("audio_clip envelope {id} has no catalog row"));
         };
-        install_library_view(vp, clip.id, clip.title, clip.synthesized_speech, clip.wav_url.is_some());
+        install_library_view(
+            vp,
+            clip.id,
+            clip.title,
+            clip.synthesized_speech,
+            clip.wav_url.is_some(),
+        );
     }
     Ok(())
 }
@@ -305,7 +355,12 @@ fn install_library_view(
             title: title.to_string(),
             honesty: honesty.into(),
             duration_s: None,
-            media: if wav_present { "present" } else { "wav_missing" }.into(),
+            media: if wav_present {
+                "present"
+            } else {
+                "wav_missing"
+            }
+            .into(),
             display_rev: 1,
         },
     );
@@ -363,10 +418,12 @@ impl Viewport {
             .iter()
             .filter_map(|id| crate::asset_catalog::baked_asset("audio_clip", id))
             .collect();
-        install_enveloped_library_views(&mut vp, &envelopes)
-            .expect("release library envelopes");
+        install_enveloped_library_views(&mut vp, &envelopes).expect("release library envelopes");
         for clip in catalog::library_clips() {
-            if envelopes.iter().any(|asset| asset.get("legacy_id").and_then(Value::as_str) == Some(clip.id)) {
+            if envelopes
+                .iter()
+                .any(|asset| asset.get("legacy_id").and_then(Value::as_str) == Some(clip.id))
+            {
                 continue;
             }
             install_library_view(
@@ -378,12 +435,28 @@ impl Viewport {
             );
         }
         for (tile, engine_id) in RELEASE_ENGINES {
-            let title = catalog::voice_model(engine_id).map(|model| model.label).unwrap_or(engine_id);
-            install_deck_view(&mut vp, tile, title, "voice_model", "slide:models", "library");
+            let title = catalog::voice_model(engine_id)
+                .map(|model| model.label)
+                .unwrap_or(engine_id);
+            install_deck_view(
+                &mut vp,
+                tile,
+                title,
+                "voice_model",
+                "slide:models",
+                "library",
+            );
         }
         for connector in RELEASE_CONNECTORS {
             let tile = format!("conn-{connector}");
-            install_deck_view(&mut vp, &tile, connector, "connector", "slide:connectors", "connector");
+            install_deck_view(
+                &mut vp,
+                &tile,
+                connector,
+                "connector",
+                "slide:connectors",
+                "connector",
+            );
         }
         for person in catalog::personas() {
             let id = format!("profile-{}", person.id);
@@ -874,6 +947,7 @@ impl Viewport {
             "face_id": face.id,
             "face_index": index,
             "face_count": count,
+            "ids": faces.iter().map(|face| face.id).collect::<Vec<_>>(),
             // One release. The desktop still reads args.flipped (`!== false`
             // is the back face). C-M4 switches that read to face_index.
             "flipped": index != 0,
@@ -889,11 +963,18 @@ impl Viewport {
         let Some(view) = self.views.iter().find(|item| item.id == view_id) else {
             return Vec::new();
         };
-        let kind = self.assets.get(&view.asset).map(|asset| asset.kind.as_str()).unwrap_or("");
+        let kind = self
+            .assets
+            .get(&view.asset)
+            .map(|asset| asset.kind.as_str())
+            .unwrap_or("");
         let tile = view_id.strip_prefix("view:").unwrap_or(view_id);
         match kind {
             "audio_clip" => {
-                let wav = self.assets.get(&view.asset).is_some_and(|asset| asset.media == "present");
+                let wav = self
+                    .assets
+                    .get(&view.asset)
+                    .is_some_and(|asset| asset.media == "present");
                 CLIP_FACES
                     .iter()
                     .copied()
@@ -935,9 +1016,18 @@ impl Viewport {
                     })
                     .collect()
             }
-            "cube" => vec![FaceDef { id: "cube", name: "Cube" }],
-            "spectrogram" => vec![FaceDef { id: "spectrogram", name: "Spectrogram" }],
-            "video" => vec![FaceDef { id: "video", name: "Video" }],
+            "cube" => vec![FaceDef {
+                id: "cube",
+                name: "Cube",
+            }],
+            "spectrogram" => vec![FaceDef {
+                id: "spectrogram",
+                name: "Spectrogram",
+            }],
+            "video" => vec![FaceDef {
+                id: "video",
+                name: "Video",
+            }],
             _ => Vec::new(),
         }
     }
@@ -1102,7 +1192,9 @@ fn model_row(engine_id: &str) -> Option<Value> {
 }
 
 fn clips_naming(engine_id: &str, key: &str) -> Vec<Value> {
-    let Some(uid) = model_row(engine_id).and_then(|row| row.get("uid").and_then(Value::as_str).map(str::to_string)) else {
+    let Some(uid) = model_row(engine_id)
+        .and_then(|row| row.get("uid").and_then(Value::as_str).map(str::to_string))
+    else {
         return Vec::new();
     };
     catalog_rows()
@@ -1118,16 +1210,25 @@ fn clips_naming(engine_id: &str, key: &str) -> Vec<Value> {
 }
 
 fn envelope_has_wav(asset: &Value) -> bool {
-    asset.get("media").and_then(Value::as_array).is_some_and(|items| {
-        items.iter().any(|item| item.get("role").and_then(Value::as_str) == Some("wav"))
-    })
+    asset
+        .get("media")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("role").and_then(Value::as_str) == Some("wav"))
+        })
 }
 
 fn engine_is_g2p(engine_id: &str) -> bool {
     model_row(engine_id).is_some_and(|row| {
         row.pointer("/honesty/claims")
             .and_then(Value::as_array)
-            .is_some_and(|claims| claims.iter().any(|claim| claim.as_str() == Some("g2p_only")))
+            .is_some_and(|claims| {
+                claims
+                    .iter()
+                    .any(|claim| claim.as_str() == Some("g2p_only"))
+            })
     })
 }
 
@@ -1137,18 +1238,27 @@ fn engine_has_cube_row(engine_id: &str) -> bool {
     if engine_is_g2p(engine_id) {
         return false;
     }
-    clips_naming(engine_id, "voice_model").iter().any(envelope_has_wav)
+    clips_naming(engine_id, "voice_model")
+        .iter()
+        .any(envelope_has_wav)
 }
 
 /// Catalog tiles with no envelope are not link targets. Profiles count when
 /// their `voiceModel` is this engine.
 fn engine_has_link(engine_id: &str) -> bool {
-    if !clips_naming(engine_id, "voice_model").is_empty() || !clips_naming(engine_id, "g2p_model").is_empty() {
+    if !clips_naming(engine_id, "voice_model").is_empty()
+        || !clips_naming(engine_id, "g2p_model").is_empty()
+    {
         return true;
     }
     catalog::personas().iter().any(|person| {
         catalog::voice_profile_value(person.id)
-            .and_then(|value| value.get("voiceModel").and_then(Value::as_str).map(str::to_string))
+            .and_then(|value| {
+                value
+                    .get("voiceModel")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .as_deref()
             == Some(engine_id)
     })
@@ -1158,15 +1268,26 @@ fn engine_has_link(engine_id: &str) -> bool {
 /// when its catalog `engine_id` is a real voice model.
 fn clip_has_relation(tile: &str) -> bool {
     if let Some(asset) = crate::asset_catalog::baked_asset("audio_clip", tile) {
-        let named = asset.pointer("/provenance/voice_model").and_then(Value::as_str).is_some()
-            || asset.pointer("/provenance/g2p_model").and_then(Value::as_str).is_some();
+        let named = asset
+            .pointer("/provenance/voice_model")
+            .and_then(Value::as_str)
+            .is_some()
+            || asset
+                .pointer("/provenance/g2p_model")
+                .and_then(Value::as_str)
+                .is_some();
         if named {
             return true;
         }
         let uid = asset.get("uid").and_then(Value::as_str).unwrap_or("");
         return catalog_rows().iter().any(|row| {
-            matches!(row.get("kind").and_then(Value::as_str), Some("cube_ihdr" | "spectrogram_2d"))
-                && row.get("src").and_then(Value::as_array).is_some_and(|src| src.iter().any(|item| item.as_str() == Some(uid)))
+            matches!(
+                row.get("kind").and_then(Value::as_str),
+                Some("cube_ihdr" | "spectrogram_2d")
+            ) && row
+                .get("src")
+                .and_then(Value::as_array)
+                .is_some_and(|src| src.iter().any(|item| item.as_str() == Some(uid)))
         });
     }
     catalog::library_clip(tile).is_some_and(|clip| catalog::voice_model(clip.engine_id).is_some())
@@ -1174,13 +1295,21 @@ fn clip_has_relation(tile: &str) -> bool {
 
 fn persona_face_applies(persona_id: &str) -> bool {
     catalog::persona(persona_id).is_some_and(|person| {
-        !person.domain.is_empty() || !person.accent.is_empty() || !person.traits.is_empty() || !person.refs.is_empty()
+        !person.domain.is_empty()
+            || !person.accent.is_empty()
+            || !person.traits.is_empty()
+            || !person.refs.is_empty()
     })
 }
 
 fn profile_names_a_voice_model(persona_id: &str) -> bool {
     catalog::voice_profile_value(persona_id)
-        .and_then(|value| value.get("voiceModel").and_then(Value::as_str).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("voiceModel")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .is_some_and(|engine_id| catalog::voice_model(&engine_id).is_some())
 }
 
@@ -1569,7 +1698,11 @@ fn read_cube(clip: &Value, cube: &Value) -> CubeRead {
                 "of_s": ok.of_s,
                 "ratio": ok.ratio
             });
-            let status = if ok.partial.is_some() { "partial" } else { "real" };
+            let status = if ok.partial.is_some() {
+                "partial"
+            } else {
+                "real"
+            };
             CubeRead {
                 status,
                 reason: None,
@@ -1767,11 +1900,17 @@ fn connector_section(tile: &str, rows: &[Value]) -> Option<Value> {
 }
 
 fn connector_mode_is_known(mode: &str) -> bool {
-    matches!(mode,     "live" | "configured" | "local" | "mock" | "token_present" | "misconfigured")
+    matches!(
+        mode,
+        "live" | "configured" | "local" | "mock" | "token_present" | "misconfigured"
+    )
 }
 
 fn profile_section(person: &catalog::Persona, value: &Value) -> Value {
-    let voice = value.get("voiceModel").and_then(Value::as_str).unwrap_or("pending");
+    let voice = value
+        .get("voiceModel")
+        .and_then(Value::as_str)
+        .unwrap_or("pending");
     json!({
         "id": "profile",
         "status": "real",
@@ -1889,9 +2028,12 @@ fn profile_relations(person: &catalog::Persona, rows: &[Value]) -> Option<Value>
         }
     }
     if links.iter().all(|link| link["rel"] != "voice_model") {
-        if let Some(engine_id) = catalog::voice_profile_value(person.id)
-            .and_then(|value| value.get("voiceModel").and_then(Value::as_str).map(str::to_string))
-        {
+        if let Some(engine_id) = catalog::voice_profile_value(person.id).and_then(|value| {
+            value
+                .get("voiceModel")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        }) {
             if let Some(model) = find_kind(rows, "voice_model", &engine_id) {
                 push_ga_link(&mut links, "voice_model", uid_of(model), rows);
             }
@@ -2019,7 +2161,8 @@ fn own_cube<'a>(rows: &'a [Value], clip_uid: &str) -> Option<&'a Value> {
 
 fn own_spectrogram<'a>(rows: &'a [Value], clip_uid: &str) -> Option<&'a Value> {
     rows.iter().find(|asset| {
-        asset.get("kind").and_then(Value::as_str) == Some("spectrogram_2d") && src_exact(asset, clip_uid)
+        asset.get("kind").and_then(Value::as_str) == Some("spectrogram_2d")
+            && src_exact(asset, clip_uid)
     })
 }
 
@@ -2051,13 +2194,18 @@ fn layer_method_of(asset: &Value) -> Option<&str> {
     asset
         .pointer("/provenance/layer_method")
         .and_then(Value::as_str)
-        .or_else(|| asset.pointer("/fields/layer_method").and_then(Value::as_str))
+        .or_else(|| {
+            asset
+                .pointer("/fields/layer_method")
+                .and_then(Value::as_str)
+        })
 }
 
 fn src_exact(asset: &Value, uid: &str) -> bool {
-    asset.get("src").and_then(Value::as_array).is_some_and(|src| {
-        src.len() == 1 && src.first().and_then(Value::as_str) == Some(uid)
-    })
+    asset
+        .get("src")
+        .and_then(Value::as_array)
+        .is_some_and(|src| src.len() == 1 && src.first().and_then(Value::as_str) == Some(uid))
 }
 
 fn src_contains(asset: &Value, uid: &str) -> bool {
@@ -2076,15 +2224,25 @@ fn bound_to(asset: &Value) -> Vec<&str> {
 }
 
 fn has_wav(asset: &Value) -> bool {
-    asset.get("media").and_then(Value::as_array).is_some_and(|items| {
-        items.iter().any(|item| item.get("role").and_then(Value::as_str) == Some("wav"))
-    })
+    asset
+        .get("media")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("role").and_then(Value::as_str) == Some("wav"))
+        })
 }
 
 fn media_item<'a>(asset: &'a Value, role: &str) -> Option<&'a Value> {
-    asset.get("media").and_then(Value::as_array).and_then(|items| {
-        items.iter().find(|item| item.get("role").and_then(Value::as_str) == Some(role))
-    })
+    asset
+        .get("media")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("role").and_then(Value::as_str) == Some(role))
+        })
 }
 
 fn media_sha<'a>(asset: &'a Value, role: &str) -> Option<&'a str> {
@@ -2092,7 +2250,10 @@ fn media_sha<'a>(asset: &'a Value, role: &str) -> Option<&'a str> {
 }
 
 fn sha_matches(clip: &Value, derived: &Value) -> bool {
-    match (media_sha(clip, "wav"), text_at(derived, "/fields/source_sha256")) {
+    match (
+        media_sha(clip, "wav"),
+        text_at(derived, "/fields/source_sha256"),
+    ) {
         (Some(wav), Some(source)) => wav == source,
         _ => false,
     }
@@ -2381,9 +2542,10 @@ mod tests {
     /// LibraryClip ids in `viewport.release.json`.
     #[test]
     fn release_library_views_match_the_release_deck() {
-        let document: Value =
-            serde_json::from_str(include_str!("../../../schemas/examples/viewport.release.json"))
-                .unwrap();
+        let document: Value = serde_json::from_str(include_str!(
+            "../../../schemas/examples/viewport.release.json"
+        ))
+        .unwrap();
         let mut cards: Vec<String> = document["cards"]
             .as_array()
             .unwrap()
@@ -2431,7 +2593,10 @@ mod tests {
         let err = install_enveloped_library_views(&mut vp, &[orphan]).unwrap_err();
         assert!(err.contains("lib-orphan-envelope"), "{err}");
         assert_eq!(vp.views.len(), before, "orphan envelope installed a view");
-        assert!(vp.views.iter().all(|view| view.asset != "lib-orphan-envelope"));
+        assert!(vp
+            .views
+            .iter()
+            .all(|view| view.asset != "lib-orphan-envelope"));
     }
 
     /// §2: M is the faces that apply. A full table for every tile, or a join on
@@ -2441,17 +2606,35 @@ mod tests {
         let doc = Viewport::release().snapshot();
         let faces = &doc["ui"]["faces"];
         let expected: &[(&str, &[&str])] = &[
-            ("view:lib-misaki-kokoro", &["clip", "cube", "layers", "spectrogram", "relations"]),
-            ("view:lib-cube-explainer", &["clip", "cube", "layers", "spectrogram", "relations"]),
-            ("view:lib-bitdot-braille-vibevoice", &["clip", "cube", "layers", "spectrogram", "relations"]),
-            ("view:lib-kokoro", &["clip", "cube", "layers", "spectrogram", "relations"]),
-            ("view:lib-kokoro-onnx", &["clip", "cube", "layers", "spectrogram", "relations"]),
+            (
+                "view:lib-misaki-kokoro",
+                &["clip", "cube", "layers", "spectrogram", "relations"],
+            ),
+            (
+                "view:lib-cube-explainer",
+                &["clip", "cube", "layers", "spectrogram", "relations"],
+            ),
+            (
+                "view:lib-bitdot-braille-vibevoice",
+                &["clip", "cube", "layers", "spectrogram", "relations"],
+            ),
+            (
+                "view:lib-kokoro",
+                &["clip", "cube", "layers", "spectrogram", "relations"],
+            ),
+            (
+                "view:lib-kokoro-onnx",
+                &["clip", "cube", "layers", "spectrogram", "relations"],
+            ),
             ("view:lib-magpie", &["clip", "relations"]),
             ("view:lib-vibevoice", &["clip", "relations"]),
             ("view:lib-pocket", &["clip", "relations"]),
             ("view:engine-kokoro", &["model", "cubes", "relations"]),
             ("view:engine-vibevoice", &["model", "cubes", "relations"]),
-            ("view:engine-kokoro-dayour", &["model", "cubes", "relations"]),
+            (
+                "view:engine-kokoro-dayour",
+                &["model", "cubes", "relations"],
+            ),
             ("view:engine-misaki", &["model", "relations"]),
             ("view:engine-magpie", &["model"]),
             ("view:engine-pocket", &["model"]),
@@ -2464,19 +2647,39 @@ mod tests {
             ("view:conn-gemini", &["connector"]),
             ("view:profile-anton", &["profile", "persona", "relations"]),
             ("view:profile-alice", &["profile", "persona", "relations"]),
-            ("view:profile-khortana", &["profile", "persona", "relations"]),
+            (
+                "view:profile-khortana",
+                &["profile", "persona", "relations"],
+            ),
             ("view:profile-rocky", &["profile", "persona", "relations"]),
             ("view:profile-optimus", &["profile", "persona", "relations"]),
         ];
         for (view, ids) in expected {
             let got: Vec<String> = faces[view]["ids"]
                 .as_array()
-                .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
-            assert_eq!(got, ids.iter().map(|id| (*id).to_string()).collect::<Vec<_>>(), "{view} faces {faces}");
-            assert_eq!(faces[view]["face_count"].as_u64(), Some(ids.len() as u64), "{view}");
+            assert_eq!(
+                got,
+                ids.iter().map(|id| (*id).to_string()).collect::<Vec<_>>(),
+                "{view} faces {faces}"
+            );
+            assert_eq!(
+                faces[view]["face_count"].as_u64(),
+                Some(ids.len() as u64),
+                "{view}"
+            );
             assert_eq!(faces[view]["face_index"].as_u64(), Some(0), "{view}");
-            assert_eq!(faces[view]["face_id"].as_str(), ids.first().copied(), "{view}");
+            assert_eq!(
+                faces[view]["face_id"].as_str(),
+                ids.first().copied(),
+                "{view}"
+            );
         }
     }
 
@@ -2809,6 +3012,10 @@ mod tests {
         assert_eq!(moved["face_id"], "spectrogram");
         assert_eq!(moved["face_index"], 3);
         assert_eq!(moved["face_count"], 5);
+        assert_eq!(
+            moved["ids"],
+            json!(["clip", "cube", "layers", "spectrogram", "relations"])
+        );
         let snap = vp.snapshot();
         assert_eq!(
             snap["ui"]["faces"]["view:lib-misaki-kokoro"]["face_id"],
@@ -3185,7 +3392,8 @@ mod tests {
         const BITDOT_CUBE: &str = "ga:cube_ihdr:dqufjgk2q4nj575exlfy7ecxqe";
         const MAGPIE_MODEL: &str = "ga:voice_model:o53lz7hkeahddsosxzoua4raim";
         const KOKORO_MODEL: &str = "ga:voice_model:i4uzucqkja4nawtxlnu2m3vcta";
-        const GENERATOR_SHA: &str = "410fa703e71f9e52bc0b8774f5f850f5ee1daa562c22c22641b89e247d62db35";
+        const GENERATOR_SHA: &str =
+            "410fa703e71f9e52bc0b8774f5f850f5ee1daa562c22c22641b89e247d62db35";
         const EXPLAINER_CLIP: &str = "ga:audio_clip:33g2yv7vmahe5hzxn2e6p57fuy";
 
         let snap = Viewport::release().snapshot();
@@ -3200,7 +3408,9 @@ mod tests {
         assert_eq!(magpie_cube["tile_ids"], json!(["lib-magpie"]));
         assert!(magpie_cube.get("cube_uid").is_none(), "{magpie_cube}");
         assert!(section(&magpie, "model_cubes").is_none(), "{magpie:?}");
-        let magpie_rel = section(&magpie, "relations").cloned().unwrap_or(Value::Null);
+        let magpie_rel = section(&magpie, "relations")
+            .cloned()
+            .unwrap_or(Value::Null);
         assert_eq!(magpie_rel["status"], "pending");
         assert_eq!(magpie_rel["reason"], "no_envelope");
         assert_eq!(magpie_rel["tile_ids"], json!(["lib-magpie"]));
@@ -3227,7 +3437,10 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0]["clip_uid"], BITDOT_CLIP);
         assert_eq!(rows[0]["cube_uid"], BITDOT_CUBE);
-        assert!(rows[0]["cube_uid"].as_str().unwrap().starts_with("ga:cube_ihdr:"));
+        assert!(rows[0]["cube_uid"]
+            .as_str()
+            .unwrap()
+            .starts_with("ga:cube_ihdr:"));
 
         let misaki = view_sections(&snap, "lib-misaki-kokoro");
         assert_eq!(misaki[0]["id"], "identity");
@@ -3254,7 +3467,9 @@ mod tests {
             .map(|fact| fact["label"].as_str().unwrap())
             .collect();
         assert!(labels.iter().any(|label| label.contains("inverse-HDR")));
-        assert!(labels.iter().all(|label| !label.to_ascii_lowercase().contains("loudness")));
+        assert!(labels
+            .iter()
+            .all(|label| !label.to_ascii_lowercase().contains("loudness")));
         let layers = section(&misaki, "layers").unwrap();
         assert_eq!(layers["status"], "pending");
         let names: Vec<&str> = layers["layers"]
@@ -3265,7 +3480,10 @@ mod tests {
             .collect();
         assert_eq!(names, ["signal", "tonality", "confidence", "quality"]);
         assert_eq!(layers["layers"][0]["formula"]["text"], "pending");
-        assert_eq!(layers["layers"][0]["formula"]["ref"]["symbol"], "compute_layers");
+        assert_eq!(
+            layers["layers"][0]["formula"]["ref"]["symbol"],
+            "compute_layers"
+        );
         assert_eq!(
             layers["layers"][0]["formula"]["ref"]["generator_sha256"],
             GENERATOR_SHA
@@ -3299,7 +3517,9 @@ mod tests {
 
         let misaki_model = view_sections(&snap, "engine-misaki");
         assert!(section(&misaki_model, "model_cubes").is_none());
-        assert!(misaki_model.iter().all(|item| item["reason"] != "wav_missing"));
+        assert!(misaki_model
+            .iter()
+            .all(|item| item["reason"] != "wav_missing"));
         assert_eq!(section(&misaki_model, "model").unwrap()["waveform"], false);
         let g2p_targets: Vec<&str> = section(&misaki_model, "relations").unwrap()["links"]
             .as_array()
@@ -3310,7 +3530,8 @@ mod tests {
         assert!(g2p_targets.contains(&MISAKI_CLIP));
         assert!(g2p_targets.iter().all(|uid| uid.starts_with("ga:")));
 
-        let dayour = section(&view_sections(&snap, "engine-kokoro-dayour"), "model_cubes").unwrap()["rows"]
+        let dayour = section(&view_sections(&snap, "engine-kokoro-dayour"), "model_cubes").unwrap()
+            ["rows"]
             .as_array()
             .unwrap()
             .iter()
@@ -3338,14 +3559,30 @@ mod tests {
 
         let anton = view_sections(&snap, "profile-anton");
         assert_eq!(section(&anton, "profile").unwrap()["name"], "Anton");
-        assert_eq!(section(&anton, "profile").unwrap()["voice_model"], "kokoro_onnx");
-        assert_eq!(section(&anton, "persona").unwrap()["refs"][0], "persona:anton");
-        let anton_links = section(&anton, "relations").unwrap()["links"].as_array().unwrap();
-        assert!(anton_links.iter().any(|link| link["target_uid"] == KOKORO_MODEL));
+        assert_eq!(
+            section(&anton, "profile").unwrap()["voice_model"],
+            "kokoro_onnx"
+        );
+        assert_eq!(
+            section(&anton, "persona").unwrap()["refs"][0],
+            "persona:anton"
+        );
+        let anton_links = section(&anton, "relations").unwrap()["links"]
+            .as_array()
+            .unwrap();
+        assert!(anton_links
+            .iter()
+            .any(|link| link["target_uid"] == KOKORO_MODEL));
         let optimus = view_sections(&snap, "profile-optimus");
-        let optimus_links = section(&optimus, "relations").unwrap()["links"].as_array().unwrap();
-        assert!(optimus_links.iter().any(|link| link["target_uid"] == EXPLAINER_CLIP));
-        assert!(optimus_links.iter().all(|link| link["target_uid"].as_str().unwrap().starts_with("ga:")));
+        let optimus_links = section(&optimus, "relations").unwrap()["links"]
+            .as_array()
+            .unwrap();
+        assert!(optimus_links
+            .iter()
+            .any(|link| link["target_uid"] == EXPLAINER_CLIP));
+        assert!(optimus_links
+            .iter()
+            .all(|link| link["target_uid"].as_str().unwrap().starts_with("ga:")));
 
         let video = facts("clip:video", "video", "Video", "pending", "pending");
         let video_section = section(&video, "video").cloned().unwrap_or(Value::Null);
@@ -3356,8 +3593,13 @@ mod tests {
 
         for view in snap["views"].as_array().unwrap() {
             let faces = view["faces"].as_array().unwrap();
-            assert!(faces.iter().all(|face| face["id"] != "summary" && face["id"] != "details"));
-            if let Some(relations) = section(view["snapshot"]["sections"].as_array().unwrap(), "relations") {
+            assert!(faces
+                .iter()
+                .all(|face| face["id"] != "summary" && face["id"] != "details"));
+            if let Some(relations) = section(
+                view["snapshot"]["sections"].as_array().unwrap(),
+                "relations",
+            ) {
                 if let Some(links) = relations["links"].as_array() {
                     for link in links {
                         let target = link["target_uid"].as_str().unwrap();
@@ -3366,12 +3608,21 @@ mod tests {
                     }
                 }
             }
-            if let Some(cubes) = section(view["snapshot"]["sections"].as_array().unwrap(), "model_cubes") {
+            if let Some(cubes) = section(
+                view["snapshot"]["sections"].as_array().unwrap(),
+                "model_cubes",
+            ) {
                 for row in cubes["rows"].as_array().unwrap() {
                     let cube_uid = row["cube_uid"].as_str().unwrap();
                     assert!(cube_uid.starts_with("ga:cube_ihdr:"), "{cube_uid}");
-                    assert!(crate::asset_catalog::require(cube_uid).is_ok(), "{cube_uid}");
-                    assert!(row["clip_uid"].as_str().unwrap().starts_with("ga:audio_clip:"));
+                    assert!(
+                        crate::asset_catalog::require(cube_uid).is_ok(),
+                        "{cube_uid}"
+                    );
+                    assert!(row["clip_uid"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("ga:audio_clip:"));
                 }
             }
         }

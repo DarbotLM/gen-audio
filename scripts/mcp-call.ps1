@@ -48,9 +48,34 @@ catch { Write-Verbose "Console output encoding unchanged: $($_.Exception.Message
 . (Join-Path $PSScriptRoot 'lib\runtime-config.ps1')
 $runtimeConfig = Read-GenAudioRuntimeConfig -RepoRoot (Split-Path -Parent $PSScriptRoot)
 
+function Test-McpLoopbackAddress {
+    param([Parameter(Mandatory = $true)][string]$Address)
+    try {
+        $uri = [Uri]::new("http://$Address")
+        $uriHost = $uri.Host.Trim('[', ']')
+        if ($uriHost -eq 'localhost') { return $true }
+        $ip = $null
+        return ([Net.IPAddress]::TryParse($uriHost, [ref]$ip) -and [Net.IPAddress]::IsLoopback($ip))
+    } catch {
+        return $false
+    }
+}
+
+function Test-McpCredential {
+    param([string]$Token)
+    return (-not $Token) -or ($Token -match '^[0-9a-fA-F]{64}$')
+}
+
 function Invoke-JsonRpc {
-    param([Parameter(Mandatory = $true)][string]$Address, [Parameter(Mandatory = $true)][string]$Body, [int]$Timeout = 5)
-    $response = Invoke-WebRequest -Uri "http://$Address/mcp" -Method POST -ContentType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($Body)) -UseBasicParsing -TimeoutSec $Timeout
+    param(
+        [Parameter(Mandatory = $true)][string]$Address,
+        [Parameter(Mandatory = $true)][string]$Body,
+        [string]$Token = '',
+        [int]$Timeout = 5
+    )
+    $headers = @{}
+    if ($Token) { $headers['Authorization'] = "Bearer $Token" }
+    $response = Invoke-WebRequest -Uri "http://$Address/mcp" -Method POST -ContentType 'application/json' -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($Body)) -UseBasicParsing -TimeoutSec $Timeout
     $text = $response.Content
     if ($text -is [byte[]]) { $text = [System.Text.Encoding]::UTF8.GetString($text) }
     return $text
@@ -58,10 +83,10 @@ function Invoke-JsonRpc {
 
 function Test-GenAudioMcp {
     [OutputType([bool])]
-    param([Parameter(Mandatory = $true)][string]$Address)
-    $init = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"mcp-call","version":"0.1.0"}}}'
+    param([Parameter(Mandatory = $true)][string]$Address, [string]$Token = '')
+    $init = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"mcp-call","version":"0.1.0"}}}'
     try {
-        $reply = (Invoke-JsonRpc -Address $Address -Body $init -Timeout 3) | ConvertFrom-Json
+        $reply = (Invoke-JsonRpc -Address $Address -Token $Token -Body $init -Timeout 3) | ConvertFrom-Json
         return ($reply.result.serverInfo.name -eq 'gen-audio')
     } catch {
         Write-Verbose "no Gen-Audio MCP at ${Address}: $($_.Exception.Message)"
@@ -82,7 +107,12 @@ $candidates = New-Object System.Collections.Generic.List[string]
 if ($Port -gt 0) {
     $candidates.Add("127.0.0.1:$Port")
 } else {
-    if ($env:GEN_AUDIO_MCP_ADDR) { $candidates.Add($env:GEN_AUDIO_MCP_ADDR) }
+    if ($env:GEN_AUDIO_MCP_ADDR) {
+        if (-not (Test-McpLoopbackAddress -Address $env:GEN_AUDIO_MCP_ADDR)) {
+            throw "GEN_AUDIO_MCP_ADDR must name a loopback MCP listener."
+        }
+        $candidates.Add($env:GEN_AUDIO_MCP_ADDR)
+    }
     $candidates.Add("127.0.0.1:$($runtimeConfig.ports.Mcp)")
     if ((Test-IsWindowsHost) -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
         $owners = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like 'gen-audio*' } | ForEach-Object { $_.Id })
@@ -97,14 +127,60 @@ if ($Port -gt 0) {
     }
 }
 
+$descriptorPath = if ($env:GEN_AUDIO_MCP_ADDR_FILE) {
+    $env:GEN_AUDIO_MCP_ADDR_FILE
+} else {
+    $runtimeConfig.mcpAddressFile
+}
+$descriptorToken = ''
+$descriptorAddr = ''
+if (Test-Path -LiteralPath $descriptorPath -PathType Leaf) {
+    try {
+        $descriptorLines = [IO.File]::ReadAllLines($descriptorPath)
+        if ($descriptorLines.Count -ge 3) {
+            $nextDescriptorAddr = $descriptorLines[0].Trim()
+            $nextDescriptorToken = $descriptorLines[2].Trim()
+            if (-not (Test-McpLoopbackAddress -Address $nextDescriptorAddr)) {
+                throw "MCP descriptor address must be loopback."
+            }
+            if (-not $nextDescriptorToken -or $nextDescriptorToken -notmatch '^[0-9a-fA-F]{64}$') {
+                throw "MCP descriptor credential must be nonempty and 64 hexadecimal digits."
+            }
+            $descriptorAddr = $nextDescriptorAddr
+            $descriptorToken = $nextDescriptorToken
+            if ($Port -eq 0 -and $descriptorAddr -and -not $candidates.Contains($descriptorAddr)) {
+                $candidates.Insert(0, $descriptorAddr)
+            }
+        }
+    } catch {
+        Write-Verbose "invalid MCP descriptor ${descriptorPath}: $($_.Exception.Message)"
+    }
+}
+$environmentToken = [Environment]::GetEnvironmentVariable('GEN_AUDIO_MCP_TOKEN', 'Process')
+if ($null -eq $environmentToken) { $environmentToken = '' }
+if (-not (Test-McpCredential -Token $environmentToken)) {
+    throw 'GEN_AUDIO_MCP_TOKEN must be 64 hexadecimal digits.'
+}
+
 $addr = $null
+$token = ''
 foreach ($candidate in $candidates) {
-    if (Test-GenAudioMcp -Address $candidate) { $addr = $candidate; break }
+    $candidateToken = ''
+    if ($environmentToken) {
+        $candidateToken = $environmentToken
+    } elseif ($candidate -eq $descriptorAddr -and $descriptorToken) {
+        $candidateToken = $descriptorToken
+    }
+    if (Test-GenAudioMcp -Address $candidate -Token $candidateToken) {
+        $addr = $candidate
+        $token = $candidateToken
+        break
+    }
 }
 if (-not $addr) { throw "no Gen-Audio MCP server answered initialize on: $($candidates -join ', ')" }
 
 $request = @{ jsonrpc = '2.0'; id = 2; method = 'tools/call'; params = @{ name = $Tool; arguments = $arguments } } | ConvertTo-Json -Depth 32 -Compress
-$text = Invoke-JsonRpc -Address $addr -Body $request -Timeout $TimeoutSec
+$text = Invoke-JsonRpc -Address $addr -Token $token -Body $request -Timeout $TimeoutSec
 if ($OutFile) {
     # The file holds the body and nothing else; the header goes to stderr.
     $outPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutFile)

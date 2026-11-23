@@ -23,33 +23,33 @@ dependencies = [
 
 [project.optional-dependencies]
 kokoro = [
-    "kokoro @ https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl",
-    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl",
-    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
+    "kokoro @ https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl",
+    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl",
+    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
     "fugashi>=1.5.2,<2",
     "jaconv>=0.5.0,<1",
     "pyopenjtalk-plus>=0.4.1.post9,<1",
 ]
 kokoro-onnx = [
-    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl",
-    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
+    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl",
+    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
     "fugashi>=1.5.2,<2",
     "jaconv>=0.5.0,<1",
     "pyopenjtalk-plus>=0.4.1.post9,<1",
 ]
 kokoro-torch = [
-    "kokoro @ https://github.com/DarbotLM/kokoro/releases/download/py314-2026.09.17/kokoro-0.9.4-py3-none-any.whl",
-    "misaki[en,zh] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
+    "kokoro @ https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl",
+    "misaki[en,zh] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
     "fugashi>=1.5.2,<2",
     "jaconv>=0.5.0,<1",
     "pyopenjtalk-plus>=0.4.1.post9,<1",
 ]
 kokoro-gpu = [
-    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.09.17/kokoro_onnx-0.6.1-py3-none-any.whl",
+    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl",
     "onnxruntime-gpu[cuda,cudnn]>=1.30.0,<2; (platform_machine == 'x86_64' or platform_machine == 'AMD64') and sys_platform != 'darwin'",
 ]
 misaki = [
-    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.09.17/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
+    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
     "fugashi>=1.5.2,<2",
     "jaconv>=0.5.0,<1",
     "pyopenjtalk-plus>=0.4.1.post9,<1",

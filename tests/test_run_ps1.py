@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 
@@ -68,6 +69,35 @@ def test_launch_plan_reads_checkout_descriptor_ports_without_user_env(tmp_path):
     assert "port=18002" in plan["arguments"][-1]
     assert plan["environment"]["GEN_AUDIO_NODE_PORT"] == "18002"
     assert plan["environment"]["GEN_AUDIO_MCP_ADDR"] == "127.0.0.1:18765"
+
+
+@pytest.mark.skipif(SHELL is None or os.name != "nt", reason="needs Windows PowerShell and listener metadata")
+def test_listener_preflight_names_the_port_owner_after_check_mode(tmp_path):
+    repo = tmp_path / "checkout"
+    scripts = repo / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    shutil.copy2(REPO / "scripts" / "run.ps1", scripts / "run.ps1")
+    shutil.copy2(REPO / "scripts" / "runtime.json", scripts / "runtime.json")
+    shutil.copy2(REPO / "scripts" / "lib" / "runtime-config.ps1", scripts / "lib" / "runtime-config.ps1")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        check = subprocess.run(
+            [SHELL, "-NoProfile", "-File", str(scripts / "run.ps1"),
+             "-Service", "Node", "-Port", str(port), "-Check"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=30,
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+        launch = subprocess.run(
+            [SHELL, "-NoProfile", "-File", str(scripts / "run.ps1"),
+             "-Service", "Node", "-Port", str(port)],
+            cwd=tmp_path, capture_output=True, text=True, timeout=30,
+        )
+        output = launch.stdout + launch.stderr
+        assert launch.returncode != 0, output
+        assert f"Port {port} is already in use by PID" in output
+        assert "Stop it or pass -Port <free port>" in output
 
 
 def _assert_lease_refused(canonical: str, tmp_path) -> None:
@@ -221,14 +251,15 @@ def test_toolbox_promotes_dot_sourced_library_functions(tmp_path):
 
 @pytest.mark.skipif(SHELL is None, reason="needs PowerShell")
 def test_native_build_entry_point_parses():
-    path = str(REPO / "scripts" / "build-tauri-windows.ps1").replace("'", "''")
-    result = subprocess.run(
-        [SHELL, "-NoProfile", "-Command",
-         f"$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('{path}',"
-         "[ref]$null,[ref]$e); if($e.Count){$e | Out-String | Write-Output; exit 1}"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    for script in ("build-tauri-windows.ps1", "pack-windows-msix-nuget.ps1"):
+        path = str(REPO / "scripts" / script).replace("'", "''")
+        result = subprocess.run(
+            [SHELL, "-NoProfile", "-Command",
+             f"$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('{path}',"
+             "[ref]$null,[ref]$e); if($e.Count){$e | Out-String | Write-Output; exit 1}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_toolbox_keeps_tls_verification_and_takes_a_configurable_index():

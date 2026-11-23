@@ -81,11 +81,23 @@ export async function postMcp(
   name: string,
   args: Record<string, unknown>,
   failures: McpFailureCounter,
+  token: string,
 ): Promise<unknown | null> {
+  if (!validMcpCredential(token)) {
+    failures.note(name, "credential");
+    return null;
+  }
   try {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    };
     const response = await fetchImpl(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
+      credentials: "omit",
+      cache: "no-store",
+      redirect: "error",
       // The exact body is the desktop half of the UI/agent contract
       // (schemas/examples/control/*.json, tested from both sides).
       body: JSON.stringify(mcpRequestBody(name, args)),
@@ -106,27 +118,45 @@ export async function postMcp(
 
 export interface McpStatusReport {
   addr?: string;
+  token?: string | null;
   handshake_ok?: boolean;
 }
 
+function validMcpCredential(token: string | null | undefined): token is string {
+  return typeof token === "string" && /^[a-fA-F0-9]{64}$/.test(token);
+}
+
+function validMcpAddress(addr: string | undefined): addr is string {
+  if (!addr || !/^127\.0\.0\.1:[1-9]\d{0,4}$/.test(addr)) return false;
+  const port = Number(addr.slice(addr.lastIndexOf(":") + 1));
+  return port >= 8765 && port <= 8770;
+}
+
 /**
- * Address from `mcp_status`. A failed handshake keeps `fallback` (8765) but
- * is counted and named. A report with an address and a handshake that is not
- * explicitly false replaces the fallback and counts nothing.
+ * Accept only a Tauri-reported owned listener with a valid bearer credential.
+ * The display fallback remains useful in status text, but carries no token and
+ * cannot be used for a connection.
  */
 export function mcpOriginFromStatus(
   report: McpStatusReport | null | undefined,
   fallback: string,
   failures: McpFailureCounter,
-): { origin: string; notice: string | null } {
-  if (report?.addr && report.handshake_ok !== false) {
-    return { origin: `http://${report.addr}`, notice: null };
+): { origin: string; token: string | null; notice: string | null } {
+  if (report?.handshake_ok === true && validMcpAddress(report.addr) && validMcpCredential(report.token)) {
+    return { origin: `http://${report.addr}`, token: report.token, notice: null };
   }
-  const kind = report?.handshake_ok === false ? "handshake" : "missing";
+  const kind = report?.handshake_ok === false
+    ? "handshake"
+    : report?.addr && !validMcpAddress(report.addr)
+      ? "address"
+      : report?.token !== undefined && !validMcpCredential(report.token)
+        ? "credential"
+        : "missing";
   failures.note("mcp_status", kind);
   return {
     origin: fallback,
-    notice: `MCP address lookup failed (${kind}); using ${fallback}`,
+    token: null,
+    notice: `MCP owned-listener lookup failed (${kind}); connections are disabled`,
   };
 }
 
@@ -134,7 +164,7 @@ export function mcpOriginFromStatus(
 export function noteMcpLookupError(error: unknown, fallback: string, failures: McpFailureCounter): string {
   const kind = error instanceof Error ? error.name : "error";
   failures.note("mcp_status", kind);
-  return `MCP address lookup failed (${kind}); using ${fallback}`;
+  return `MCP owned-listener lookup failed (${kind}); connections are disabled (${fallback})`;
 }
 
 /**
@@ -146,10 +176,20 @@ export async function fetchLibraryBlob(
   origin: string,
   urlPath: string,
   failures: McpFailureCounter,
+  token: string,
 ): Promise<Blob | null> {
   if (!urlPath.startsWith("/library/")) return null;
+  if (!validMcpCredential(token)) {
+    failures.note("library_media", "credential");
+    return null;
+  }
   try {
-    const response = await fetchImpl(`${origin}${urlPath}`);
+    const response = await fetchImpl(`${origin}${urlPath}`, {
+      headers: { authorization: `Bearer ${token}` },
+      credentials: "omit",
+      cache: "no-store",
+      redirect: "error",
+    });
     if (!response.ok) {
       failures.note("library_media", `http_${response.status}`);
       return null;
@@ -158,6 +198,77 @@ export async function fetchLibraryBlob(
   } catch (error) {
     failures.note("library_media", error instanceof Error ? error.name : "error");
     return null;
+  }
+}
+
+export interface ControlStreamHooks {
+  onOpen?: () => void;
+  onControl: (data: string) => void;
+  onGap: (data: string) => unknown | Promise<unknown>;
+}
+
+/**
+ * Consume the stateless SSE snapshot with header-only authorization. Native
+ * EventSource cannot set Authorization and must not receive a token in a URL.
+ */
+export async function consumeMcpControlStream(
+  fetchImpl: typeof fetch,
+  url: string,
+  token: string,
+  after: number,
+  failures: McpFailureCounter,
+  hooks: ControlStreamHooks,
+): Promise<void> {
+  if (!validMcpCredential(token) || !Number.isSafeInteger(after) || after < 0) {
+    throw new Error("Invalid MCP control connection");
+  }
+  const separator = url.includes("?") ? "&" : "?";
+  const response = await fetchImpl(`${url}${separator}after=${after}&wait=2000`, {
+    method: "GET",
+    headers: { authorization: `Bearer ${token}` },
+    credentials: "omit",
+    cache: "no-store",
+    redirect: "error",
+  });
+  if (!response.ok) {
+    failures.note("control_stream", `http_${response.status}`);
+    throw new Error(`MCP control stream HTTP ${response.status}`);
+  }
+  if (!response.body) throw new Error("MCP control stream body is missing");
+  hooks.onOpen?.();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let bytes = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 1024 * 1024) {
+        await reader.cancel();
+        throw new Error("MCP control stream exceeds limit");
+      }
+      buffered += decoder.decode(value, { stream: true });
+      while (true) {
+        const marker = /\r?\n\r?\n/.exec(buffered);
+        if (!marker) break;
+        const frame = buffered.slice(0, marker.index);
+        buffered = buffered.slice(marker.index + marker[0].length);
+        let event = "";
+        const data: string[] = [];
+        for (const line of frame.split(/\r?\n/)) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+        }
+        const payload = data.join("\n");
+        if (event === "control") hooks.onControl(payload);
+        else if (event === "gap") await hooks.onGap(payload);
+      }
+    }
+    buffered += decoder.decode();
+  } finally {
+    reader.releaseLock();
   }
 }
 

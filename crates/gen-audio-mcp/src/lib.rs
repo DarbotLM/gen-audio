@@ -16,6 +16,8 @@ use gen_audio_core::redact::redact_secrets;
 use gen_audio_core::serve::{self, health_url, node_base_url, ready_url};
 use serde_json::{json, Value};
 
+mod authoring;
+
 #[derive(Clone, Debug)]
 pub struct ToolError {
     pub code: i32,
@@ -56,8 +58,9 @@ fn next_server_id() -> u64 {
 impl Server {
     pub fn boot() -> Self {
         let scratch = if let Ok(raw) = std::env::var("GEN_AUDIO_WORK_DIR") {
-            Scratch::new(PathBuf::from(raw))
-                .expect("GEN_AUDIO_WORK_DIR must be outside the repository or under artifacts/runtime")
+            Scratch::new(PathBuf::from(raw)).expect(
+                "GEN_AUDIO_WORK_DIR must be outside the repository or under artifacts/runtime",
+            )
         } else {
             Scratch::create().expect("work directory")
         };
@@ -119,6 +122,7 @@ pub fn smoke() -> Result<String, String> {
         "ui_seek_report",
         "ui_set_sidepane",
         "ui_generate",
+        "master_audio",
         "library_list",
         "library_rename",
         "library_harvest",
@@ -133,6 +137,9 @@ pub fn smoke() -> Result<String, String> {
         "asset_resolve",
         "asset_list",
         "asset_glyph",
+        "script_analyze",
+        "draft_plan",
+        "draft_generate",
     ] {
         if !names.contains(&required) {
             return Err(format!("missing tool {required}"));
@@ -195,17 +202,40 @@ pub fn handle(server: &Server, message: Value) -> Result<Option<Value>, String> 
     }
 }
 
+/// MCP revisions this server speaks, oldest first.
+pub const SUPPORTED_PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+
+/// A known revision is echoed. A well-formed revision newer than the newest
+/// known one gets the newest known one back, which is how MCP negotiates.
+/// Anything older or malformed is refused.
+pub fn negotiate_protocol(requested: &str) -> Option<&'static str> {
+    if let Some(known) = SUPPORTED_PROTOCOLS
+        .iter()
+        .find(|version| **version == requested)
+    {
+        return Some(known);
+    }
+    let dated = requested.len() == 10
+        && requested.bytes().enumerate().all(|(index, byte)| {
+            if index == 4 || index == 7 {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit()
+            }
+        });
+    let newest = SUPPORTED_PROTOCOLS[SUPPORTED_PROTOCOLS.len() - 1];
+    (dated && requested > newest).then_some(newest)
+}
+
 fn initialize_result(params: &Value) -> Result<Value, (i32, String)> {
-    const SUPPORTED: &[&str] = &["2024-11-05", "2025-03-26"];
     let requested = params
         .get("protocolVersion")
         .and_then(Value::as_str)
         .unwrap_or("2024-11-05");
-    if !SUPPORTED.contains(&requested) {
-        return Err((-32602, format!("unsupported protocolVersion {requested}")));
-    }
+    let negotiated = negotiate_protocol(requested)
+        .ok_or_else(|| (-32602, format!("unsupported protocolVersion {requested}")))?;
     Ok(json!({
-        "protocolVersion": requested,
+        "protocolVersion": negotiated,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "gen-audio", "version": "0.1.0"},
         "instructions": "Stateless Gen-Audio MCP. initialize stores no session. UI tools queue a loopback command and do not write speech. Agent ids are personas (anton, alice, khortana, rocky, and the rest of the catalog), not connector ids. Voice ids are TTS models (kokoro_onnx, kokoro_dayour, misaki, vibevoice, vibevoice_realtime, magpie, pocket_tts). af_heart is a Kokoro pack ref, not a Voice id. GET /health is liveness. GET /ready means this listener is up, not that a model is loaded. GET /control/stream is a short stateless SSE snapshot."
@@ -213,9 +243,10 @@ fn initialize_result(params: &Value) -> Result<Value, (i32, String)> {
 }
 
 fn tool_defs() -> Vec<Value> {
-    vec![
+    let mut tools = vec![
         tool("synth", "Plan or run kokoro-onnx synthesis. Without model env vars this returns a refusal and writes no speech."),
         tool("improve", "Run the Python publish chain on a WAV already in the work directory."),
+        tool("master_audio", "Create a separate independently verified podcast master from an issued mono 24 kHz PCM16 WAV (up to 600 seconds). Rust runs bounded, shell-free FFmpeg two-pass loudness normalization to -16 LUFS/-1.5 dBTP/LRA 4 and persists a WAV plus JSON report. This is audio processing, not speech synthesis."),
         tool("spectrogram", "Run the Python spectrogram helper on work-directory WAVs."),
         tool("cube_revision", "Run the Python inverse-HDR cube revision sketch on a work-directory WAV."),
         tool("serve_health", "Probe a configured genaid-audio host. With no host the result is unconfigured and is not a live probe."),
@@ -227,7 +258,7 @@ fn tool_defs() -> Vec<Value> {
         tool("harness_plan", "Parse the sample script and return a harness-style plan. Does not synthesize."),
         tool("ui_navigate", "Queue a viewport slide change for the local Gen-Audio window. Does not render audio."),
         tool("ui_select_tile", "Queue selection of a card id. Loads a 3D cube only when that tile has cube JSON."),
-        tool("ui_flip", "Queue a flipcard. next:true advances one face and wraps. face selects an applicable id, or the front/back aliases. A bare call still means back. Optional personaId attaches the voice-profile payload. Does not render audio."),
+        tool("ui_flip", "Queue an explicit card flip. next:true advances one face and wraps. face selects an applicable id, or the front/back aliases. A bare call still means back. Optional personaId attaches the voice-profile payload. Does not render audio."),
         tool("ui_playback", "Queue play, pause, or seek for a library tile. A seek waits (waitMs, default 2000) for the window and returns {requested_t, landed_t, ok, reason}. Does not open the WAV in this process."),
         tool("ui_seek_report", "Desktop window only: report where a queued ui_playback seek (bus seq) landed. Records the result ui_playback returns."),
         tool("ui_cube", "Set the Cube tab mode: single, or compare (the clip's Library cube, library_r3, beside the same WAV's pipeline_r2 cube, one playback slice). compare takes tileId or uid. The desktop Compare button posts this same tool."),
@@ -245,7 +276,9 @@ fn tool_defs() -> Vec<Value> {
         tool("asset_resolve", "Resolve a ga1 asset uid (or a ga:<kind>: prefix of 8+ chars) from the library catalog. Media come back as /library URLs plus sha256."),
         tool("asset_list", "Page through library assets in uid order. Optional kind; limit 1 to 100 (default 50); cursor is the last uid returned."),
         tool("asset_glyph", "Braille glyph, dot pattern, kind hue class and aria label for a ga1 uid. Visual hint only; resolve by uid."),
-    ]
+    ];
+    tools.extend(authoring::definitions());
+    tools
 }
 
 static UID_PROP: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
@@ -275,6 +308,25 @@ fn tool(name: &str, description: &str) -> Value {
             json!({"input": {"type": "string"}, "output": {"type": "string"}}),
             json!(["input", "output"]),
         ),
+        "master_audio" => (
+            json!({
+                "input": {
+                    "type": "string",
+                    "minLength": 5,
+                    "maxLength": 180,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*\\.wav$",
+                    "description": "Issued scratch WAV basename; mono 24 kHz PCM16, at most 600 seconds."
+                },
+                "output": {
+                    "type": "string",
+                    "minLength": 5,
+                    "maxLength": 180,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*\\.wav$",
+                    "description": "Optional unique unused scratch WAV basename. Never overwrites the input."
+                }
+            }),
+            json!(["input"]),
+        ),
         "cube_revision" => (
             json!({"input": {"type": "string"}, "output": {"type": "string"}, "maxSteps": {"type": "integer"}}),
             json!(["input", "output"]),
@@ -296,9 +348,18 @@ fn tool(name: &str, description: &str) -> Value {
             }),
             json!(["slide"]),
         ),
-        "ui_select_tile" => (json!({"tileId": {"type": "string"}, "uid": UID_PROP.clone()}), json!([])),
-        "ui_flip" => (json!({"tileId": {"type": "string"}, "uid": UID_PROP.clone(), "view": {"type": "string"}, "next": {"type": "boolean"}, "flipped": {"type": "boolean"}, "face": {"type": "string"}, "section": {"type": "string"}, "personaId": {"type": "string"}}), json!([])),
-        "ui_playback" => (json!({"tileId": {"type": "string"}, "uid": UID_PROP.clone(), "action": {"type": "string"}, "seconds": {"type": "number"}, "origin": {"type": "string", "enum": ["user", "auto"], "description": "play only; default user"}, "waitMs": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "seek only; default 2000"}}), json!(["action"])),
+        "ui_select_tile" => (
+            json!({"tileId": {"type": "string"}, "uid": UID_PROP.clone()}),
+            json!([]),
+        ),
+        "ui_flip" => (
+            json!({"tileId": {"type": "string"}, "uid": UID_PROP.clone(), "view": {"type": "string"}, "next": {"type": "boolean"}, "flipped": {"type": "boolean"}, "face": {"type": "string"}, "section": {"type": "string"}, "personaId": {"type": "string"}}),
+            json!([]),
+        ),
+        "ui_playback" => (
+            json!({"tileId": {"type": "string"}, "uid": UID_PROP.clone(), "action": {"type": "string"}, "seconds": {"type": "number"}, "origin": {"type": "string", "enum": ["user", "auto"], "description": "play only; default user"}, "waitMs": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "seek only; default 2000"}}),
+            json!(["action"]),
+        ),
         "ui_cube" => (
             json!({
                 "mode": {"type": "string", "enum": control::CUBE_MODES, "description": "single, or compare (Library formulas rev 3 beside Pipeline formulas rev 2 on the same WAV)"},
@@ -365,10 +426,19 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
         .and_then(Value::as_str)
         .ok_or((-32602, "tools/call needs a name".into()))?;
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    if authoring::handles(name) {
+        let payload = authoring::call(name, &args).map_err(|error| (-32602, error))?;
+        return Ok(json!({
+            "content": [{"type": "text", "text": payload.to_string()}],
+            "isError": false
+        }));
+    }
     known_arguments(name, &args)?;
     let payload = match name {
         "synth" => synth(server, &args)?,
         "improve" => python_tool(server, PythonTool::Improve, &args)?,
+        "master_audio" => gen_audio_core::mastering::master(&server.scratch, &args)
+            .map_err(|error| (-32602, error))?,
         "spectrogram" => python_tool(server, PythonTool::Spectrogram, &args)?,
         "cube_revision" => python_tool(server, PythonTool::Cube, &args)?,
         "serve_health" => serve_health(&args)?,
@@ -386,7 +456,13 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
         "ui_select_tile" => control::ui_select_tile(&args)?,
         "ui_flip" => match control::ui_flip(&args) {
             Ok(value) => value,
-            Err((code, message, data)) => return Err(ToolError { code, message, data }),
+            Err((code, message, data)) => {
+                return Err(ToolError {
+                    code,
+                    message,
+                    data,
+                })
+            }
         },
         "ui_playback" => control::ui_playback(&args)?,
         "ui_cube" => control::ui_cube(&args)?,
@@ -432,6 +508,7 @@ fn allowed_arguments(name: &str) -> &'static [&'static str] {
             "improve",
         ],
         "improve" => &["input", "output"],
+        "master_audio" => &["input", "output"],
         "spectrogram" => &["before", "after"],
         "cube_revision" => &["input", "output", "maxSteps"],
         "serve_health" => &["host", "port", "probe"],
@@ -445,7 +522,16 @@ fn allowed_arguments(name: &str) -> &'static [&'static str] {
         | "voice_profile_list" => &[],
         "ui_navigate" => &["slide", "tileId", "uid"],
         "ui_select_tile" => &["tileId", "uid"],
-        "ui_flip" => &["tileId", "uid", "view", "next", "flipped", "face", "section", "personaId"],
+        "ui_flip" => &[
+            "tileId",
+            "uid",
+            "view",
+            "next",
+            "flipped",
+            "face",
+            "section",
+            "personaId",
+        ],
         "ui_playback" => &["tileId", "uid", "action", "seconds", "origin", "waitMs"],
         "ui_cube" => &["mode", "tileId", "uid"],
         "ui_seek_report" => &["seq", "requested_t", "landed_t", "ok", "reason"],
@@ -477,6 +563,15 @@ fn allowed_arguments(name: &str) -> &'static [&'static str] {
         "library_rename" => &["clipId", "semanticName", "faceName"],
         "library_harvest" => &["clipId", "personaId", "apply"],
         "cube_layers" => &["clipId"],
+        "script_analyze" => &[
+            "scriptText",
+            "agents",
+            "indexing",
+            "durationMinutes",
+            "wordsPerMinute",
+        ],
+        "draft_plan" => &["request", "connector"],
+        "draft_generate" => &["request", "connector", "promptSha256", "confirmed"],
         "voice_profile_get" => &["personaId", "agentName"],
         _ => &[],
     }
@@ -600,14 +695,16 @@ fn serve_health(args: &Value) -> Result<Value, (i32, String)> {
             "note": "URL only. /health is liveness. /ready is readiness. This is not a live genaid-audio probe."
         }));
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(2))
-        .timeout_read(std::time::Duration::from_secs(2))
-        .redirects(0)
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(2)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(2)))
+        .timeout_recv_body(Some(std::time::Duration::from_secs(2)))
+        .max_redirects(0)
+        .build()
+        .into();
     match agent.get(&health).call() {
         Ok(response) => {
-            let body = response.into_string().unwrap_or_default();
+            let body = response.into_body().read_to_string().unwrap_or_default();
             let clipped: String = body.chars().take(512).collect();
             let parsed: Value = serde_json::from_str(&clipped).unwrap_or(Value::Null);
             let service = parsed.get("service").and_then(Value::as_str);
@@ -799,6 +896,74 @@ mod tests {
     }
 
     #[test]
+    fn master_audio_has_a_strict_non_speech_contract() {
+        let server = Server::boot();
+        let listed = handle(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .unwrap()
+        .unwrap();
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "master_audio")
+            .expect("master_audio is listed");
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["inputSchema"]["required"], json!(["input"]));
+        assert_eq!(
+            tool["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["input".to_string(), "output".to_string()]
+        );
+        assert!(tool["inputSchema"]["properties"]["input"]["pattern"]
+            .as_str()
+            .unwrap()
+            .contains("wav"));
+        for arguments in [
+            json!({}),
+            json!({"input":"../escape.wav"}),
+            json!({"input":"issued.wav","output":null}),
+            json!({"input":"issued.wav","filter":"anull"}),
+        ] {
+            let response = handle(
+                &server,
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"master_audio","arguments":arguments}}),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(response["error"]["code"], -32602, "{response}");
+            assert!(!response["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("synthesizedSpeech"));
+        }
+
+        let fixture = handle(
+            &server,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fixture_tone","arguments":{}}}),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(fixture.get("error").is_none(), "{fixture}");
+        let wrong_format = handle(
+            &server,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"master_audio","arguments":{"input":"fixture-tone.wav"}}}),
+        )
+        .unwrap()
+        .unwrap();
+        let message = wrong_format["error"]["message"].as_str().unwrap();
+        assert!(message.contains("24000 Hz"), "{message}");
+        assert!(!message.contains(&server.scratch.dir.to_string_lossy().to_string()));
+        let _ = std::fs::remove_dir_all(&server.scratch.dir);
+    }
+
+    #[test]
     fn unprobed_serve_url_is_not_healthy_and_protocol_is_negotiated() {
         let server = Server::boot();
         let health = handle(
@@ -821,6 +986,20 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
+        for (asked, got) in [
+            ("2025-06-18", "2025-06-18"),
+            ("2025-11-25", "2025-11-25"),
+            ("2099-01-01", "2025-11-25"),
+        ] {
+            let init = handle(
+                &server,
+                json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion": asked}}),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(init["result"]["protocolVersion"], got, "{asked}");
+        }
+        assert_eq!(super::negotiate_protocol("2025-6-18"), None);
         let rejected = handle(
             &server,
             json!({"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}),
@@ -902,54 +1081,118 @@ mod tests {
     #[test]
     fn ui_cube_enters_and_leaves_compare_and_viewport_get_reports_it() {
         let server = Server::isolated();
-        let contract: Value = serde_json::from_str(include_str!("../../../schemas/examples/ui_cube.contract.json")).unwrap();
-        let rpc = |id: u64, call: &Value| handle(&server, json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":call})).unwrap().unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../schemas/examples/ui_cube.contract.json"
+        ))
+        .unwrap();
+        let rpc = |id: u64, call: &Value| {
+            handle(
+                &server,
+                json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":call}),
+            )
+            .unwrap()
+            .unwrap()
+        };
         let body = |response: &Value| -> Value {
             assert!(response.get("error").is_none(), "{response}");
-            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap()
         };
-        let listed = handle(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap().unwrap();
+        let listed = handle(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .unwrap()
+        .unwrap();
         let tools = listed["result"]["tools"].as_array().unwrap();
-        let find = |name: &str| tools.iter().find(|tool| tool["name"] == name).cloned().unwrap_or_else(|| panic!("{name} not listed"));
+        let find = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .cloned()
+                .unwrap_or_else(|| panic!("{name} not listed"))
+        };
         let cube = find("ui_cube");
-        assert_eq!(cube["inputSchema"]["properties"]["mode"]["enum"], json!(["single", "compare"]));
+        assert_eq!(
+            cube["inputSchema"]["properties"]["mode"]["enum"],
+            json!(["single", "compare"])
+        );
         assert_eq!(cube["inputSchema"]["required"], json!(["mode"]));
         assert_eq!(find("viewport_get")["inputSchema"]["properties"], json!({}));
 
         let entered = body(&rpc(2, &contract["enter"]["call"]));
         assert_eq!(entered["op"], "cube");
-        assert_eq!(entered["args"], contract["enter"]["state"], "the queued state is the contract state");
+        assert_eq!(
+            entered["args"], contract["enter"]["state"],
+            "the queued state is the contract state"
+        );
         let seq = entered["seq"].as_u64().unwrap();
         let events = control::since(seq - 1).events;
-        let event = events.iter().find(|event| event["seq"] == seq).expect("ui_cube queued a bus event");
+        let event = events
+            .iter()
+            .find(|event| event["seq"] == seq)
+            .expect("ui_cube queued a bus event");
         assert_eq!(event["op"], "cube");
         assert_eq!(event["args"], contract["enter"]["state"]);
         let read = body(&rpc(3, &contract["read"]["call"]));
         assert_eq!(read["cube_mode"], "compare");
-        assert_eq!(read["cube_compare"], contract["enter"]["state"]["cube_compare"]);
+        assert_eq!(
+            read["cube_compare"],
+            contract["enter"]["state"]["cube_compare"]
+        );
         assert_eq!(read["cube_compare"]["left_method"], "library_r3");
         assert_eq!(read["cube_compare"]["right_method"], "pipeline_r2");
         assert_eq!(read["cube_seq"], seq);
 
         // compare without a clip keeps the clip already in Compare.
-        let again = body(&rpc(4, &json!({"name": "ui_cube", "arguments": {"mode": "compare"}})));
+        let again = body(&rpc(
+            4,
+            &json!({"name": "ui_cube", "arguments": {"mode": "compare"}}),
+        ));
         assert_eq!(again["args"], contract["enter"]["state"]);
         // A rejected call leaves the state alone.
-        let refused = rpc(5, &json!({"name": "ui_cube", "arguments": {"mode": "compare", "tileId": "lib-kokoro-onnx"}}));
+        let refused = rpc(
+            5,
+            &json!({"name": "ui_cube", "arguments": {"mode": "compare", "tileId": "lib-kokoro-onnx"}}),
+        );
         assert_eq!(refused["error"]["code"], -32602);
-        assert_eq!(body(&rpc(6, &contract["read"]["call"]))["cube_mode"], "compare");
-        let extra = rpc(7, &json!({"name": "ui_cube", "arguments": {"mode": "single", "left": "pipeline_r2"}}));
-        assert!(extra["error"]["message"].as_str().unwrap().contains("unexpected argument left"));
+        assert_eq!(
+            body(&rpc(6, &contract["read"]["call"]))["cube_mode"],
+            "compare"
+        );
+        let extra = rpc(
+            7,
+            &json!({"name": "ui_cube", "arguments": {"mode": "single", "left": "pipeline_r2"}}),
+        );
+        assert!(extra["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected argument left"));
 
         let left = body(&rpc(8, &contract["exit"]["call"]));
         assert_eq!(left["args"], contract["exit"]["state"]);
         let read = body(&rpc(9, &contract["read"]["call"]));
         assert_eq!(read["cube_mode"], "single");
-        assert!(read.get("cube_compare").is_some_and(Value::is_null), "single reports cube_compare: null, not a missing field");
-        let no_clip = rpc(10, &json!({"name": "ui_cube", "arguments": {"mode": "compare"}}));
-        assert!(no_clip["error"]["message"].as_str().unwrap().contains("needs tileId or uid"));
+        assert!(
+            read.get("cube_compare").is_some_and(Value::is_null),
+            "single reports cube_compare: null, not a missing field"
+        );
+        let no_clip = rpc(
+            10,
+            &json!({"name": "ui_cube", "arguments": {"mode": "compare"}}),
+        );
+        assert!(no_clip["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("needs tileId or uid"));
         // A cube uid names its clip: either cube of the pair enters Compare on misaki.
-        let by_cube = body(&rpc(11, &json!({"name": "ui_cube", "arguments": {"mode": "compare", "uid": "ga:cube_ihdr:64k2leh3kuhkkqvrogme5mz3qu"}})));
+        let right_cube_uid = contract["enter"]["state"]["cube_compare"]["right_cube_uid"]
+            .as_str()
+            .unwrap();
+        let by_cube = body(&rpc(
+            11,
+            &json!({"name": "ui_cube", "arguments": {"mode": "compare", "uid": right_cube_uid}}),
+        ));
         assert_eq!(by_cube["args"], contract["enter"]["state"]);
         body(&rpc(12, &contract["exit"]["call"]));
         let _ = std::fs::remove_dir_all(&server.scratch.dir);
@@ -961,6 +1204,7 @@ mod tests {
         // would start a real synth and the refusal asserts would not hold.
         let _env = gen_audio_core::bridge::NoKokoroEnv::new();
         let server = Server::boot();
+        let cursor = control::since(u64::MAX).cursor;
         let harvested = handle(
             &server,
             json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"library_harvest","arguments":{"clipId":"lib-kokoro-onnx","personaId":"alice","apply":true}}}),
@@ -992,6 +1236,18 @@ mod tests {
         assert!(
             profile_text.contains("\"notPodcast\":true"),
             "{profile_text}"
+        );
+        let status_events = control::since(cursor).events;
+        let card_status = status_events
+            .iter()
+            .find(|event| event["op"] == "card_status" && event["args"]["personaId"] == "alice")
+            .expect("library_harvest emits card_status");
+        assert_eq!(card_status["args"]["tileId"], "profile-alice");
+        assert_eq!(card_status["args"]["attached"], true);
+        assert_eq!(card_status["args"]["ref"], "clip:lib-kokoro-onnx");
+        assert!(
+            status_events.iter().all(|event| event["op"] != "flipcard"),
+            "flipcard is receive-only compatibility, not emitted"
         );
         let cube = handle(
             &server,
@@ -1050,16 +1306,24 @@ mod tests {
     // One contract, tested from both sides: the fixtures below are exactly
     // what the desktop window posts (apps/desktop/tests/play-control.test.ts
     // asserts that from the desktop's own builders); here the server accepts them.
-    const DESKTOP_USER_PLAY: &str = include_str!("../../../schemas/examples/control/desktop-user-play.json");
-    const SEEK_ROUND_TRIP: &str = include_str!("../../../schemas/examples/control/seek-round-trip.json");
+    const DESKTOP_USER_PLAY: &str =
+        include_str!("../../../schemas/examples/control/desktop-user-play.json");
+    const SEEK_ROUND_TRIP: &str =
+        include_str!("../../../schemas/examples/control/seek-round-trip.json");
 
     fn tool_text(response: &Value) -> Value {
-        let text = response["result"]["content"][0]["text"].as_str().unwrap_or_else(|| panic!("no tool text: {response}"));
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no tool text: {response}"));
         serde_json::from_str(text).expect("tool text is json")
     }
 
     fn bus_events_for(tile: &str, after: u64) -> Vec<Value> {
-        control::since(after).events.into_iter().filter(|event| event["args"]["tileId"] == tile).collect()
+        control::since(after)
+            .events
+            .into_iter()
+            .filter(|event| event["args"]["tileId"] == tile)
+            .collect()
     }
 
     #[test]
@@ -1067,14 +1331,25 @@ mod tests {
         let _bus = control::TestBus::fresh().bind();
         let server = Server::boot();
         let request: Value = serde_json::from_str(DESKTOP_USER_PLAY).unwrap();
-        let tile = request["params"]["arguments"]["tileId"].as_str().unwrap().to_string();
+        let tile = request["params"]["arguments"]["tileId"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let before = control::since(0).cursor;
         let response = handle(&server, request).unwrap().unwrap();
-        assert!(response.get("error").is_none(), "the server rejected the desktop's Play payload: {response}");
+        assert!(
+            response.get("error").is_none(),
+            "the server rejected the desktop's Play payload: {response}"
+        );
         let body = tool_text(&response);
         assert_eq!(body["args"]["origin"], "user");
         let events = bus_events_for(&tile, before);
-        assert!(events.iter().any(|event| event["op"] == "playback" && event["args"]["origin"] == "user"), "{events:?}");
+        assert!(
+            events
+                .iter()
+                .any(|event| event["op"] == "playback" && event["args"]["origin"] == "user"),
+            "{events:?}"
+        );
     }
 
     #[test]
@@ -1084,12 +1359,24 @@ mod tests {
         let mut request: Value = serde_json::from_str(DESKTOP_USER_PLAY).unwrap();
         // A tile only this test uses, so the bus check cannot see another test's event.
         request["params"]["arguments"]["tileId"] = json!("contract-origin-bad");
-        for bad in [json!("agent"), json!("mcp"), json!(""), json!(5), json!(null)] {
+        for bad in [
+            json!("agent"),
+            json!("mcp"),
+            json!(""),
+            json!(5),
+            json!(null),
+        ] {
             request["params"]["arguments"]["origin"] = bad.clone();
             let before = control::since(0).cursor;
             let response = handle(&server, request.clone()).unwrap().unwrap();
-            assert_eq!(response["error"]["code"], -32602, "origin {bad}: {response}");
-            assert!(bus_events_for("contract-origin-bad", before).is_empty(), "origin {bad} reached the bus");
+            assert_eq!(
+                response["error"]["code"], -32602,
+                "origin {bad}: {response}"
+            );
+            assert!(
+                bus_events_for("contract-origin-bad", before).is_empty(),
+                "origin {bad} reached the bus"
+            );
         }
         request["params"]["arguments"]["origin"] = json!("auto");
         let response = handle(&server, request).unwrap().unwrap();
@@ -1100,12 +1387,88 @@ mod tests {
     fn every_tool_accepts_exactly_its_advertised_input_schema_properties() {
         for def in tool_defs() {
             let name = def["name"].as_str().unwrap();
-            let mut advertised: Vec<&str> = def["inputSchema"]["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+            let mut advertised: Vec<&str> = def["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
             let mut allowed = allowed_arguments(name).to_vec();
             advertised.sort_unstable();
             allowed.sort_unstable();
-            assert_eq!(advertised, allowed, "{name}: inputSchema and the allowed-args list disagree");
+            assert_eq!(
+                advertised, allowed,
+                "{name}: inputSchema and the allowed-args list disagree"
+            );
         }
+    }
+
+    #[test]
+    fn authoring_tools_expose_exact_bounded_schemas_and_annotations() {
+        let definitions = tool_defs();
+        let find = |name: &str| {
+            definitions
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("{name} not listed"))
+        };
+
+        let analyze = find("script_analyze");
+        assert_eq!(analyze["annotations"], json!({"readOnlyHint":true}));
+        assert_eq!(
+            analyze["inputSchema"]["required"],
+            json!(["scriptText", "agents"])
+        );
+        assert_eq!(
+            analyze["inputSchema"]["properties"]["scriptText"]["maxLength"],
+            262144
+        );
+        assert_eq!(
+            analyze["inputSchema"]["properties"]["indexing"]["enum"],
+            json!(["one_based", "zero_based", "alternating"])
+        );
+        assert_eq!(
+            analyze["inputSchema"]["properties"]["agents"]["uniqueItems"],
+            true
+        );
+
+        let plan = find("draft_plan");
+        assert_eq!(plan["annotations"], json!({"readOnlyHint":true}));
+        assert_eq!(
+            plan["inputSchema"]["required"],
+            json!(["request", "connector"])
+        );
+        let request = &plan["inputSchema"]["properties"]["request"];
+        assert_eq!(request["additionalProperties"], false);
+        assert_eq!(
+            request["required"],
+            json!(["topic", "agents", "durationMinutes"])
+        );
+        assert_eq!(request["properties"]["language"]["enum"], json!(["en"]));
+        assert_eq!(request["properties"]["durationMinutes"]["maximum"], 15);
+        assert_eq!(request["properties"]["existingScript"]["maxLength"], 4000);
+
+        let generate = find("draft_generate");
+        assert_eq!(
+            generate["annotations"],
+            json!({"readOnlyHint":false,"openWorldHint":true})
+        );
+        assert_eq!(
+            generate["inputSchema"]["required"],
+            json!(["request", "connector", "promptSha256", "confirmed"])
+        );
+        assert_eq!(
+            generate["inputSchema"]["properties"]["connector"]["enum"],
+            json!(["gpt", "claude", "copilot", "gemini"])
+        );
+        assert_eq!(
+            generate["inputSchema"]["properties"]["promptSha256"]["pattern"],
+            "^[a-f0-9]{64}$"
+        );
+        assert_eq!(
+            generate["inputSchema"]["properties"]["confirmed"]["const"],
+            true
+        );
     }
 
     #[test]
@@ -1126,20 +1489,31 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
         let seq = loop {
             let found = control::since(before).events.into_iter().find(|event| {
-                event["op"] == "playback" && event["args"]["action"] == "seek" && event["args"]["seconds"].as_f64() == Some(seconds)
+                event["op"] == "playback"
+                    && event["args"]["action"] == "seek"
+                    && event["args"]["seconds"].as_f64() == Some(seconds)
             });
             if let Some(event) = found {
-                assert!(event["args"].get("waitMs").is_none(), "waitMs stays off the bus");
+                assert!(
+                    event["args"].get("waitMs").is_none(),
+                    "waitMs stays off the bus"
+                );
                 break event["seq"].as_u64().unwrap();
             }
-            assert!(std::time::Instant::now() < deadline, "the seek never reached the bus");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the seek never reached the bus"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
         let mut report = fixture["desktopReport"].clone();
         report["params"]["arguments"]["seq"] = json!(seq);
         let server = Server::boot();
         let recorded = handle(&server, report.clone()).unwrap().unwrap();
-        assert!(recorded.get("error").is_none(), "the server rejected the desktop's seek report: {recorded}");
+        assert!(
+            recorded.get("error").is_none(),
+            "the server rejected the desktop's seek report: {recorded}"
+        );
         let result = tool_text(&agent.join().unwrap());
         for key in ["requested_t", "landed_t", "ok", "reason"] {
             let (got, want) = (&result[key], &fixture["agentResult"][key]);
@@ -1149,7 +1523,10 @@ mod tests {
             }
         }
         // A second report for the same seek is refused.
-        assert_eq!(handle(&server, report).unwrap().unwrap()["error"]["code"], -32602);
+        assert_eq!(
+            handle(&server, report).unwrap().unwrap()["error"]["code"],
+            -32602
+        );
     }
 
     #[test]
@@ -1159,24 +1536,79 @@ mod tests {
         let call = |name: &str, args: Value| {
             handle(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name": name, "arguments": args}})).unwrap().unwrap()
         };
-        let timed_out = call("ui_playback", json!({"tileId": "contract-seek-quiet", "action": "seek", "seconds": 3.25, "waitMs": 0}));
+        let timed_out = call(
+            "ui_playback",
+            json!({"tileId": "contract-seek-quiet", "action": "seek", "seconds": 3.25, "waitMs": 0}),
+        );
         let body = tool_text(&timed_out);
         assert_eq!(body["requested_t"], 3.25);
         assert!(body["landed_t"].is_null());
         assert_eq!(body["ok"], false);
-        assert!(body["reason"].as_str().unwrap().contains("no window reported"), "{body}");
+        assert!(
+            body["reason"]
+                .as_str()
+                .unwrap()
+                .contains("no window reported"),
+            "{body}"
+        );
         let seq = body["seq"].as_u64().unwrap();
         let report = |args: Value| call("ui_seek_report", args);
         let code = |response: Value| response["error"]["code"].clone();
-        assert_eq!(code(report(json!({"seq": seq + 100_000, "requested_t": 3.25, "landed_t": 3.25, "ok": true, "reason": "x"}))), -32602, "unknown seq");
-        assert_eq!(code(report(json!({"seq": seq, "requested_t": 9.0, "landed_t": 3.25, "ok": true, "reason": "x"}))), -32602, "wrong requested_t");
-        assert_eq!(code(report(json!({"seq": seq, "requested_t": 3.25, "landed_t": null, "ok": true, "reason": "x"}))), -32602, "ok without landed_t");
-        assert_eq!(code(report(json!({"seq": seq, "requested_t": 3.25, "landed_t": -1, "ok": false, "reason": "x"}))), -32602, "negative landed_t");
-        assert_eq!(code(report(json!({"seq": seq, "requested_t": 3.25, "landed_t": 0, "ok": false, "reason": "r".repeat(241)}))), -32602, "long reason");
-        assert_eq!(code(call("ui_playback", json!({"tileId": "contract-seek-quiet", "action": "seek", "seconds": 1, "waitMs": 60_000}))), -32602, "waitMs cap");
-        assert_eq!(code(call("ui_playback", json!({"tileId": "contract-seek-quiet", "action": "pause", "waitMs": 10}))), -32602, "waitMs on pause");
+        assert_eq!(
+            code(report(
+                json!({"seq": seq + 100_000, "requested_t": 3.25, "landed_t": 3.25, "ok": true, "reason": "x"})
+            )),
+            -32602,
+            "unknown seq"
+        );
+        assert_eq!(
+            code(report(
+                json!({"seq": seq, "requested_t": 9.0, "landed_t": 3.25, "ok": true, "reason": "x"})
+            )),
+            -32602,
+            "wrong requested_t"
+        );
+        assert_eq!(
+            code(report(
+                json!({"seq": seq, "requested_t": 3.25, "landed_t": null, "ok": true, "reason": "x"})
+            )),
+            -32602,
+            "ok without landed_t"
+        );
+        assert_eq!(
+            code(report(
+                json!({"seq": seq, "requested_t": 3.25, "landed_t": -1, "ok": false, "reason": "x"})
+            )),
+            -32602,
+            "negative landed_t"
+        );
+        assert_eq!(
+            code(report(
+                json!({"seq": seq, "requested_t": 3.25, "landed_t": 0, "ok": false, "reason": "r".repeat(241)})
+            )),
+            -32602,
+            "long reason"
+        );
+        assert_eq!(
+            code(call(
+                "ui_playback",
+                json!({"tileId": "contract-seek-quiet", "action": "seek", "seconds": 1, "waitMs": 60_000})
+            )),
+            -32602,
+            "waitMs cap"
+        );
+        assert_eq!(
+            code(call(
+                "ui_playback",
+                json!({"tileId": "contract-seek-quiet", "action": "pause", "waitMs": 10})
+            )),
+            -32602,
+            "waitMs on pause"
+        );
         // None of the bad reports was recorded: the honest one still is.
-        let honest = report(json!({"seq": seq, "requested_t": 3.25, "landed_t": 0, "ok": false, "reason": "seek failed: this WAV source cannot seek (stays at 0:00)"}));
+        let honest = report(
+            json!({"seq": seq, "requested_t": 3.25, "landed_t": 0, "ok": false, "reason": "seek failed: this WAV source cannot seek (stays at 0:00)"}),
+        );
         assert!(honest.get("error").is_none(), "{honest}");
         assert_eq!(tool_text(&honest)["report"]["landed_t"], 0.0);
     }

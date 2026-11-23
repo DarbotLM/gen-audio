@@ -273,11 +273,19 @@ test("main.ts counts a failed lookup, a failed library fetch, and a dropped reso
       connectControl: () => void;
       setControlResyncForTest: (work: (() => Promise<unknown>) | null) => void;
     };
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const bootDeadline = Date.now() + 5_000;
+    while (Date.now() < bootDeadline && byId.get("board")!.querySelectorAll(".card").length < 10) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const bootCards = byId.get("board")!.querySelectorAll(".card");
+    assert.ok(bootCards.length >= 10, `main.ts boot rendered only ${bootCards.length} cards before the wall-clock deadline`);
+    const bootIds = new Set(bootCards.map((card) => card.dataset.id));
+    assert.ok(bootIds.has("lib-misaki-kokoro"), "release boot includes the real library deck");
+    assert.ok(!bootIds.has("spec-fixture") && !bootIds.has("cube-fixture"), "release boot excludes fixture cards");
     const bootStatus = byId.get("status");
     assert.equal(bootStatus?.dataset.control, "disconnected");
     assert.match(bootStatus?.textContent ?? "", /disconnected/i);
-    assert.equal(timers[0], 250, "the first retry waits 250ms, not a fixed 50ms");
+    assert.equal(timers[0], undefined, "without an owned credential, no unauthenticated reconnect is scheduled");
     const booted = JSON.parse(root.dataset.mcpFailures ?? "{}") as Record<string, number>;
     assert.equal(booted["mcp_status:TypeError"], 1, "boot lookup must count the tauri failure");
 
@@ -289,8 +297,8 @@ test("main.ts counts a failed lookup, a failed library fetch, and a dropped reso
     const blob = await main.mediaBlob("/library/x.wav");
     assert.equal(blob, null);
     const afterFetch = JSON.parse(root.dataset.mcpFailures ?? "{}") as Record<string, number>;
-    assert.equal(afterFetch["library_media:http_404"], 1);
-    assert.ok(calls.some((line) => line.includes("/library/x.wav")), calls.join("\n"));
+    assert.equal(afterFetch["library_media:owned_listener"], 1);
+    assert.ok(!calls.some((line) => line.includes("/library/x.wav")), "no unauthenticated request: " + calls.join("\n"));
 
     const uid = "ga:audio_clip:abc";
     await main.insertGeneratedTile(uid, {});
@@ -300,7 +308,7 @@ test("main.ts counts a failed lookup, a failed library fetch, and a dropped reso
     assert.equal(tile?.dataset.resolve, "failed");
     const error = tile?.querySelector(".resolve-error");
     assert.match(error?.textContent ?? "", new RegExp(uid));
-    assert.match(error?.textContent ?? "", /missing uid/);
+    assert.match(error?.textContent ?? "", /asset_resolve failed/);
     const afterResolve = JSON.parse(root.dataset.mcpFailures ?? "{}") as Record<string, number>;
     assert.equal(afterResolve["asset_resolve:ok_false"], 1);
 
@@ -320,41 +328,11 @@ test("main.ts counts a failed lookup, a failed library fetch, and a dropped reso
       assert.equal(malformed["control_stream:malformed"], 1);
       assert.match(byId.get("status")?.textContent ?? "", /^control event: SyntaxError: /);
 
-      // The gap listener is the resync step. A rejecting resync must be logged
-      // and must reject; dropping the listener, the log, or the rethrow fails.
-      class FakeEventSource {
-        static last: FakeEventSource | undefined;
-        url: string;
-        onopen: (() => void) | null = null;
-        onerror: (() => void) | null = null;
-        listeners = new Map<string, Array<(event?: { data?: string }) => unknown>>();
-        constructor(url: string) {
-          this.url = url;
-          FakeEventSource.last = this;
-        }
-        addEventListener(type: string, listener: (event?: { data?: string }) => unknown): void {
-          const list = this.listeners.get(type) ?? [];
-          list.push(listener);
-          this.listeners.set(type, list);
-        }
-        close(): void {}
-      }
-      const previousSource = globalThis.EventSource;
-      globalThis.EventSource = FakeEventSource as unknown as typeof EventSource;
-      try {
-        main.setControlResyncForTest(() => Promise.reject(new TypeError("offline")));
-        main.connectControl();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const gap = FakeEventSource.last?.listeners.get("gap")?.[0];
-        assert.equal(typeof gap, "function", "the control stream registers a gap listener");
-        warnings.length = 0;
-        const offline = (error: unknown) => error instanceof TypeError && error.message === "offline";
-        await assert.rejects(() => Promise.resolve(gap!()), offline);
-        assert.deepEqual(warnings, ["gen-audio: viewport: TypeError: offline"]);
-      } finally {
-        main.setControlResyncForTest(null);
-        globalThis.EventSource = previousSource;
-      }
+      main.setControlResyncForTest(() => Promise.reject(new TypeError("offline")));
+      main.connectControl();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(byId.get("status")?.dataset.control, "disconnected");
+      main.setControlResyncForTest(null);
     } finally {
       console.warn = originalWarn;
     }

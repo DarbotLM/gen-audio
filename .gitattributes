@@ -1,3 +1,38 @@
+# Line endings: every text file is LF in the index and in the working tree on
+# every OS (git's autocrlf no longer decides), so digests, byte-equality tests
+# and generated contracts agree between Windows and CI. cmd/bat need CRLF.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+*.psd1 text eol=lf
+# Binary payloads are never converted or diffed as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.webp binary
+*.wav binary
+*.mp3 binary
+*.mp4 binary
+*.webm binary
+*.onnx binary
+*.bin binary
+*.pdf binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.msi binary
+*.msix binary
+*.nupkg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+# Repository-specific rules (later lines win).
 # Keep text byte-identical across Windows (SMAX) and CI so media sha256 and
 # byte-equality tests agree. Library media are binary.
 *.json text eol=lf
@@ -11,11 +46,6 @@
 *.css text eol=lf
 *.html text eol=lf
 *.yml text eol=lf
-*.ps1 text eol=lf
-*.sh text eol=lf
-*.bash text eol=lf
-*.cmd text eol=crlf
-*.bat text eol=crlf
 *.wav binary
 *.png binary
 *.onnx binary

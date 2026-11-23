@@ -20,6 +20,7 @@ import { applyClipNames, harvestNames } from "./library-meta";
 import { bindFloatingPlayback, pauseClip, playClip, releaseAllSeekBlobs, releaseDetachedTransports, renderTransport, seekClipOutcome, setUserPlayReporter } from "./playback";
 import {
   assetResolveFailure,
+  consumeMcpControlStream,
   controlPlayOrigin,
   controlBackoffMs,
   controlDisconnectedNotice,
@@ -35,13 +36,15 @@ import {
   surfaceUiError,
   userPlayControl,
 } from "./play-control";
-import { selectViewport } from "./viewport-source";
-import { glyphBadge } from "./glyph";
+import { fixturesRequested } from "./viewport-source";
 import { loadLibraryCatalog, mediaUrl, sourceSha256, type LibraryCatalog } from "./library-assets";
 import { decorateLibraryTiles } from "./livestrip";
 import { profilePreview, type ProfilePreview, type VoiceSelection } from "./profiles";
 import {
   announceCopy,
+  applyCardOp,
+  applyProfileUpdate,
+  fillCubeGlyph,
   fillModelCubes,
   bindSlideScroll,
   goToSlide,
@@ -50,6 +53,7 @@ import {
   moveFocus,
   moveSlide,
   renderBoard,
+  setCardFace,
   setCardFlip,
   showRejected,
   slides,
@@ -59,6 +63,7 @@ import { applySidepane, bindStudio, promptNote, promptText, readSelection, type 
 import { drawCube, drawSpectrogram, makeFixture, play } from "./signal";
 import { CUBE_CONTROL_OP, createCubeModeController, type CubeCompareState, type ToolReply } from "./cube-mode";
 import { CONNECTOR_MODES, validateViewport, type ViewportDocument } from "./validate";
+import { FIXTURES_BUILD, UNDER_VITE, fixturesFlag, installFixtureHooks } from "./env";
 
 function required(id: string): HTMLElement {
   const node = document.querySelector<HTMLElement>(id);
@@ -75,18 +80,12 @@ function required(id: string): HTMLElement {
  * (dynamic import). The Vite build fails if a stand-in is still in the
  * release deck or catalog.
  */
-const fixtureFlag: string | undefined = import.meta.env.VITE_GEN_AUDIO_FIXTURES;
-const loadExampleDocument: () => Promise<ViewportDocument> =
-  import.meta.env.VITE_GEN_AUDIO_FIXTURES === "1"
-    ? async () => (await import("../../../schemas/examples/viewport.example.json")).default as ViewportDocument
-    : async () => releaseDoc as ViewportDocument;
-const loadShippedDocument: () => Promise<ViewportDocument> = selectViewport(
-  fixtureFlag,
-  async () => releaseDoc as ViewportDocument,
-  loadExampleDocument,
-);
+const loadShippedDocument = async (): Promise<ViewportDocument> =>
+  FIXTURES_BUILD || (!UNDER_VITE && fixturesRequested(fixturesFlag()))
+    ? ((await import("../../../schemas/examples/viewport.example.json")).default as ViewportDocument)
+    : (releaseDoc as ViewportDocument);
 const loadDevAssets = async (): Promise<unknown[]> =>
-  import.meta.env.VITE_GEN_AUDIO_FIXTURES === "1"
+  FIXTURES_BUILD || (!UNDER_VITE && fixturesRequested(fixturesFlag()))
     ? (await import("../../../schemas/asset-object/fixtures/assets.dev.json")).default.assets
     : [];
 
@@ -116,6 +115,7 @@ let controlCursor = 0;
 const seenControl = new Set<number>();
 let libraryCatalog: LibraryCatalog | null = null;
 let mcpOrigin = "http://127.0.0.1:8765";
+let mcpToken: string | null = null;
 let controlAttempt = 0;
 
 function failUi(error: unknown, where: string): void {
@@ -142,7 +142,7 @@ export function presentLibraryCatalog(work: Promise<LibraryCatalog | null>): voi
   void work
     .then((catalog) => {
       libraryCatalog = catalog;
-      decorateLibraryTiles(board, catalog, (uid) => glyphBadge(uid, { role: "clip", onCopy: announceCopy }));
+      decorateLibraryTiles(board, catalog, { onCopy: announceCopy });
       fillModelCubes(board, catalog, {
         openCube: (url, source) => reportAsync(openCube(url, source), "cube"),
         selectTile,
@@ -171,11 +171,29 @@ export function acceptControlFrame(data: string): void {
 export async function discoverMcp(): Promise<string> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const reported = await invoke<{ addr?: string; handshake_ok?: boolean }>("mcp_status");
+    const reported = await invoke<{ addr?: string; token?: string | null; handshake_ok?: boolean }>("mcp_status");
     const found = mcpOriginFromStatus(reported, mcpOrigin, mcpFailures);
     mcpOrigin = found.origin;
+    mcpToken = found.token;
     if (found.notice) status.textContent = found.notice;
   } catch (error) {
+    if (import.meta.env?.DEV === true || !UNDER_VITE) {
+      const explicitDev = (window as unknown as {
+        __GEN_AUDIO_MCP__?: { addr?: string; token?: string };
+      }).__GEN_AUDIO_MCP__;
+      if (explicitDev) {
+        const found = mcpOriginFromStatus(
+          { ...explicitDev, handshake_ok: true },
+          mcpOrigin,
+          mcpFailures,
+        );
+        mcpOrigin = found.origin;
+        mcpToken = found.token;
+        if (found.notice) status.textContent = found.notice;
+        return mcpOrigin;
+      }
+    }
+    mcpToken = null;
     status.textContent = noteMcpLookupError(error, mcpOrigin, mcpFailures);
   }
   return mcpOrigin;
@@ -198,7 +216,7 @@ bindStudio(board, status, (next: StudioSelection) => {
 function show(documentIn: unknown): void {
   const error = validateViewport(
     documentIn,
-    import.meta.env.VITE_GEN_AUDIO_FIXTURES === "1" ? "allowed" : "release",
+    fixturesRequested(fixturesFlag()) ? "allowed" : "release",
   );
   if (error) {
     status.textContent = `Viewport rejected: ${error}`;
@@ -206,7 +224,11 @@ function show(documentIn: unknown): void {
     return;
   }
   const doc = documentIn as ViewportDocument;
-  renderBoard(board, empty, doc);
+  renderBoard(board, empty, doc, {
+    onFlip: (tileId) => {
+      void reportAsync(applyFlipTool(tileId), `flip ${tileId}`);
+    },
+  });
   // D: tiles this render removed give back their cached seek blob URLs.
   releaseDetachedTransports();
   paintProfile();
@@ -292,9 +314,7 @@ function syncCubeChrome(): void {
   const glyphSlot = document.querySelector<HTMLElement>("#cube-glyph");
   if (glyphSlot) {
     const cube = meta && libraryCatalog ? libraryCatalog.cubeForUrl(meta.url) : null;
-    const badge = cube ? glyphBadge(cube.uid, { role: "cube", onCopy: announceCopy }) : null;
-    if (badge) glyphSlot.replaceChildren(badge);
-    else glyphSlot.replaceChildren();
+    fillCubeGlyph(glyphSlot, cube?.uid ?? null, announceCopy);
   }
   const select = document.querySelector<HTMLSelectElement>("#cube-source");
   if (select && cubeClipId) select.value = cubeClipId;
@@ -625,7 +645,7 @@ function bindRename(): void {
           }
           status.textContent = `Attached clip:${id} to persona ${personaId}. Audio was not decoded. synthesizedSpeech is false.`;
           if (body.profile && typeof body.profile === "object") {
-            applyFlipcard(body.profile as Record<string, unknown>);
+            applyProfileUpdate(board, body.profile as Record<string, unknown>);
           }
         })
         .catch((error: unknown) => failUi(error, "library harvest"));
@@ -715,41 +735,6 @@ async function refreshConnectors(doc: ViewportDocument): Promise<ViewportDocumen
 document.querySelector("#show-empty")?.addEventListener("click", () => {
   show({ version: "1.0", title: "Darbot Gen-Audio", columns: 3, cards: [] });
 });
-// E1 addendum: the fixture controls exist only in dev/test builds. The check is
-// a literal import.meta.env comparison so Vite replaces it at build time and
-// the release bundle drops this block, labels and command name included
-// (apps/desktop/tests/viewport-source.test.ts greps dist for them).
-if (import.meta.env.VITE_GEN_AUDIO_FIXTURES === "1") {
-  const toolbar = document.querySelector(".ga-header-toolbar .toolbar");
-  const showExample = document.createElement("button");
-  showExample.type = "button";
-  showExample.id = "show-example";
-  showExample.textContent = "Load labeled example";
-  showExample.addEventListener("click", () => {
-    void loadShippedDocument()
-      .then(refreshConnectors)
-      .then(show)
-      .catch((error: unknown) => failUi(error, "viewport"));
-  });
-  const runImprove = document.createElement("button");
-  runImprove.type = "button";
-  runImprove.id = "run-improve";
-  runImprove.textContent = "Run Python improve on fixture";
-  runImprove.addEventListener("click", async () => {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const result = await invoke<Record<string, unknown>>("run_fixture_improve");
-      status.textContent = result.ok
-        ? "Python improve finished on the fixture tone (fixture only — not podcast speech)."
-        : `Python improve did not finish: ${JSON.stringify(result)}`;
-    } catch (error) {
-      surfaceUiError(error, "python improve");
-      status.textContent = `Python improve needs a debug desktop shell. ${String(error)}`;
-    }
-  });
-  toolbar?.prepend(showExample);
-  toolbar?.append(runImprove);
-}
 document.querySelector("#generate-podcast")?.addEventListener("click", () => {
   reportAsync(submitGenerate(), "generate");
 });
@@ -846,21 +831,28 @@ function showRun(voice: string, phase: string, detail: string, speech: boolean):
     : `${safePhase} for ${voice}. synthesizedSpeech is false. ${detail}`;
 }
 
-function applyFlipcard(profile: Record<string, unknown>): void {
-  const personaId = String(profile.personaId ?? "");
-  if (!personaId) return;
-  const card = board.querySelector<HTMLElement>(`.card[data-id="profile-${CSS.escape(personaId)}"]`);
-  if (!card) return;
-  const refs = Array.isArray(profile.refs) ? profile.refs.map((item) => String(item)).join(", ") : "";
-  const slot = card.querySelector<HTMLElement>('[data-field="refs"]');
-  if (slot && refs) slot.textContent = refs;
-  setCardFlip(board, `profile-${personaId}`, true);
-}
-
 async function mcpCall(name: string, args: Record<string, unknown>): Promise<unknown | null> {
   const origin = await mcpReady;
-  const payload = await postMcp(fetch, `${origin}/mcp`, name, args, mcpFailures);
+  if (!mcpToken) {
+    mcpFailures.note(name, "owned_listener");
+    return null;
+  }
+  const payload = await postMcp(fetch, `${origin}/mcp`, name, args, mcpFailures, mcpToken);
   if (payload !== null) noteControlSeq(payload);
+  return payload;
+}
+
+async function applyFlipTool(tileId: string): Promise<unknown | null> {
+  const payload = await mcpCall("ui_flip", { tileId, next: true });
+  const body = toolBody(payload);
+  if (
+    body?.op === "flip" &&
+    body.args &&
+    typeof body.args === "object" &&
+    !Array.isArray(body.args)
+  ) {
+    applyCardOp(board, "flip", body.args as Record<string, unknown>);
+  }
   return payload;
 }
 
@@ -896,11 +888,8 @@ function applyControl(event: { seq?: number; op?: string; args?: Record<string, 
     if (typeof args.tileId === "string") selectTile(args.tileId);
   } else if (event.op === "select" && typeof args.tileId === "string") {
     selectTile(args.tileId);
-  } else if (event.op === "flip" && typeof args.tileId === "string") {
-    setCardFlip(board, args.tileId, args.flipped !== false);
-    if (args.profile && typeof args.profile === "object") applyFlipcard(args.profile as Record<string, unknown>);
-  } else if (event.op === "flipcard" && args.profile && typeof args.profile === "object") {
-    applyFlipcard(args.profile as Record<string, unknown>);
+  } else if (event.op === "flip" || event.op === "card_status" || event.op === "flipcard") {
+    applyCardOp(board, event.op, args);
   } else if (event.op === "progress" && typeof args.voice === "string") {
     showRun(args.voice, String(args.phase ?? "unavailable"), String(args.detail ?? ""), args.synthesizedSpeech === true);
   } else if (event.op === "focus" && typeof args.uid === "string") {
@@ -981,7 +970,12 @@ function setDerived(parentUid: string, role: string, honesty: string): void {
 }
 
 export async function mediaBlob(urlPath: string): Promise<string | null> {
-  const blob = await fetchLibraryBlob(fetch, await mcpReady, urlPath, mcpFailures);
+  const origin = await mcpReady;
+  if (!mcpToken) {
+    mcpFailures.note("library_media", "owned_listener");
+    return null;
+  }
+  const blob = await fetchLibraryBlob(fetch, origin, urlPath, mcpFailures, mcpToken);
   return blob ? URL.createObjectURL(blob) : null;
 }
 
@@ -1061,8 +1055,8 @@ export async function insertGeneratedTile(uid: string, args: Record<string, unkn
     }
   }
   if (typeof args.cubeUrl === "string" && args.cubeUrl.startsWith("/library/")) {
-    const origin = await mcpReady;
-    tile.dataset.cubeJson = `${origin}${args.cubeUrl}`;
+    const blob = await mediaBlob(args.cubeUrl);
+    if (blob) tile.dataset.cubeJson = blob;
   }
   setDerived(uid, "spectrogram", honestyOf(args.spectrogram) || "pending");
   setDerived(uid, "cube", honestyOf(args.cube) || "pending");
@@ -1094,7 +1088,13 @@ async function resyncViewport(): Promise<void> {
   if (typeof body.cursor === "number") controlCursor = body.cursor;
   const ui = body.ui;
   if (ui && typeof ui === "object") {
-    const record = ui as { slide?: unknown; focus?: unknown; flipped?: unknown; compare?: unknown };
+    const record = ui as {
+      slide?: unknown;
+      focus?: unknown;
+      flipped?: unknown;
+      faces?: unknown;
+      compare?: unknown;
+    };
     if (typeof record.slide === "string") goToSlideId(board, record.slide);
     if (typeof record.focus === "string") {
       focusClipTile(record.focus);
@@ -1103,7 +1103,20 @@ async function resyncViewport(): Promise<void> {
     } else if (record.focus === null) {
       setCubeClockClip(null);
     }
-    if (record.flipped && typeof record.flipped === "object") {
+    if (record.faces && typeof record.faces === "object") {
+      for (const [view, state] of Object.entries(record.faces as Record<string, Record<string, unknown>>)) {
+        const tileId = typeof state.tileId === "string"
+          ? state.tileId
+          : view.startsWith("view:") ? view.slice("view:".length) : view;
+        setCardFace(board, tileId, {
+          face_id: typeof state.face_id === "string" ? state.face_id : undefined,
+          face_index: typeof state.face_index === "number" ? state.face_index : undefined,
+          face_count: typeof state.face_count === "number" ? state.face_count : undefined,
+          ids: Array.isArray(state.ids) ? state.ids.map(String) : undefined,
+          glyph_label: typeof state.glyph_label === "string" ? state.glyph_label : undefined,
+        });
+      }
+    } else if (record.flipped && typeof record.flipped === "object") {
       for (const [view, state] of Object.entries(record.flipped as Record<string, { face?: string }>)) {
         const tileId = view.startsWith("view:") ? view.slice("view:".length) : view;
         setCardFlip(board, tileId, state?.face === "back");
@@ -1148,24 +1161,30 @@ function markControlUp(): void {
 
 export function connectControl(): void {
   void mcpReady
-    .then((origin) => {
-      let source: EventSource;
+    .then(async (origin) => {
+      if (!mcpToken) {
+        status.dataset.control = "disconnected";
+        status.textContent = "MCP owned listener unavailable; control disconnected and authentication is required.";
+        return;
+      }
       try {
-        source = new EventSource(`${origin}/control/stream?after=${controlCursor}&wait=2000`);
+        await consumeMcpControlStream(
+          fetch,
+          `${origin}/control/stream`,
+          mcpToken,
+          controlCursor,
+          mcpFailures,
+          {
+            onOpen: markControlUp,
+            onControl: acceptControlFrame,
+            onGap: () => onControlGap(),
+          },
+        );
+        window.setTimeout(connectControl, 50);
       } catch (error) {
         failUi(error, "control stream");
         markControlDown();
-        return;
       }
-      source.onopen = () => markControlUp();
-      source.addEventListener("gap", () => onControlGap());
-      source.addEventListener("control", (event) => {
-        acceptControlFrame(String((event as MessageEvent).data));
-      });
-      source.onerror = () => {
-        source.close();
-        markControlDown();
-      };
     })
     .catch((error: unknown) => {
       failUi(error, "control stream");
@@ -1174,12 +1193,13 @@ export function connectControl(): void {
 }
 // The bus ring holds 128 events; viewport_get is the Cube mode's resync.
 void boardReady.then(() => cubeMode.sync()).then(reportCubeMode);
-// Test hook (dev/test builds only, E1 addendum): scrubs the cube and ONLY the
-// clip the cube is bound to (never whatever played last).
-if (import.meta.env.VITE_GEN_AUDIO_FIXTURES === "1") {
-  (window as unknown as { __genAudioScrub?: (f: number) => Promise<string> }).__genAudioScrub = (fraction: number) => {
-    setCubeScrub(fraction, { silent: true });
-    return cubeClipId ? seekClipFraction(cubeClipId, fraction) : Promise.resolve("no cube clip");
-  };
-}
+void boardReady.then(() => reportAsync(resyncViewport(), "viewport bootstrap"));
+void installFixtureHooks({
+  loadDocument: loadShippedDocument,
+  refreshConnectors: (document) => refreshConnectors(document as ViewportDocument),
+  show: (document) => show(document),
+  status,
+  setCubeScrub,
+  seekBoundClip: (fraction) => cubeClipId ? seekClipFraction(cubeClipId, fraction) : Promise.resolve("no cube clip"),
+});
 connectControl();

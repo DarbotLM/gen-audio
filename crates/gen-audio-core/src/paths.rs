@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
@@ -256,7 +257,14 @@ fn bind_mcp_addr_file(path: PathBuf) -> McpAddrFileGuard {
     })
 }
 
-/// Loopback address the desktop MCP listener bound, one line, no secrets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpConnection {
+    pub addr: String,
+    pub owner_pid: Option<u32>,
+    pub token: Option<String>,
+}
+
+/// Loopback address and optional boot credential for the desktop MCP listener.
 pub fn mcp_addr_path() -> PathBuf {
     #[cfg(test)]
     if let Some(path) = MCP_ADDR_OVERRIDE.with(|slot| slot.borrow().clone()) {
@@ -275,13 +283,97 @@ pub fn mcp_addr_path() -> PathBuf {
         .join("mcp.addr")
 }
 
-pub fn write_mcp_addr(addr: &str) -> Result<(), String> {
+fn valid_mcp_token(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_mcp_addr(addr: &str) -> Result<(), String> {
+    let socket: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|err| format!("invalid MCP address: {err}"))?;
+    if !socket.ip().is_loopback() || socket.port() == 0 {
+        return Err("MCP descriptor address must be a bound loopback address".into());
+    }
+    Ok(())
+}
+
+fn write_mcp_descriptor(addr: &str, token: Option<&str>, owner_pid: u32) -> Result<(), String> {
+    validate_mcp_addr(addr)?;
+    if owner_pid == 0 {
+        return Err("MCP descriptor owner pid must be non-zero".into());
+    }
+    if token.is_some_and(|value| !valid_mcp_token(value)) {
+        return Err("MCP descriptor token must be 64 hexadecimal digits".into());
+    }
     let path = mcp_addr_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+            fs::remove_file(&path).map_err(|err| err.to_string())?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "MCP descriptor path is not a file: {}",
+                path.display()
+            ))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.to_string()),
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).map_err(|err| err.to_string())?;
+    #[cfg(windows)]
+    if let Err(err) = restrict_windows_descriptor(&path) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(err);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = file
+            .metadata()
+            .map_err(|err| err.to_string())?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err("MCP descriptor permissions are not owner-only".into());
+        }
+    }
     arm_mcp_addr_signals();
-    fs::write(&path, format!("{addr}\n{}\n", std::process::id())).map_err(|err| err.to_string())
+    file.write_all(format!("{addr}\n{owner_pid}\n").as_bytes())
+        .map_err(|err| err.to_string())?;
+    if let Some(token) = token {
+        file.write_all(format!("{token}\n").as_bytes())
+            .map_err(|err| err.to_string())?;
+    }
+    file.sync_all().map_err(|err| err.to_string())
+}
+
+pub fn write_mcp_addr(addr: &str) -> Result<(), String> {
+    write_mcp_descriptor(addr, None, std::process::id())
+}
+
+pub fn write_mcp_connection(addr: &str, token: &str) -> Result<(), String> {
+    write_mcp_connection_for_owner(addr, token, std::process::id())
+}
+
+pub fn write_mcp_connection_for_owner(
+    addr: &str,
+    token: &str,
+    owner_pid: u32,
+) -> Result<(), String> {
+    write_mcp_descriptor(addr, Some(token), owner_pid)
 }
 
 /// The one line written when `mcp.addr` cannot be saved.
@@ -293,7 +385,23 @@ pub fn mcp_addr_write_failure_line(err: &str) -> String {
 /// discarding `write_mcp_addr`: a silent failure leaves the desktop and the
 /// listener disagreeing about the port.
 pub fn publish_mcp_addr(addr: &str) -> Result<(), String> {
-    match write_mcp_addr(addr) {
+    publish_mcp_descriptor(|| write_mcp_addr(addr))
+}
+
+pub fn publish_mcp_connection(addr: &str, token: &str) -> Result<(), String> {
+    publish_mcp_descriptor(|| write_mcp_connection(addr, token))
+}
+
+pub fn publish_mcp_connection_for_owner(
+    addr: &str,
+    token: &str,
+    owner_pid: u32,
+) -> Result<(), String> {
+    publish_mcp_descriptor(|| write_mcp_connection_for_owner(addr, token, owner_pid))
+}
+
+fn publish_mcp_descriptor(write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    match write() {
         Ok(()) => Ok(()),
         Err(err) => {
             // fd 2, not `eprintln`: libtest captures the macro, so a parent
@@ -302,6 +410,65 @@ pub fn publish_mcp_addr(addr: &str) -> Result<(), String> {
             Err(err)
         }
     }
+}
+
+#[cfg(windows)]
+fn windows_owner_sid() -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let system32 =
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32");
+    let output = std::process::Command::new(system32.join("whoami.exe"))
+        .args(["/user", "/fo", "csv", "/nh"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|err| format!("cannot inspect MCP descriptor owner: {err}"))?;
+    if !output.status.success() {
+        return Err("cannot inspect MCP descriptor owner".into());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let sid = text
+        .trim()
+        .rsplit(',')
+        .next()
+        .unwrap_or("")
+        .trim_matches('"')
+        .trim();
+    if !sid.starts_with("S-1-")
+        || !sid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'S')
+    {
+        return Err("cannot determine MCP descriptor owner SID".into());
+    }
+    Ok(sid.to_string())
+}
+
+#[cfg(windows)]
+fn restrict_windows_descriptor(path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let sid = windows_owner_sid()?;
+    let system32 =
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32");
+    let status = std::process::Command::new(system32.join("icacls.exe"))
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(format!("*{sid}:(F)"))
+        .arg("/c")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|err| format!("cannot restrict MCP descriptor permissions: {err}"))?;
+    if !status.success() {
+        return Err("cannot restrict MCP descriptor permissions".into());
+    }
+    Ok(())
 }
 
 fn log_stderr(line: &str) {
@@ -374,6 +541,10 @@ extern "C" fn on_mcp_stop(_sig: i32) {
 
 /// Remove the address descriptor only when this process owns it.
 pub fn delete_mcp_addr() -> Result<(), String> {
+    delete_mcp_addr_for_owner(std::process::id())
+}
+
+pub fn delete_mcp_addr_for_owner(expected_pid: u32) -> Result<(), String> {
     let path = mcp_addr_path();
     let Ok(text) = fs::read_to_string(&path) else {
         return Ok(());
@@ -382,7 +553,7 @@ pub fn delete_mcp_addr() -> Result<(), String> {
         .lines()
         .nth(1)
         .and_then(|line| line.trim().parse::<u32>().ok());
-    if owner.is_some_and(|pid| pid != std::process::id()) {
+    if owner.is_some_and(|pid| pid != expected_pid) {
         return Err(format!(
             "refusing to delete MCP address owned by pid {}: {}",
             owner.unwrap(),
@@ -404,6 +575,77 @@ pub fn read_mcp_addr() -> Option<String> {
     } else {
         Some(addr.to_string())
     }
+}
+
+pub fn read_mcp_connection() -> Result<Option<McpConnection>, String> {
+    let path = mcp_addr_path();
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.to_string()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("MCP descriptor is not a regular file".into());
+    }
+    if metadata.len() > 512 {
+        return Err("MCP descriptor is too large".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("MCP descriptor permissions are not owner-only".into());
+        }
+    }
+    let text = fs::read_to_string(&path).map_err(|err| err.to_string())?;
+    let lines: Vec<_> = text.lines().map(str::trim).collect();
+    if lines.is_empty() || lines.len() > 3 {
+        return Err("invalid MCP descriptor".into());
+    }
+    let addr = lines.first().copied().unwrap_or("");
+    validate_mcp_addr(addr)?;
+    let owner_pid = if let Some(raw) = lines.get(1).filter(|value| !value.is_empty()) {
+        Some(
+            raw.parse::<u32>()
+                .map_err(|_| "invalid MCP descriptor owner pid".to_string())?,
+        )
+    } else {
+        None
+    };
+    if owner_pid == Some(0) {
+        return Err("invalid MCP descriptor owner pid".into());
+    }
+    let token = lines
+        .get(2)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    if token
+        .as_deref()
+        .is_some_and(|value| !valid_mcp_token(value))
+    {
+        return Err("invalid MCP descriptor token".into());
+    }
+    Ok(Some(McpConnection {
+        addr: addr.to_string(),
+        owner_pid,
+        token,
+    }))
+}
+
+pub fn read_mcp_token_for(addr: &str) -> Result<Option<String>, String> {
+    let Some(connection) = read_mcp_connection()? else {
+        return Ok(None);
+    };
+    if connection.addr != addr {
+        return Ok(None);
+    }
+    if connection
+        .owner_pid
+        .is_some_and(|pid| pid != std::process::id() && !pid_alive(pid))
+    {
+        return Err("MCP descriptor owner is no longer running".into());
+    }
+    Ok(connection.token)
 }
 
 /// Drop `mcp.addr` when the recorded pid is dead or the port is not accepting.
@@ -626,6 +868,61 @@ fn single_component(name: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_connection_descriptor_is_owner_only_and_round_trips() {
+        let work = make_work_dir().unwrap();
+        let path = work.join("mcp.addr");
+        let _override = bind_mcp_addr_file(path.clone());
+        let token = "ab".repeat(32);
+        write_mcp_connection("127.0.0.1:18765", &token).unwrap();
+        let connection = read_mcp_connection()
+            .unwrap()
+            .expect("connection descriptor");
+        assert_eq!(connection.addr, "127.0.0.1:18765");
+        assert_eq!(connection.owner_pid, Some(std::process::id()));
+        assert_eq!(connection.token.as_deref(), Some(token.as_str()));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "descriptor mode was {mode:o}");
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let system32 = PathBuf::from(
+                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+            )
+            .join("System32");
+            let output = std::process::Command::new(system32.join("icacls.exe"))
+                .arg(&path)
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .expect("read descriptor ACL");
+            assert!(output.status.success());
+            let acl = String::from_utf8_lossy(&output.stdout);
+            let grants: Vec<_> = acl.lines().filter(|line| line.contains(":(")).collect();
+            assert_eq!(
+                grants.len(),
+                1,
+                "descriptor ACL must grant only its owner: {acl}"
+            );
+            assert!(
+                grants[0].contains("(F)"),
+                "descriptor owner does not have full control: {acl}"
+            );
+        }
+        assert_eq!(
+            read_mcp_token_for("127.0.0.1:18765").unwrap().as_deref(),
+            Some(token.as_str())
+        );
+        assert!(read_mcp_token_for("127.0.0.1:18766").unwrap().is_none());
+        assert!(delete_mcp_addr().is_ok());
+        assert!(!path.exists());
+    }
 
     /// TCP port held without `listen()`. `connect` is refused immediately, and
     /// another process cannot bind the same address. Non-Linux uses TEST-NET-1

@@ -8,6 +8,7 @@ Needs PowerShell (pwsh or Windows PowerShell); skips without one.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -29,11 +30,18 @@ ERROR = {"jsonrpc": "2.0", "id": 2, "error": {"code": -32602, "message": "unknow
 
 
 @contextmanager
-def _server(tools_call: dict):
+def _server(tools_call: dict, *, token: str | None = None):
     body = {"initialize": json.dumps(INIT).encode("utf-8"), "tools/call": json.dumps(tools_call, ensure_ascii=False).encode("utf-8")}
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802 (http.server API)
+            if token and self.headers.get("Authorization") != f"Bearer {token}":
+                data = b'{"error":"unauthorized"}'
+                self.send_response(401)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             data = body[request["method"]]
             self.send_response(200)
@@ -55,9 +63,26 @@ def _server(tools_call: dict):
         server.server_close()
 
 
-def _call(port: int, *extra: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-File", str(MCP_CALL), "-Tool", "viewport_get", "-Port", str(port), *extra],
-                          capture_output=True, text=True, encoding="utf-8", timeout=120)
+def _call(
+    port: int,
+    *extra: str,
+    env_updates: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = [SHELL, "-NoProfile", "-NonInteractive", "-File", str(MCP_CALL), "-Tool", "viewport_get"]
+    if port > 0:
+        command += ["-Port", str(port)]
+    command += extra
+    env = os.environ.copy()
+    if env_updates:
+        env.update(env_updates)
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        env=env,
+    )
 
 
 def _convertfrom_json(path: Path) -> subprocess.CompletedProcess[str]:
@@ -112,3 +137,65 @@ def test_without_outfile_header_and_body_go_to_stdout_as_before(tmp_path):
         bad = _call(port)
     assert bad.returncode == 1 and sent.decode("utf-8") in bad.stdout and "JSON-RPC error -32602" in bad.stderr
     assert not list(tmp_path.iterdir()), "no file is written without -OutFile"
+
+
+@needs_shell
+def test_authenticated_descriptor_supplies_bearer_without_a_token_url(tmp_path):
+    token = "a" * 64
+    descriptor = tmp_path / "mcp.addr"
+    with _server(OK, token=token) as (port, sent):
+        descriptor.write_text(
+            f"127.0.0.1:{port}\n{os.getpid()}\n{token}\n",
+            encoding="utf-8",
+        )
+        accepted = _call(0, env_updates={"GEN_AUDIO_MCP_ADDR_FILE": str(descriptor)})
+        descriptor.unlink()
+        denied_without_credential = _call(port)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert sent.decode("utf-8") in accepted.stdout
+    assert token not in accepted.stdout + accepted.stderr
+    assert denied_without_credential.returncode != 0
+
+
+@needs_shell
+def test_explicit_port_wins_over_an_authenticated_descriptor(tmp_path):
+    descriptor = tmp_path / "mcp.addr"
+    with _server(ERROR, token="a" * 64) as (descriptor_port, _), _server(OK) as (
+        requested_port,
+        sent,
+    ):
+        descriptor.write_text(
+            f"127.0.0.1:{descriptor_port}\n{os.getpid()}\n{'a' * 64}\n",
+            encoding="utf-8",
+        )
+        run = _call(
+            requested_port,
+            env_updates={"GEN_AUDIO_MCP_ADDR_FILE": str(descriptor)},
+        )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert sent.decode("utf-8") in run.stdout
+    assert f"MCP addr=127.0.0.1:{requested_port}" in run.stdout
+    assert f"MCP addr=127.0.0.1:{descriptor_port}" not in run.stdout
+
+
+@needs_shell
+def test_environment_credential_overrides_a_stale_descriptor_token(tmp_path):
+    current = "a" * 64
+    stale = "b" * 64
+    descriptor = tmp_path / "mcp.addr"
+    with _server(OK, token=current) as (port, sent):
+        descriptor.write_text(
+            f"127.0.0.1:{port}\n{os.getpid()}\n{stale}\n",
+            encoding="utf-8",
+        )
+        run = _call(
+            0,
+            env_updates={
+                "GEN_AUDIO_MCP_ADDR_FILE": str(descriptor),
+                "GEN_AUDIO_MCP_TOKEN": current,
+            },
+        )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert sent.decode("utf-8") in run.stdout
+    assert current not in run.stdout + run.stderr
+    assert stale not in run.stdout + run.stderr

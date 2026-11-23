@@ -38,8 +38,8 @@ export type CardKind = (typeof CARD_KINDS)[number];
 
 export interface ViewportCard {
   id: string;
-  /** Asset object model v1 card uid (ga:card:...), alongside the legacy id. */
-  uid?: string;
+  /** Required asset object model v1 card uid (ga:card:...). */
+  uid: string;
   kind: CardKind;
   title: string;
   span?: number;
@@ -86,8 +86,8 @@ function validateCard(card: unknown, seen: Set<string>, fixtures: FixturePolicy)
     return `card ${card.id} has an unknown kind`;
   }
   if (!boundedString(card.title, 1, 120)) return "card title is required";
-  if (card.uid !== undefined && (typeof card.uid !== "string" || !CARD_UID.test(card.uid))) {
-    return `card ${card.id} uid must be ga:card:<26 base32>`;
+  if (typeof card.uid !== "string" || !CARD_UID.test(card.uid)) {
+    return `card ${card.id} uid is required (ga:card:<26 base32>)`;
   }
   if (card.span !== undefined) {
     const span = card.span;

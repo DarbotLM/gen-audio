@@ -19,8 +19,9 @@ test("a failed MCP handshake is counted and the fallback is named", () => {
     failures,
   );
   assert.equal(found.origin, "http://127.0.0.1:8765");
+  assert.equal(found.token, null);
   assert.match(found.notice ?? "", /handshake/);
-  assert.match(found.notice ?? "", /127\.0\.0\.1:8765/);
+  assert.match(found.notice ?? "", /connections are disabled/);
   assert.equal(failures.snapshot()["mcp_status:handshake"], 1);
 });
 
@@ -35,13 +36,47 @@ test("a thrown MCP address lookup is counted and named", () => {
 test("a successful handshake replaces the fallback and counts nothing", () => {
   const failures = new McpFailureCounter(() => {});
   const found = mcpOriginFromStatus(
-    { addr: "127.0.0.1:8766", handshake_ok: true },
+    { addr: "127.0.0.1:8766", token: "ab".repeat(32), handshake_ok: true },
     "http://127.0.0.1:8765",
     failures,
   );
   assert.equal(found.origin, "http://127.0.0.1:8766");
+  assert.equal(found.token, "ab".repeat(32));
   assert.equal(found.notice, null);
   assert.equal(failures.total(), 0);
+});
+
+test("a stale or malformed credential is rejected instead of reusing an endpoint", () => {
+  for (const token of [undefined, "", "not-a-token"]) {
+    const failures = new McpFailureCounter(() => {});
+    const found = mcpOriginFromStatus(
+      { addr: "127.0.0.1:8766", token, handshake_ok: true },
+      "http://127.0.0.1:8765",
+      failures,
+    );
+    assert.equal(found.origin, "http://127.0.0.1:8765");
+    assert.equal(found.token, null);
+    assert.match(found.notice ?? "", /disabled/);
+    assert.equal(failures.total(), 1);
+  }
+});
+
+test("an MCP address outside the CSP-approved desktop range is rejected", () => {
+  for (const addr of [
+    "127.0.0.1:8764",
+    "127.0.0.1:8771",
+    "localhost:8766",
+    "[::1]:8766",
+  ]) {
+    const found = mcpOriginFromStatus(
+      { addr, token: "ab".repeat(32), handshake_ok: true },
+      "http://127.0.0.1:8765",
+      new McpFailureCounter(() => {}),
+    );
+    assert.equal(found.origin, "http://127.0.0.1:8765");
+    assert.equal(found.token, null);
+    assert.match(found.notice ?? "", /disabled/);
+  }
 });
 
 test("a failed library fetch is counted instead of returning null quietly", async () => {
@@ -52,6 +87,7 @@ test("a failed library fetch is counted instead of returning null quietly", asyn
     "http://127.0.0.1:8765",
     "/library/x.wav",
     failures,
+    "ab".repeat(32),
   );
   assert.equal(blob, null);
   assert.equal(failures.snapshot()["library_media:http_404"], 1);
@@ -67,6 +103,7 @@ test("a library fetch that throws is counted", async () => {
     "http://127.0.0.1:8765",
     "/library/x.wav",
     failures,
+    "ab".repeat(32),
   );
   assert.equal(blob, null);
   assert.equal(failures.snapshot()["library_media:TypeError"], 1);
@@ -79,7 +116,13 @@ test("a path outside /library/ is not a media failure", async () => {
     called = true;
     return new Response(null, { status: 500 });
   };
-  const blob = await fetchLibraryBlob(fetchImpl as typeof fetch, "http://127.0.0.1:8765", "/other", failures);
+  const blob = await fetchLibraryBlob(
+    fetchImpl as typeof fetch,
+    "http://127.0.0.1:8765",
+    "/other",
+    failures,
+    "ab".repeat(32),
+  );
   assert.equal(blob, null);
   assert.equal(called, false);
   assert.equal(failures.total(), 0);

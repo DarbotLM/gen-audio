@@ -46,6 +46,37 @@ pub struct PythonPlan {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    /// Files a speech-producing run must leave behind. `run_plan` reports
+    /// `synthesizedSpeech: true` only when they prove real audio was written.
+    pub speech: Option<SpeechOutput>,
+}
+
+/// The WAV and its JSON manifest that `scripts/synth_kokoro_onnx.py` writes.
+#[derive(Debug, Clone)]
+pub struct SpeechOutput {
+    pub wav: PathBuf,
+    pub manifest: PathBuf,
+}
+
+/// The repo virtualenv interpreter installed by the toolbox.
+pub fn repo_venv_python(repo: &Path) -> PathBuf {
+    if cfg!(windows) {
+        repo.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        repo.join(".venv").join("bin").join("python3")
+    }
+}
+
+/// `GEN_AUDIO_PYTHON` when set; otherwise the repo virtualenv when it exists.
+/// A bare Python from PATH is used only when the checkout has no `.venv`.
+pub fn python_program_for(repo: &Path) -> Result<PathBuf, String> {
+    if std::env::var_os("GEN_AUDIO_PYTHON").is_none() {
+        let venv = repo_venv_python(repo);
+        if venv.is_file() {
+            return Ok(venv);
+        }
+    }
+    python_program()
 }
 
 pub fn python_program() -> Result<PathBuf, String> {
@@ -81,6 +112,7 @@ pub fn plan(
 ) -> Result<PythonPlan, String> {
     let script = read_trusted_script(repo, tool.script())?;
     let mut planned = vec![script.to_string_lossy().to_string()];
+    let mut speech = None;
     match tool {
         PythonTool::Improve => {
             let input = scratch.open_input(req_name(args, "input")?)?;
@@ -143,16 +175,21 @@ pub fn plan(
             let script_path = read_user_repo_file(repo, script_rel)?;
             let cast_path = read_user_repo_file(repo, cast_rel)?;
             let output = scratch.prepare_output(req_name(args, "output")?)?;
-            let model = std::env::var("GEN_AUDIO_KOKORO_MODEL").unwrap_or_default();
-            let voices = std::env::var("GEN_AUDIO_KOKORO_VOICES").unwrap_or_default();
-            if model.is_empty() || voices.is_empty() {
-                return Err(
-                    "synth was not started: GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES are unset. No speech was invented."
-                        .into(),
-                );
-            }
-            let model_path = bounded_model_file(&model)?;
-            let voices_path = bounded_model_file(&voices)?;
+            let model_dir = model_dir(repo);
+            let model = kokoro_file("GEN_AUDIO_KOKORO_MODEL", &model_dir, "kokoro-v1.0.onnx");
+            let voices = kokoro_file("GEN_AUDIO_KOKORO_VOICES", &model_dir, "voices-v1.0.bin");
+            let (Some(model), Some(voices)) = (model, voices) else {
+                return Err(format!(
+                    "synth was not started: GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES are unset and {} has no kokoro-v1.0.onnx and voices-v1.0.bin. No speech was invented.",
+                    model_dir.display()
+                ));
+            };
+            let model_path = bounded_model_file(&model_dir, &model)?;
+            let voices_path = bounded_model_file(&model_dir, &voices)?;
+            speech = Some(SpeechOutput {
+                manifest: output.with_extension("json"),
+                wav: output.clone(),
+            });
             planned.push(script_path.to_string_lossy().to_string());
             planned.push("--cast-map".into());
             planned.push(cast_path.to_string_lossy().to_string());
@@ -176,7 +213,7 @@ pub fn plan(
                 if vocab.is_empty() {
                     return Err("vocab must not be empty".into());
                 }
-                let path = bounded_model_file(vocab)?;
+                let path = bounded_model_file(&model_dir, &model_arg_path(&model_dir, vocab))?;
                 planned.push("--vocab".into());
                 planned.push(path.to_string_lossy().to_string());
             }
@@ -220,9 +257,10 @@ pub fn plan(
         }
     }
     Ok(PythonPlan {
-        program: python_program()?,
+        program: python_program_for(repo)?,
         args: planned,
         cwd: repo.to_path_buf(),
+        speech,
     })
 }
 
@@ -295,8 +333,10 @@ pub fn plan_generate(
         if vocab.is_empty() {
             return Err("vocab must not be empty".into());
         }
+        let model_dir = model_dir(repo);
+        let path = bounded_model_file(&model_dir, &model_arg_path(&model_dir, vocab))?;
         args.push("--vocab".into());
-        args.push(bounded_model_file(vocab)?.to_string_lossy().to_string());
+        args.push(path.to_string_lossy().to_string());
     }
     push_bool_arg(&mut args, options, "trim", "--trim", "--no-trim")?;
     push_bool_arg(
@@ -330,9 +370,10 @@ pub fn plan_generate(
         5.0,
     )?;
     Ok(PythonPlan {
-        program: python_program()?,
+        program: python_program_for(repo)?,
         args,
         cwd: repo.to_path_buf(),
+        speech: None,
     })
 }
 
@@ -377,26 +418,300 @@ pub fn run_plan(plan: &PythonPlan) -> Result<Value, String> {
         .map_err(|err| format!("failed to start python: {err}"))?;
     let stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
     let stderr = redact_secrets(&String::from_utf8_lossy(&output.stderr));
-    Ok(json!({
+    let mut result = json!({
         "ok": output.status.success(),
         "code": output.status.code(),
         "stdout": tail(&stdout),
         "stderr": tail(&stderr),
         "synthesizedSpeech": false
+    });
+    if let Some(speech) = &plan.speech {
+        match speech_evidence(speech, output.status.success()) {
+            Ok(evidence) => {
+                result["synthesizedSpeech"] = json!(true);
+                result["speechEvidence"] = evidence;
+            }
+            Err(reason) => result["speechRefusal"] = json!(reason),
+        }
+    }
+    Ok(result)
+}
+
+/// Proof that a synth run wrote real speech: the engine exited 0, the WAV is a
+/// valid uncompressed RIFF/WAVE file with audio frames, and the manifest names
+/// the engine with the same frame count and sample rate.
+pub fn speech_evidence(speech: &SpeechOutput, exited_ok: bool) -> Result<Value, String> {
+    if !exited_ok {
+        return Err("the synth engine exited with a failure".into());
+    }
+    let wav = read_wav_header(&speech.wav)?;
+    validate_wav_audio(&speech.wav, &wav)?;
+    let manifest_text = std::fs::read_to_string(&speech.manifest)
+        .map_err(|err| format!("synth manifest {}: {err}", speech.manifest.display()))?;
+    let manifest: Value = serde_json::from_str(&manifest_text)
+        .map_err(|err| format!("synth manifest is not JSON: {err}"))?;
+    let engine = manifest
+        .get("engine")
+        .and_then(Value::as_str)
+        .filter(|engine| !engine.is_empty())
+        .ok_or("synth manifest names no engine")?;
+    let samples = manifest.get("samples").and_then(Value::as_u64).unwrap_or(0);
+    let rate = manifest
+        .get("sample_rate")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if samples == 0 || wav.frames == 0 {
+        return Err("synth wrote no audio samples".into());
+    }
+    if samples != wav.frames {
+        return Err(format!(
+            "synth manifest says {samples} samples but the WAV holds {}",
+            wav.frames
+        ));
+    }
+    if rate != u64::from(wav.sample_rate) {
+        return Err(format!(
+            "synth manifest says {rate} Hz but the WAV is {} Hz",
+            wav.sample_rate
+        ));
+    }
+    Ok(json!({
+        "wav": speech.wav.to_string_lossy(),
+        "bytes": wav.bytes,
+        "engine": engine,
+        "sampleRate": wav.sample_rate,
+        "channels": wav.channels,
+        "frames": wav.frames,
+        "seconds": wav.frames as f64 / f64::from(wav.sample_rate)
     }))
 }
 
-fn bounded_model_file(raw: &str) -> Result<PathBuf, String> {
-    let root = std::env::var("GEN_AUDIO_MODEL_DIR").map_err(|_| {
-        "GEN_AUDIO_MODEL_DIR is required so tool arguments cannot point at arbitrary files"
-            .to_string()
-    })?;
-    let root = PathBuf::from(root)
+struct WavHeader {
+    bytes: u64,
+    sample_rate: u32,
+    channels: u16,
+    frames: u64,
+    audio_format: u16,
+    bits: u16,
+    block_align: u16,
+    data_offset: u64,
+    data_size: u64,
+}
+
+fn read_wav_header(path: &Path) -> Result<WavHeader, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file =
+        std::fs::File::open(path).map_err(|err| format!("synth WAV {}: {err}", path.display()))?;
+    let bytes = file
+        .metadata()
+        .map_err(|err| format!("synth WAV: {err}"))?
+        .len();
+    let mut head = [0u8; 12];
+    file.read_exact(&mut head)
+        .map_err(|_| "synth output is not a RIFF/WAVE file".to_string())?;
+    if &head[0..4] != b"RIFF" || &head[8..12] != b"WAVE" {
+        return Err("synth output is not a RIFF/WAVE file".into());
+    }
+    let riff_size = u64::from(u32::from_le_bytes([head[4], head[5], head[6], head[7]]));
+    let riff_end = riff_size
+        .checked_add(8)
+        .ok_or("synth WAV RIFF size is invalid")?;
+    if riff_size < 4 || riff_end != bytes {
+        return Err("synth WAV RIFF size does not match its file length".into());
+    }
+
+    let mut position = 12u64;
+    let mut format = None;
+    let mut data_size = None;
+    while position < riff_end {
+        if riff_end - position < 8 {
+            return Err("synth WAV has a truncated chunk header".into());
+        }
+        file.seek(SeekFrom::Start(position))
+            .map_err(|err| format!("synth WAV: {err}"))?;
+        let mut chunk = [0u8; 8];
+        file.read_exact(&mut chunk)
+            .map_err(|_| "synth WAV has a truncated chunk header".to_string())?;
+        let size = u64::from(u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]));
+        let body = position + 8;
+        let end = body
+            .checked_add(size)
+            .ok_or("synth WAV chunk size is invalid")?;
+        if end > riff_end {
+            return Err("synth WAV has a chunk beyond the RIFF payload".into());
+        }
+        if &chunk[0..4] == b"fmt " {
+            if size < 16 {
+                return Err("synth WAV fmt chunk is invalid".into());
+            }
+            let mut fields = [0u8; 16];
+            file.read_exact(&mut fields)
+                .map_err(|_| "synth WAV fmt chunk is truncated".to_string())?;
+            let audio_format = u16::from_le_bytes([fields[0], fields[1]]);
+            let channels = u16::from_le_bytes([fields[2], fields[3]]);
+            let sample_rate = u32::from_le_bytes([fields[4], fields[5], fields[6], fields[7]]);
+            let byte_rate = u32::from_le_bytes([fields[8], fields[9], fields[10], fields[11]]);
+            let block_align = u16::from_le_bytes([fields[12], fields[13]]);
+            let bits = u16::from_le_bytes([fields[14], fields[15]]);
+            if !(audio_format == 1 && matches!(bits, 8 | 16 | 24 | 32)
+                || audio_format == 3 && matches!(bits, 32 | 64))
+                || channels == 0
+                || sample_rate == 0
+                || block_align != channels.saturating_mul(bits.div_ceil(8))
+                || u64::from(byte_rate)
+                    != u64::from(sample_rate).saturating_mul(u64::from(block_align))
+            {
+                return Err("synth WAV fmt chunk is invalid".into());
+            }
+            format = Some((audio_format, channels, sample_rate, block_align, bits));
+        } else if &chunk[0..4] == b"data" && data_size.is_none() {
+            data_size = Some((body, size));
+        }
+        let padded_end = end
+            .checked_add(size & 1)
+            .ok_or("synth WAV chunk size is invalid")?;
+        if padded_end > riff_end {
+            return Err("synth WAV chunk padding is truncated".into());
+        }
+        position = padded_end;
+    }
+
+    let (audio_format, channels, sample_rate, block_align, bits) =
+        format.ok_or("synth WAV has no fmt chunk")?;
+    let (data_offset, data_size) = data_size.ok_or("synth WAV has no data chunk")?;
+    if data_size == 0 {
+        return Err("synth wrote no audio samples".into());
+    }
+    if u64::from(block_align) == 0 || data_size % u64::from(block_align) != 0 {
+        return Err("synth WAV data does not contain whole audio frames".into());
+    }
+    Ok(WavHeader {
+        bytes,
+        sample_rate,
+        channels,
+        frames: data_size / u64::from(block_align),
+        audio_format,
+        bits,
+        block_align,
+        data_offset,
+        data_size,
+    })
+}
+
+fn validate_wav_audio(path: &Path, wav: &WavHeader) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file =
+        std::fs::File::open(path).map_err(|err| format!("synth WAV {}: {err}", path.display()))?;
+    file.seek(SeekFrom::Start(wav.data_offset))
+        .map_err(|err| format!("synth WAV: {err}"))?;
+    let frame_bytes = usize::from(wav.block_align);
+    if frame_bytes == 0 {
+        return Err("synth WAV frame size is invalid".into());
+    }
+    let mut remaining = wav.data_size;
+    let chunk_frames = 8192usize;
+    let mut buffer = vec![0u8; frame_bytes.saturating_mul(chunk_frames)];
+    let mut has_signal = false;
+    while remaining > 0 {
+        let read = remaining.min(buffer.len() as u64) as usize;
+        let read = read - (read % frame_bytes);
+        if read == 0 {
+            return Err("synth WAV data does not contain whole audio frames".into());
+        }
+        file.read_exact(&mut buffer[..read])
+            .map_err(|_| "synth WAV sample data is truncated".to_string())?;
+        for frame in buffer[..read].chunks_exact(frame_bytes) {
+            for sample in frame.chunks_exact(usize::from(wav.bits.div_ceil(8))) {
+                match (wav.audio_format, wav.bits) {
+                    (1, 8) => {
+                        if sample[0] != 0x80 {
+                            has_signal = true;
+                        }
+                    }
+                    (1, 16) => {
+                        if i16::from_le_bytes([sample[0], sample[1]]) != 0 {
+                            has_signal = true;
+                        }
+                    }
+                    (1, 24) => {
+                        if sample[0] != 0 || sample[1] != 0 || sample[2] != 0 {
+                            has_signal = true;
+                        }
+                    }
+                    (1, 32) => {
+                        if i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) != 0 {
+                            has_signal = true;
+                        }
+                    }
+                    (3, 32) => {
+                        let value =
+                            f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
+                        if !value.is_finite() {
+                            return Err("synth WAV contains a non-finite sample".into());
+                        }
+                        if value != 0.0 {
+                            has_signal = true;
+                        }
+                    }
+                    (3, 64) => {
+                        let value = f64::from_le_bytes([
+                            sample[0], sample[1], sample[2], sample[3], sample[4], sample[5],
+                            sample[6], sample[7],
+                        ]);
+                        if !value.is_finite() {
+                            return Err("synth WAV contains a non-finite sample".into());
+                        }
+                        if value != 0.0 {
+                            has_signal = true;
+                        }
+                    }
+                    _ => return Err("synth WAV sample format is unsupported".into()),
+                }
+            }
+        }
+        remaining -= read as u64;
+    }
+    if !has_signal {
+        return Err("synth WAV contains only silence".into());
+    }
+    Ok(())
+}
+
+/// `GEN_AUDIO_MODEL_DIR` when set, otherwise `<repo>/models`.
+pub fn model_dir(repo: &Path) -> PathBuf {
+    match std::env::var_os("GEN_AUDIO_MODEL_DIR") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => repo.join("models"),
+    }
+}
+
+fn model_arg_path(model_dir: &Path, raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        model_dir.join(path)
+    }
+}
+
+/// The env var when set (a bare file name resolves inside the model dir),
+/// otherwise the default file name when it exists in the model dir.
+fn kokoro_file(var: &str, model_dir: &Path, default: &str) -> Option<PathBuf> {
+    match std::env::var(var) {
+        Ok(raw) if !raw.is_empty() => Some(model_arg_path(model_dir, &raw)),
+        _ => Some(model_dir.join(default)).filter(|path| path.is_file()),
+    }
+}
+
+fn bounded_model_file(model_dir: &Path, raw: &Path) -> Result<PathBuf, String> {
+    let root = model_dir
         .canonicalize()
-        .map_err(|err| format!("GEN_AUDIO_MODEL_DIR: {err}"))?;
-    let path = PathBuf::from(raw)
+        .map_err(|err| format!("model directory {}: {err}", model_dir.display()))?;
+    let path = raw
         .canonicalize()
-        .map_err(|err| format!("model path: {err}"))?;
+        .map_err(|err| format!("model path {}: {err}", raw.display()))?;
     if !path.starts_with(&root) {
         return Err("model path is outside GEN_AUDIO_MODEL_DIR".into());
     }
@@ -474,13 +789,16 @@ fn tail(text: &str) -> String {
 
 /// The env vars a real synth reads.
 #[cfg(any(test, feature = "test-support"))]
-pub const KOKORO_ENV: [&str; 2] = ["GEN_AUDIO_KOKORO_MODEL", "GEN_AUDIO_KOKORO_VOICES"];
+pub const KOKORO_ENV: [&str; 3] = [
+    "GEN_AUDIO_KOKORO_MODEL",
+    "GEN_AUDIO_KOKORO_VOICES",
+    "GEN_AUDIO_MODEL_DIR",
+];
 #[cfg(any(test, feature = "test-support"))]
 static KOKORO_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Test support only: clears the `GEN_AUDIO_KOKORO_*` vars for one test and
-/// puts them back on drop, so a developer shell with real models set cannot
-/// start a real synth from a unit test (PR #5 review fix 6; verification E3).
+/// Test support only: clears the `GEN_AUDIO_KOKORO_*` vars and points the model
+/// root at an empty directory for one test, then restores them on drop.
 /// One process-wide lock, so every crate's tests in a binary share it.
 ///
 /// Compiled only under `cfg(test)` or the `test-support` feature, which
@@ -490,6 +808,7 @@ static KOKORO_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(any(test, feature = "test-support"))]
 pub struct NoKokoroEnv {
     saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    empty_dir: PathBuf,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -507,7 +826,16 @@ impl NoKokoroEnv {
         for name in KOKORO_ENV {
             std::env::remove_var(name);
         }
-        Self { saved, _lock: lock }
+        let empty_dir =
+            std::env::temp_dir().join(format!("gen-audio-no-models-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&empty_dir);
+        std::fs::create_dir_all(&empty_dir).expect("create empty model directory");
+        std::env::set_var("GEN_AUDIO_MODEL_DIR", &empty_dir);
+        Self {
+            saved,
+            empty_dir,
+            _lock: lock,
+        }
     }
 }
 
@@ -520,6 +848,7 @@ impl Drop for NoKokoroEnv {
                 None => std::env::remove_var(name),
             }
         }
+        let _ = std::fs::remove_dir_all(&self.empty_dir);
     }
 }
 
@@ -655,5 +984,267 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("No speech was invented"));
         let _ = std::fs::remove_dir_all(&scratch.dir);
+    }
+
+    fn write_test_wav(path: &Path, rate: u32, frames: u32) {
+        let data_len = frames * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.resize(bytes.len() + data_len as usize, 0x11);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn write_float_test_wav(path: &Path, rate: u32, samples: &[f32]) {
+        let data_len = u32::try_from(samples.len() * 4).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&3u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * 4).to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&32u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn speech_case(
+        root: &Path,
+        name: &str,
+        rate: u32,
+        frames: u32,
+        manifest: Option<Value>,
+    ) -> SpeechOutput {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("out.wav");
+        write_test_wav(&wav, rate, frames);
+        let manifest_path = dir.join("out.json");
+        match manifest {
+            Some(value) => std::fs::write(&manifest_path, value.to_string()).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(&manifest_path);
+            }
+        }
+        SpeechOutput {
+            wav,
+            manifest: manifest_path,
+        }
+    }
+
+    #[test]
+    fn speech_evidence_requires_a_real_wav_and_matching_manifest() {
+        let scratch = Scratch::create().unwrap();
+        let good = speech_case(
+            &scratch.dir,
+            "good",
+            24000,
+            4800,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 4800,
+                "sample_rate": 24000
+            })),
+        );
+        let evidence = speech_evidence(&good, true).unwrap();
+        assert_eq!(evidence["frames"], 4800);
+        assert_eq!(evidence["engine"], "kokoro_onnx");
+        assert!((evidence["seconds"].as_f64().unwrap() - 0.2).abs() < 1e-9);
+
+        let silent = speech_case(
+            &scratch.dir,
+            "silent",
+            24000,
+            4,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 4,
+                "sample_rate": 24000
+            })),
+        );
+        write_float_test_wav(&silent.wav, 24000, &[0.0, 0.0, 0.0, 0.0]);
+        assert!(speech_evidence(&silent, true)
+            .unwrap_err()
+            .contains("only silence"));
+
+        let non_finite = speech_case(
+            &scratch.dir,
+            "non-finite",
+            24000,
+            4,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 4,
+                "sample_rate": 24000
+            })),
+        );
+        write_float_test_wav(&non_finite.wav, 24000, &[1.0, f32::NAN, 0.5, 0.0]);
+        assert!(speech_evidence(&non_finite, true)
+            .unwrap_err()
+            .contains("non-finite"));
+
+        assert!(speech_evidence(&good, false)
+            .unwrap_err()
+            .contains("exited"));
+        let empty = speech_case(
+            &scratch.dir,
+            "empty",
+            24000,
+            0,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 0,
+                "sample_rate": 24000
+            })),
+        );
+        assert!(speech_evidence(&empty, true)
+            .unwrap_err()
+            .contains("no audio"));
+        let missing = speech_case(&scratch.dir, "missing", 24000, 4800, None);
+        assert!(speech_evidence(&missing, true)
+            .unwrap_err()
+            .contains("manifest"));
+        let mismatch = speech_case(
+            &scratch.dir,
+            "mismatch",
+            24000,
+            4800,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 9600,
+                "sample_rate": 24000
+            })),
+        );
+        assert!(speech_evidence(&mismatch, true)
+            .unwrap_err()
+            .contains("9600"));
+        let wrong_rate = speech_case(
+            &scratch.dir,
+            "wrong-rate",
+            24000,
+            4800,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 4800,
+                "sample_rate": 48000
+            })),
+        );
+        assert!(speech_evidence(&wrong_rate, true)
+            .unwrap_err()
+            .contains("48000"));
+        let no_engine = speech_case(
+            &scratch.dir,
+            "no-engine",
+            24000,
+            4800,
+            Some(json!({"samples": 4800, "sample_rate": 24000})),
+        );
+        assert!(speech_evidence(&no_engine, true)
+            .unwrap_err()
+            .contains("engine"));
+        let not_wav = speech_case(
+            &scratch.dir,
+            "not-wav",
+            24000,
+            4800,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 4800,
+                "sample_rate": 24000
+            })),
+        );
+        std::fs::write(&not_wav.wav, b"not audio at all").unwrap();
+        assert!(speech_evidence(&not_wav, true)
+            .unwrap_err()
+            .contains("RIFF"));
+        let truncated = speech_case(
+            &scratch.dir,
+            "truncated",
+            24000,
+            4800,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 4800,
+                "sample_rate": 24000
+            })),
+        );
+        let mut wav = std::fs::read(&truncated.wav).unwrap();
+        wav.pop();
+        std::fs::write(&truncated.wav, wav).unwrap();
+        assert!(speech_evidence(&truncated, true)
+            .unwrap_err()
+            .contains("RIFF"));
+        let _ = std::fs::remove_dir_all(&scratch.dir);
+    }
+
+    #[test]
+    fn speech_evidence_child_process() {}
+
+    #[test]
+    fn run_plan_marks_only_verified_speech() {
+        let scratch = Scratch::create().unwrap();
+        let speech = speech_case(
+            &scratch.dir,
+            "run-plan",
+            24000,
+            4800,
+            Some(json!({
+                "engine": "kokoro_onnx",
+                "samples": 4800,
+                "sample_rate": 24000
+            })),
+        );
+        let plan = PythonPlan {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "speech_evidence_child_process".into(),
+                "--test-threads=1".into(),
+            ],
+            cwd: scratch.dir.clone(),
+            speech: Some(speech),
+        };
+        let result = run_plan(&plan).unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["synthesizedSpeech"], true);
+        assert_eq!(result["speechEvidence"]["frames"], 4800);
+        let _ = std::fs::remove_dir_all(&scratch.dir);
+    }
+
+    #[test]
+    fn python_defaults_to_the_repo_venv() {
+        let repo = std::env::temp_dir().join(format!("gen-audio-venv-{}", std::process::id()));
+        let venv = repo_venv_python(&repo);
+        assert_eq!(
+            venv,
+            if cfg!(windows) {
+                repo.join(".venv").join("Scripts").join("python.exe")
+            } else {
+                repo.join(".venv").join("bin").join("python3")
+            }
+        );
+        std::fs::create_dir_all(venv.parent().unwrap()).unwrap();
+        std::fs::write(&venv, b"").unwrap();
+        if std::env::var_os("GEN_AUDIO_PYTHON").is_none() {
+            assert_eq!(python_program_for(&repo).unwrap(), venv);
+        }
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }

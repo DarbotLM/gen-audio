@@ -14,8 +14,12 @@ pwsh -NoProfile -File $toolbox -Step Node -RepoRoot 'G:\gen-audio'
 ```
 
 Authenticate the GitHub CLI first (`gh auth login`) with access to the private
-DarbotLM `misaki`, `kokoro`, and `kokoro-onnx` repositories. The toolbox never
-accepts or writes a token.
+DarbotLM package wheels. The speech source step clones missing
+`dayour/misaki`, `dayour/kokoro`, and `dayour/kokoro-onnx` repositories under
+`adaptive_framework\`, then reuses them on later runs. It compares the current
+branch with `origin` before pulling, so an unchanged or locally modified checkout
+is preserved. These nested checkouts are ignored by the Gen-Audio repository.
+The toolbox never accepts or writes a token.
 
 Use the currently mounted drive when `G:` is unavailable. For this node, pass
 `-RepoRoot 'Q:\gen-audio'`.
@@ -25,8 +29,8 @@ Use the currently mounted drive when `G:` is unavailable. For this node, pass
 The `Node` path:
 
 1. Clones the selected ref when needed and preserves an existing checkout.
-2. Installs Node 24, `uv`, Python 3.14, Git, GitHub CLI, FFmpeg, Rust, WebView2, and the
-   Visual Studio C++ build tools. Node 24 and Python come from checksum-checked
+2. Installs Node 26, `uv`, Python 3.14, Git, GitHub CLI, FFmpeg, Rust, WebView2, and the
+   Visual Studio C++ build tools. Node 26 and Python come from checksum-checked
    archives or `uv`. A missing WinGet package (Git, GitHub CLI, uv, FFmpeg,
    Rustup, Build Tools, WebView2) is installed only when its id is passed to
    `-AcceptPackageAgreement`, for example `-AcceptPackageAgreement GitHub.cli`

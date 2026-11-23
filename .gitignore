@@ -25,6 +25,9 @@ models/
 audio/
 artifacts/
 out/
+/adaptive_framework/misaki/
+/adaptive_framework/kokoro/
+/adaptive_framework/kokoro-onnx/
 *.wav
 *.flac
 *.mp3

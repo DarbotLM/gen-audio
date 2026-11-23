@@ -11,14 +11,15 @@ checkout-scoped runtime configuration, and launches the node, MCP, and UI
 preview services. Overlapping runs of the same checkout are rejected by a named
 lease. Skipped validation or best-effort warnings produce a degraded exit code.
 
-The Speech step clones (or reuses) the DarbotLM misaki, kokoro and kokoro-onnx
-checkouts beside the Gen-Audio checkout, installs kokoro-onnx editable into the
-Gen-Audio venv (PyPI kokoro-onnx 0.6.1 from uv.lock is never installed; it
-declares Requires-Python <3.14), builds a kokoro venv with misaki[en] editable
-from kokoro's own lock, verifies every import resolves to those checkouts, and
-renders a real kokoro-onnx WAV. The MSVC check accepts only a Visual Studio
-whose toolset has both the x64 compiler and the x64 libraries, so a VS 2026
-Build Tools install without them falls back to VS 2022 (or prompts for it).
+The Speech step clones missing dayour/misaki, dayour/kokoro and
+dayour/kokoro-onnx checkouts under adaptive_framework, reuses existing local
+checkouts, and pulls only when the remote branch has new commits and the local
+checkout is clean. It installs kokoro-onnx editable into the Gen-Audio venv,
+builds a kokoro venv with misaki[en] editable from kokoro's own lock, verifies
+every import resolves to those checkouts, and renders a real kokoro-onnx WAV.
+The MSVC check accepts only a Visual Studio whose toolset has both the x64
+compiler and the x64 libraries, so a VS 2026 Build Tools install without them
+falls back to VS 2022 (or prompts for it).
 
 .EXAMPLE
 pwsh -NoProfile -File .\scripts\toolbox.ps1 -Step Node -RepoRoot G:\gen-audio
@@ -33,13 +34,13 @@ its agreement automatically.
 [CmdletBinding()]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Entry-point parameters are consumed by the nested implementation functions.')]
 param(
-    [ValidateSet('All', 'Node', 'Deps', 'Models', 'Build', 'Speech', 'Test', 'Start', 'Verify')]
+    [ValidateSet('All', 'Node', 'Deps', 'Models', 'Build', 'Adaptive', 'Speech', 'Test', 'Start', 'Verify')]
     [string[]]$Step = @('All'),
     [string]$RepoRoot,
     [string]$CheckoutPath,
     [string]$RepoUrl = 'https://github.com/darbotlabs/gen-audio.git',
     [string]$RepoRef = 'main',
-    [ValidatePattern('^24\.\d+\.\d+$')]
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$NodeVersion = '26.13.1',
     [ValidateRange(0, 65535)][int]$NodePort = 0,
     [ValidateRange(0, 65535)][int]$McpPort = 0,
@@ -52,7 +53,7 @@ param(
     [string]$PythonVersion = '3.14',
     [string]$SpeechSourceRoot,
     [ValidatePattern('^[A-Za-z0-9-]+$')]
-    [string]$SpeechSourceOwner = 'DarbotLM',
+    [string]$SpeechSourceOwner = 'dayour',
     [switch]$SkipTests,
     [switch]$NoBrowser,
     [switch]$Help
@@ -806,30 +807,69 @@ function Get-FilteredRequirementLine {
 
 function Get-SpeechSourceRoot {
     if ($SpeechSourceRoot) { return [IO.Path]::GetFullPath($SpeechSourceRoot) }
-    return Split-Path -Parent $RepoRoot
+    return Join-Path $RepoRoot 'adaptive_framework'
 }
 
-function Initialize-SpeechSourceCheckout {
-    # The DarbotLM misaki, kokoro and kokoro-onnx forks carry the Python 3.14 fixes.
-    # Existing checkouts are reused untouched; missing ones are cloned.
-    $root = Get-SpeechSourceRoot
+function Initialize-AdaptiveFrameworkCheckout {
+    param(
+        [string]$Root = (Join-Path $RepoRoot 'adaptive_framework'),
+        [ValidatePattern('^[A-Za-z0-9-]+$')]
+        [string]$Owner = 'dayour'
+    )
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     $git = Get-Tool @('git.exe')
-    if (-not $git) { throw 'git is required to fetch the DarbotLM speech sources.' }
+    if (-not $git) { throw 'git is required to initialize the adaptive framework speech sources.' }
     $paths = @{}
     foreach ($source in $script:SpeechSources) {
         $path = Join-Path $root $source.Name
         $manifest = Join-Path $path 'pyproject.toml'
         if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+            $inside = "$(& $git -C $path rev-parse --is-inside-work-tree 2>$null)".Trim()
+            if ($LASTEXITCODE -ne 0 -or $inside -ne 'true') {
+                throw "$path contains a $($source.Name) manifest but is not a Git checkout."
+            }
             if (-not (Select-String -LiteralPath $manifest -SimpleMatch "name = `"$($source.Name)`"" -Quiet)) {
                 throw "$path exists but is not a $($source.Name) checkout."
             }
-            Write-ToolboxLog 'OK' "Using $($source.Name) checkout $path at $((& $git -C $path rev-parse --short HEAD))" | Out-Host
+            $branch = "$(& $git -C $path symbolic-ref --quiet --short HEAD 2>$null)".Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $branch) {
+                throw "$path is on a detached HEAD; attach a branch before updating the adaptive framework checkout."
+            }
+            $head = "$(& $git -C $path rev-parse HEAD 2>$null)".Trim()
+            $remoteLine = @(& $git -C $path ls-remote --exit-code origin "refs/heads/$branch" 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $remoteLine.Count -ne 1) {
+                throw "Could not resolve origin/$branch for $path."
+            }
+            $remoteHead = ("$($remoteLine[0])" -split '\s+')[0]
+            if ($head -eq $remoteHead) {
+                Write-ToolboxLog 'OK' "Using $($source.Name) checkout $path at $(& $git -C $path rev-parse --short HEAD); origin/$branch is unchanged." | Out-Host
+            } else {
+                $changes = @(& $git -C $path status --porcelain --untracked-files=normal)
+                if ($changes.Count -gt 0) {
+                    Add-BestEffortWarning "$path has local changes and will not be pulled; preserving local WIP at $head." | Out-Host
+                } else {
+                    & $git -C $path cat-file -e "$remoteHead^{commit}" 2>$null
+                    $remoteCommitAvailable = $LASTEXITCODE -eq 0
+                    if ($remoteCommitAvailable) {
+                        & $git -C $path merge-base --is-ancestor $remoteHead $head 2>$null
+                        $remoteAlreadyIncluded = $LASTEXITCODE -eq 0
+                    } else {
+                        $remoteAlreadyIncluded = $false
+                    }
+                    if ($remoteAlreadyIncluded) {
+                        Write-ToolboxLog 'OK' "Using $($source.Name) checkout $path at $(& $git -C $path rev-parse --short HEAD); origin/$branch has no unmerged changes." | Out-Host
+                    } else {
+                        Write-ToolboxLog 'INFO' "Updating $($source.Name) checkout $path from origin/$branch." | Out-Host
+                        Invoke-External $git @('pull', '--ff-only', '--no-rebase', 'origin', $branch) $path | Out-Host
+                        Write-ToolboxLog 'OK' "Updated $($source.Name) checkout $path at $(& $git -C $path rev-parse --short HEAD)." | Out-Host
+                    }
+                }
+            }
         } else {
             if ((Test-Path -LiteralPath $path) -and @(Get-ChildItem -LiteralPath $path -Force).Count) {
                 throw "Refusing to overwrite non-empty path $path"
             }
-            $url = "https://github.com/$SpeechSourceOwner/$($source.Name).git"
+            $url = "https://github.com/$Owner/$($source.Name).git"
             # Out-Host keeps log lines out of the returned path table.
             Invoke-External $git @('clone', $url, $path) $root | Out-Host
             Write-ToolboxLog 'OK' "Cloned $url to $path" | Out-Host
@@ -839,8 +879,12 @@ function Initialize-SpeechSourceCheckout {
     return $paths
 }
 
+function Initialize-SpeechSourceCheckout {
+    return Initialize-AdaptiveFrameworkCheckout -Root (Get-SpeechSourceRoot) -Owner $SpeechSourceOwner
+}
+
 function Test-SpeechImport {
-    # Fail unless every module imports from its DarbotLM checkout (an editable
+    # Fail unless every module imports from its adaptive framework checkout (an editable
     # install), never from a PyPI wheel in site-packages.
     param([Parameter(Mandatory = $true)][string]$Python, [Parameter(Mandatory = $true)][hashtable]$Expected)
     foreach ($name in $Expected.Keys) {
@@ -850,14 +894,14 @@ function Test-SpeechImport {
         $file = [IO.Path]::GetFullPath("$($location[0])".Trim())
         $checkout = $Expected[$name].TrimEnd('\') + '\'
         if (-not $file.StartsWith($checkout, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "$module resolves to $file, not the DarbotLM checkout $checkout"
+            throw "$module resolves to $file, not the adaptive framework checkout $checkout"
         }
         Write-ToolboxLog 'OK' "$name $("$($location[1])".Trim()) imports from $file"
     }
 }
 
 function Install-SpeechSourceSet {
-    Write-ToolboxLog 'STEP' 'Installing the DarbotLM misaki, kokoro and kokoro-onnx sources.'
+    Write-ToolboxLog 'STEP' 'Installing the dayour misaki, kokoro and kokoro-onnx sources.'
     Initialize-PackageNetwork
     $speech = Initialize-SpeechSourceCheckout
     $python = Join-Path $RepoRoot '.venv\Scripts\python.exe'
@@ -1157,7 +1201,7 @@ function Invoke-NodeService {
     if (Test-Path -LiteralPath $revisionPath) { Remove-Item -LiteralPath $revisionPath -Force -ErrorAction Stop }
     $powershell = Get-Tool @('pwsh.exe', 'powershell.exe')
     $run = Join-Path $RepoRoot 'scripts\run.ps1'
-    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $run, '-Service', $Service, '-Port', "$Port")
+    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$run`"", '-Service', $Service, '-Port', "$Port")
     $process = Start-Process -FilePath $powershell -ArgumentList $arguments -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
     [IO.File]::WriteAllText($pidPath, "$($process.Id)", (New-Object Text.UTF8Encoding($false)))
     if ($revision) { [IO.File]::WriteAllText($revisionPath, $revision, (New-Object Text.UTF8Encoding($false))) }
@@ -1330,6 +1374,7 @@ function Invoke-Toolbox {
                 'Deps' { Install-DependencySet }
                 'Models' { Install-ModelSet }
                 'Build' { Invoke-FrameworkBuild; Write-NodeConfiguration }
+                'Adaptive' { Initialize-AdaptiveFrameworkCheckout | Out-Null }
                 'Speech' { Install-SpeechSourceSet }
                 'Test' { Test-Framework }
                 'Start' { Invoke-ServiceSuite }

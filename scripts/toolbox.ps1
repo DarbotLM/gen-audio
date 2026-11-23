@@ -629,7 +629,9 @@ function Install-DarbotSpeechWheelSet {
     param([Parameter(Mandatory = $true)][string]$RequirementsPath)
     $gh = Get-Tool @('gh.exe')
     if (-not $gh) { throw 'GitHub CLI is required for the private DarbotLM wheel set.' }
-    & $gh auth status --hostname github.com *> $null
+    # --active: a second, expired account in the gh keyring makes a plain `gh auth status`
+    # exit 1 even when the active account can download the wheels.
+    & $gh auth status --hostname github.com --active *> $null
     if ($LASTEXITCODE -ne 0) {
         throw 'GitHub CLI is not authenticated for github.com. Run gh auth login before bootstrapping Gen-Audio.'
     }

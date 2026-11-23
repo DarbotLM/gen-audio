@@ -350,14 +350,29 @@ try {
         }
     }
     Write-Step "no dev cfg in gen-audio-desktop build-script output ($($outputs.Count) checked)"
-    # Fingerprint gate: one desktop lib fingerprint in the layout cargo used.
-    # More than one means the desktop crate was built under a second
-    # configuration (bare cargo, another CLI, other features) and the cache
-    # is thrashing.
-    $fingerprints = @($units | Where-Object { @($_.FingerprintFiles | Where-Object { $_ -like 'lib-gen_audio_desktop_lib*' }).Count -gt 0 })
-    Write-Step "gen-audio-desktop lib fingerprints: $($fingerprints.Count) ($layout layout: $(($fingerprints | ForEach-Object { $_.Hash }) -join ', '))"
+    # Fingerprint gate: the desktop lib unit this exe was linked against.
+    # The matched bin unit's fingerprint JSON lists each dependency as
+    # [pkg, crate, public, u64]; a lib unit's fingerprint file holds that u64
+    # as 16 hex digits, little-endian. A lib unit left by an earlier build of
+    # another commit (other dependencies, version or features) keeps its own
+    # hash in target\; it is listed and ignored, never counted as this build.
+    # Exactly one lib unit must carry the fingerprint the bin links.
+    $libUnits = @($units | Where-Object { @($_.FingerprintFiles | Where-Object { $_ -eq 'lib-gen_audio_desktop_lib' }).Count -gt 0 })
+    $binUnit = $binMatches[0].Unit
+    $binJsonName = @($binUnit.FingerprintFiles | Where-Object { $_ -match '^bin-gen[-_]audio[-_]desktop\.json$' })
+    if ($binJsonName.Count -ne 1) { throw "cargo bin unit $($binUnit.Hash) has $($binJsonName.Count) bin-gen-audio-desktop.json fingerprint files; cannot tell which desktop lib it links" }
+    $binJson = Get-Content -Raw -LiteralPath (Join-Path $binUnit.Fingerprint $binJsonName[0])
+    $libDep = [regex]::Matches($binJson, '\[\s*(?:\d+|"[^"]*")\s*,\s*"gen_audio_desktop_lib"\s*,\s*(?:true|false)\s*,\s*(\d+)\s*\]')
+    if ($libDep.Count -ne 1) { throw "cargo bin unit $($binUnit.Hash) lists $($libDep.Count) gen_audio_desktop_lib dependencies in $($binJsonName[0]), expected 1" }
+    $linked = ([BitConverter]::GetBytes([UInt64]::Parse($libDep[0].Groups[1].Value)) | ForEach-Object { $_.ToString('x2') }) -join ''
+    $fingerprints = @($libUnits | Where-Object {
+            $libFile = Join-Path $_.Fingerprint 'lib-gen_audio_desktop_lib'
+            (Test-Path -LiteralPath $libFile -PathType Leaf) -and ((Get-Content -Raw -LiteralPath $libFile).Trim() -eq $linked)
+        })
+    $staleLibs = @($libUnits | Where-Object { $fingerprints -notcontains $_ })
+    Write-Step "gen-audio-desktop lib fingerprints: $($libUnits.Count) ($layout layout: $(($libUnits | ForEach-Object { $_.Hash }) -join ', ')); bin links $linked in $(($fingerprints | ForEach-Object { $_.Hash }) -join ', ')$(if ($staleLibs.Count) { "; ignoring stale unit(s) $(($staleLibs | ForEach-Object { $_.Hash }) -join ', ')" })"
     if ($fingerprints.Count -ne 1) {
-        throw "expected exactly one gen-audio-desktop lib fingerprint in cargo's $layout layout under $releaseDir, found $($fingerprints.Count)"
+        throw "expected exactly one gen-audio-desktop lib unit in cargo's $layout layout under $releaseDir with the fingerprint $linked that gen-audio.exe's bin unit links, found $($fingerprints.Count) of $($libUnits.Count)"
     }
     Write-Step "exe $($exe.Path) sha256 $($exe.Sha256) ($($exe.State))"
 

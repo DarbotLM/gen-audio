@@ -39,6 +39,7 @@ import {
 import { fixturesRequested } from "./viewport-source";
 import { loadLibraryCatalog, mediaUrl, sourceSha256, type LibraryCatalog } from "./library-assets";
 import { decorateLibraryTiles } from "./livestrip";
+import { fillAgentVoiceSlides, flipAgentVoiceTile, loadAgentVoiceCatalog } from "./agentvoice";
 import { profilePreview, type ProfilePreview, type VoiceSelection } from "./profiles";
 import {
   announceCopy,
@@ -56,6 +57,7 @@ import {
   setCardFace,
   setCardFlip,
   showRejected,
+  slideForLayer,
   slides,
 } from "./render";
 import { slideKey } from "./snap";
@@ -152,6 +154,44 @@ export function presentLibraryCatalog(work: Promise<LibraryCatalog | null>): voi
     .catch((error: unknown) => failUi(error, "library catalog"));
 }
 
+/** AgentVoice slides (Yumlog Studio voices): filled from /library/agentvoice/assets.json. */
+function presentAgentVoices(): void {
+  void loadAgentVoiceCatalog()
+    .then((doc) => {
+      const count = fillAgentVoiceSlides(board, doc, {
+        onCopy: announceCopy,
+        openCube: (tileId, url, uid, label) => reportAsync(openAgentVoiceCube(tileId, url, uid, label), "cube"),
+      });
+      document.documentElement.dataset.agentvoices = String(count);
+    })
+    .catch((error: unknown) => {
+      fillAgentVoiceSlides(board, null);
+      failUi(error, "AgentVoice catalog");
+    });
+}
+
+/** Bind an AgentVoice cube to the Cube tab; that tile's audio drives the slice. */
+async function openAgentVoiceCube(tileId: string, url: string, uid: string, label: string): Promise<void> {
+  goToSlideId(board, "spatial");
+  cubeBindSeq += 1;
+  const seq = cubeBindSeq;
+  cubeClipId = tileId;
+  noCubeClipId = "";
+  setCubeClockClip(tileId, uid || null);
+  const message = await loadCube(url);
+  if (seq !== cubeBindSeq) return;
+  const caption = document.querySelector<HTMLElement>("#cube-caption");
+  if (caption) caption.textContent = `AgentVoice ${label}: ${message}`;
+  syncCubeChrome();
+  status.textContent = `Cube tab bound (AgentVoice ${label}).`;
+}
+
+/** Dev/screenshot hook: flip an AgentVoice tile without synthetic input. */
+(window as unknown as { genAudioAgentVoice?: unknown }).genAudioAgentVoice = {
+  flip: (tileId: string, face: 0 | 1) => flipAgentVoiceTile(board, tileId, face),
+  goTo: (slideId: string) => goToSlideId(board, slideId),
+};
+
 /** One control-stream frame. A bad frame is counted and shown; the stream stays up. */
 export function acceptControlFrame(data: string): void {
   try {
@@ -237,6 +277,7 @@ function show(documentIn: unknown): void {
   reportAsync(harvestLibrary(), "library harvest");
   bindFloatingPlayback();
   presentLibraryCatalog(loadLibraryCatalog(loadDevAssets()));
+  presentAgentVoices();
   const n = slides(board).length;
   if (status.dataset.control !== "disconnected") {
     status.textContent = `${doc.cards.length} cards · ${n} snap slides · spectrogram follows side pane`;
@@ -742,8 +783,7 @@ document.querySelector("#generate-podcast")?.addEventListener("click", () => {
 document.querySelectorAll<HTMLButtonElement>("#layer-switch [data-layer]").forEach((button) => {
   button.addEventListener("click", () => {
     const layer = button.dataset.layer;
-    const target =
-      layer === "models" ? "models" : layer === "clips" ? "library" : layer === "video" ? "video" : layer === "cube" ? "spatial" : "";
+    const target = slideForLayer(layer);
     if (target) goToSlideId(board, target);
     if (target === "spatial") {
       ensureDefaultCube();

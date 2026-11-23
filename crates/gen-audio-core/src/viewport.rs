@@ -384,8 +384,12 @@ impl Viewport {
             slides: vec![
                 slide("slide:models", "Voice models", None, None),
                 slide("slide:profiles", "Voice profiles", None, None),
+                // Yumlog Studio AgentVoice livetiles; the desktop draws them from
+                // public/library/agentvoice/assets.json (no reducer views yet).
+                slide("slide:agentvoice", "AgentVoice", Some("audio_clip"), None),
                 slide("slide:studio", "Studio", Some("spectrogram"), None),
-                slide("slide:library", "Library", Some("audio_clip"), None),
+                // The tab is "Audio"; the slug stays slide:library so deep links keep working.
+                slide("slide:library", "Audio", Some("audio_clip"), None),
                 slide("slide:video", "Video", Some("video"), None),
                 slide("slide:spatial", "Spatial", Some("cube"), None),
                 slide("slide:connectors", "Connectors", None, None),
@@ -1347,6 +1351,9 @@ pub fn resolve_slide(slide: &str) -> Result<ResolvedSlide, ReduceError> {
         Some(slug) => (slug, false),
         None => (slide, true),
     };
+    // The Audio tab (renamed from "Audio clips") keeps the slide:library slug;
+    // slide:audio is its alias, so both deep links land on the same slide.
+    let slug = if slug == "audio" { "library" } else { slug };
     if slug.is_empty() || !catalog::SLIDES.contains(&slug) {
         return Err(ReduceError::invalid(format!("unknown slide {slide}")));
     }

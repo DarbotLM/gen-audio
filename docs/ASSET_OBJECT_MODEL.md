@@ -475,3 +475,22 @@ synthetic file, a 1.000 s 24 kHz mono 16-bit silent PCM WAV (44 + 48000 =
   does not publish its own tools as assets yet.
 - `podcast_script` and `transcript` have schemas but no library instances yet;
   the P4 pipeline will be the first writer.
+
+## AgentVoice catalog (Yumlog Studio voices)
+
+`python -m gen_audio.cli.agent_voices import <studio-dir> --set <name>` reads a
+Yumlog Studio `agent-voices.json` (`urn:yumlog:agent-voices:v1`) and writes
+`public/library/agentvoice/assets.json`: `sources` (one row per imported set,
+with the source `voice_count`), `voices` (one row per source voice, never
+dropped) and `assets` (v1 envelopes). Each voice whose WAV is present and
+matches the source sha256 gets an `audio_clip` (engine `yumlog_agent_voice`,
+claim `real_wav`, appearances in `extensions["x-yumlog-agent-voice"]`), a
+`spectrogram_2d` and a `cube_ihdr` with its four `cube_layer` envelopes, all
+minted by the same `ga1` uid and braille glyph rules. A voice without its WAV
+keeps a row with `status: "unavailable"` and a reason and gets no derived
+assets. WAVs (`agentvoice/<set>/<alias>.wav`) come from a real meeting
+recording and are not committed. `python -m gen_audio.cli.agent_voices check`
+re-mints every uid and glyph and checks counts and media hashes.
+
+The Audio slide keeps `slide:library`; `slide:audio` is an alias, and the
+AgentVoice slide is `slide:agentvoice`.

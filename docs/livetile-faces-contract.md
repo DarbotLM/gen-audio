@@ -497,3 +497,17 @@ Together they pin:
 The source of truth for a live tile is therefore: **required card uid for identity, reducer-owned
 `face_id` / `face_index` / `face_count` / `ids` for position, and explicit glyph/MCP Flip for the
 only face transition path.**
+
+## 12. AgentVoice tiles (desktop-owned)
+
+AgentVoice flipcards (AgentVoice slide, and the "Audio · AgentVoice" slide on the
+Audio tab) are built by the desktop from `/library/agentvoice/assets.json`, not by
+the reducer. They use the same face dataset, `hidden`/`inert` and glyph label as
+reducer tiles (`setTileFaceState`), with two faces: `voice` (name, appearances,
+total time, timeline, transport, spectrogram) and `cube` (the voice's own
+inverse-HDR cube, time slice on the tile's audio, appearance list). Card ids are
+`av-<set>-<alias>` and `audio-av-<set>-<alias>`.
+
+Not yet in the reducer: `viewport_get` does not list them and `ui_flip` cannot
+address them. For tests and screenshots the window exposes
+`window.genAudioAgentVoice.flip(tileId, 0|1)` and `.goTo(slideId)`.

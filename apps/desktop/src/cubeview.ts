@@ -590,7 +590,7 @@ type CubeDoc = CubeDocFields & {
 };
 
 /** Points (the four honesty layers only) and meta from a cube JSON, or why not. */
-function parseCubeDoc(url: string, data: CubeDoc): { points: CubePoint[]; names: string[]; meta: CubeMeta } | string {
+export function parseCubeDoc(url: string, data: CubeDoc): { points: CubePoint[]; names: string[]; meta: CubeMeta } | string {
   const points = Array.isArray(data.points_preview) ? data.points_preview : [];
   const namesFromDict = data.layers && !Array.isArray(data.layers) ? Object.keys(data.layers) : [];
   const namesFromArr = Array.isArray(data.layers) ? data.layers.map(String) : [];

@@ -14,7 +14,33 @@ export type SlideSchema = {
   columns: number;
   cardIds: string[];
   layer: string;
+  /** Catalog-driven slide: AgentVoice tiles fill `[data-agentvoice-slot]` once /library/agentvoice/assets.json loads. */
+  slot?: "agentvoice" | "audio";
 };
+
+/** Viewport tab (data-layer) -> slide id. "clips" is the pre-rename tab id, kept for old callers. */
+export const LAYER_SLIDES: Record<string, string> = {
+  models: "models",
+  agentvoice: "agentvoice",
+  audio: "library",
+  clips: "library",
+  video: "video",
+  cube: "spatial",
+};
+
+export function slideForLayer(layer: string | undefined): string {
+  return layer ? LAYER_SLIDES[layer] ?? "" : "";
+}
+
+/** Slide id -> the tab that owns it (both Audio slides light the Audio tab). */
+export function layerForSlide(slideId: string | undefined): string {
+  if (slideId === "library" || slideId === "audio-agentvoice") return "audio";
+  if (slideId === "agentvoice") return "agentvoice";
+  if (slideId === "models") return "models";
+  if (slideId === "video") return "video";
+  if (slideId === "spatial") return "cube";
+  return "";
+}
 
 export interface CardFace {
   id: string;
@@ -88,6 +114,15 @@ export const SLIDE_SCHEMAS: SlideSchema[] = [
     cardIds: ["profile-anton", "profile-alice", "profile-khortana", "profile-rocky", "profile-optimus"],
   },
   {
+    id: "agentvoice",
+    title: "AgentVoice",
+    blurb: "Yumlog Studio speaker voices: spectrogram on the front, inverse-HDR cube and appearances on the back",
+    columns: 3,
+    layer: "agentvoice",
+    cardIds: [],
+    slot: "agentvoice",
+  },
+  {
     id: "studio",
     title: "Studio",
     blurb: "Browser spectrogram of the side-pane personas and voice model — not product speech",
@@ -97,10 +132,10 @@ export const SLIDE_SCHEMAS: SlideSchema[] = [
   },
   {
     id: "library",
-    title: "Audio clips",
-    blurb: "One livetile per clip — real WAVs play when the file loads; unavailable stays honest",
+    title: "Audio",
+    blurb: "One livetile per clip — real WAVs play when the file loads; unavailable stays honest. AgentVoice tiles follow on the next slide",
     columns: 3,
-    layer: "clips",
+    layer: "audio",
     cardIds: [
       "lib-cube-explainer",
       "lib-kokoro-onnx",
@@ -111,6 +146,15 @@ export const SLIDE_SCHEMAS: SlideSchema[] = [
       "lib-vibevoice",
       "lib-pocket",
     ],
+  },
+  {
+    id: "audio-agentvoice",
+    title: "Audio · AgentVoice",
+    blurb: "AgentVoice flipcards beside the clips: each voice's real WAV, spectrogram and cube",
+    columns: 3,
+    layer: "audio",
+    cardIds: [],
+    slot: "audio",
   },
   {
     id: "connectors",
@@ -168,7 +212,7 @@ export function renderBoard(
   const slides = SLIDE_SCHEMAS.map((schema) => {
     const cards = schema.cardIds.map((id) => byId.get(id)).filter((c): c is ViewportCard => Boolean(c));
     return { schema, cards };
-  }).filter((slide) => slide.cards.length > 0);
+  }).filter((slide) => slide.cards.length > 0 || Boolean(slide.schema.slot));
 
   // Any leftover cards not claimed by a schema land on a catch-all slide.
   const claimed = new Set(slides.flatMap((s) => s.cards.map((c) => c.id)));
@@ -256,6 +300,17 @@ export function renderBoard(
       section.append(article);
       globalIndex += 1;
     });
+
+    if (slide.schema.slot) {
+      const slot = window.document.createElement("div");
+      slot.className = "agentvoice-slot";
+      slot.dataset.agentvoiceSlot = slide.schema.slot;
+      const waiting = window.document.createElement("p");
+      waiting.className = "av-empty";
+      waiting.textContent = "Loading the AgentVoice catalog\u2026";
+      slot.append(waiting);
+      section.append(slot);
+    }
 
     if (slide.schema.id === "pipeline" && !slide.cards.some((card) => card.kind === "Cube3D")) {
       const note = window.document.createElement("p");
@@ -425,6 +480,11 @@ export function setCardFlip(board: HTMLElement, tileId: string, flipped: boolean
   return setCardFace(board, tileId, { face_index: flipped ? 1 : 0 });
 }
 
+/** Face state for tiles the desktop owns (AgentVoice): same dataset, hidden/inert and glyph label as reducer tiles. */
+export function setTileFaceState(article: HTMLElement, state: CardFaceState): boolean {
+  return setArticleFaceState(article, state);
+}
+
 function markFace(face: HTMLElement, hidden: boolean): void {
   face.hidden = hidden;
   face.setAttribute("aria-hidden", hidden ? "true" : "false");
@@ -484,8 +544,7 @@ export function applyCardOp(board: HTMLElement, op: string, args: Record<string,
 }
 
 function syncLayerTabs(slideId: string | undefined): void {
-  const layer =
-    slideId === "models" ? "models" : slideId === "library" ? "clips" : slideId === "video" ? "video" : slideId === "spatial" ? "cube" : "";
+  const layer = layerForSlide(slideId);
   window.document.querySelectorAll<HTMLButtonElement>("#layer-switch [data-layer]").forEach((button) => {
     button.setAttribute("aria-selected", button.dataset.layer === layer ? "true" : "false");
   });

@@ -12,6 +12,7 @@ pub const MAX_AGENTS_PER_TRACK: usize = 8;
 pub const SLIDES: &[&str] = &[
     "models",
     "profiles",
+    "agentvoice",
     "studio",
     "library",
     "video",

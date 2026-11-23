@@ -566,6 +566,8 @@ body.is-dragging { cursor: grabbing; user-select: none; }
   flex-direction: column;
 }
 .face.front { z-index: 1; }
+/* A face the reducer (or setTileFaceState) hides must not paint: .face sets display:flex. */
+.card > .flip > .face[hidden] { display: none; }
 .face.front::after {
   content: "";
   position: absolute;
@@ -1017,3 +1019,45 @@ th, td { text-align: left; padding: 0.12rem 0.25rem; border-bottom: 1px solid va
 .model-cube-table { font-size: 0.64rem; }
 .model-cube-table .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; word-break: break-all; }
 .model-cube-table button { padding: 0.08rem 0.4rem; font-size: 0.64rem; }
+
+/* AgentVoice slides: Yumlog Studio voices, six flipcards per page (3 x 2), no scrollbars. */
+.slide[data-slide="agentvoice"],
+.slide[data-slide="audio-agentvoice"] {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.agentvoice-slot {
+  grid-column: 1 / -1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+.agentvoice-slot > .card[hidden] { display: none; }
+.av-empty { grid-column: 1 / -1; color: var(--muted); font-size: 0.8rem; margin: 0.4rem 0.2rem; }
+.av-slide-pager { display: inline-flex; align-items: center; gap: 0.35rem; margin-left: auto; flex: 0 0 auto; }
+.av-slide-pager button, .av-pager button { padding: 0.05rem 0.45rem; font-size: 0.68rem; }
+.av-page { font-size: 0.68rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.agentvoice-tile .face { padding: 0.4rem 0.5rem 0.45rem; gap: 0.12rem; }
+.agentvoice-tile h2 { font-size: 0.9rem; margin: 0.1rem 0 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agentvoice-tile .live-mark.is-unavailable { color: var(--warn); }
+.agentvoice-tile .live-mark.is-unavailable::before { background: var(--warn); animation: none; }
+.av-summary { margin: 0; font-size: 0.72rem; color: var(--muted); }
+.av-hint { margin: 0.1rem 0 0; font-size: 0.64rem; color: var(--muted); }
+.av-reason { margin: 0.1rem 0; font-size: 0.7rem; color: var(--warn); }
+.av-timeline { position: relative; height: 6px; border-radius: 3px; background: #0b1118; flex: 0 0 auto; overflow: hidden; margin: 0.15rem 0; }
+.av-timeline i { position: absolute; top: 0; bottom: 0; background: #b5f36b; border-radius: 1px; }
+.agentvoice-tile .transport { margin-top: 0.05rem; }
+.agentvoice-tile .spec-strip { margin-top: 0.15rem; }
+.av-flip { margin-top: auto; align-self: flex-start; padding: 0.12rem 0.5rem; font-size: 0.68rem; }
+.av-cube { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.av-cube-canvas { width: 100%; height: auto; flex: 1 1 auto; min-height: 70px; max-height: none; border-radius: 8px; }
+.av-cube-label { margin: 0; font-size: 0.6rem; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.av-cube-legend { position: absolute; top: 0.2rem; right: 0.3rem; margin: 0; padding: 0; list-style: none; display: flex; gap: 0.3rem; font-size: 0.56rem; }
+.av-cube-legend li { display: inline-flex; align-items: center; gap: 0.15rem; color: var(--muted); }
+.av-cube-legend li::before { content: ""; width: 0.45rem; height: 0.45rem; border-radius: 2px; background: var(--swatch); }
+.av-open-cube { position: absolute; bottom: 1.05rem; right: 0.3rem; padding: 0.05rem 0.4rem; font-size: 0.62rem; }
+.av-appearances { flex: 0 0 auto; }
+.av-appearance-list { margin: 0.1rem 0 0; padding-left: 1.4rem; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.1rem 0.4rem; font-size: 0.64rem; }
+.av-appearance { padding: 0.02rem 0.3rem; font-size: 0.64rem; font-variant-numeric: tabular-nums; }
+.av-pager { display: flex; align-items: center; gap: 0.3rem; margin-top: 0.1rem; }

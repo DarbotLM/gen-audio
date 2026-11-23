@@ -231,11 +231,11 @@ def run_pipeline(
     video_error = ""
     video_asset = None
     try:
-        render_clip_mp4(fitted_path, spec_png, cube_png, video_path)
+        render_clip_mp4(fitted_path, cube_json_path, video_path, name=engine)
         video_asset = asset_object(
             video_path,
             kind="video",
-            derived_from=[wav_asset["uid"], spec_asset["uid"], cube_png_asset["uid"]],
+            derived_from=[wav_asset["uid"], cube_asset["uid"]],
             duration_s=duration_s,
         )
     except VideoError as exc:
@@ -277,6 +277,7 @@ def run_pipeline(
             "cubePng": cube_png.name,
             "compare": compare_path.name,
             "video": video_path.name if video_asset else "",
+            "videoSlices": video_path.with_suffix(".slices.json").name if video_asset else "",
         },
     }
 

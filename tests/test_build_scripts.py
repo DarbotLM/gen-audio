@@ -162,6 +162,10 @@ def test_build_uses_the_local_tauri_cli_and_hash_checks_both_external_binaries()
         "binaries/gen-audio-mcp",
         "binaries/gen-audio-acp",
     ]
+    build_rs = (REPO / "apps/desktop/src-tauri/build.rs").read_text(encoding="utf-8")
+    debug_config = build_rs.index("std::env::set_var")
+    debug_block = build_rs[debug_config:build_rs.index("} else {", debug_config)]
+    assert '"bundle":{"externalBin":["binaries/gen-audio-mcp"]}' in debug_block
 
 
 def test_msix_and_nuget_pack_after_existing_installer_provenance_checks():

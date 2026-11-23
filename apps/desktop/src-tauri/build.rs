@@ -26,7 +26,7 @@ fn main() {
     if debug {
         std::env::set_var(
             "TAURI_CONFIG",
-            r#"{"app":{"security":{"capabilities":["default","dev","dev-fixtures"]}}}"#,
+            r#"{"app":{"security":{"capabilities":["default","dev","dev-fixtures"]}},"bundle":{"externalBin":["binaries/gen-audio-mcp"]}}"#,
         );
     } else {
         attributes = attributes.capabilities_path_pattern("./capabilities/default.json");

@@ -219,7 +219,7 @@ fn handshake(addr: &str, token: Option<&str>, boot_nonce: Option<&str>) -> Resul
         "params": {
             "protocolVersion": "2025-03-26",
             "capabilities": {},
-            "clientInfo": {"name": "gen-audio-desktop", "version": "0.1.0"}
+            "clientInfo": {"name": "gen-audio-desktop", "version": env!("CARGO_PKG_VERSION")}
         }
     });
     let body = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;

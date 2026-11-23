@@ -514,8 +514,11 @@ pub fn run() {
 mod sidecar_boot {
     use super::{boot_mcp, stop_sidecar, wait_for_handshake};
     use std::fs;
+    use std::io::Read;
     use std::path::PathBuf;
-    use std::process::Command;
+    use std::process::{Command, Output, Stdio};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     const TEST_NAME: &str = "sidecar_boot::sidecar_spawn_failure_is_logged_and_boot_continues";
 
@@ -529,6 +532,108 @@ mod sidecar_boot {
                     .expect("exe dir")
                     .join("gen-audio-mcp")
             })
+    }
+
+    /// Runs `cmd` with stdout and stderr captured (stdin null), but never
+    /// waits past `deadline`. A child still running then is killed and
+    /// reaped; a child that exited while some other process still holds its
+    /// stdout/stderr pipe (an inherited handle) is reported as that. Either
+    /// way the test fails in seconds with what was printed so far, instead of
+    /// `Command::output()` blocking for as long as the pipe stays open.
+    fn output_within(mut cmd: Command, deadline: Duration) -> Result<Output, String> {
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| format!("spawn: {err}"))?;
+        let started = Instant::now();
+        let (out_tx, out_rx) = mpsc::channel();
+        let (err_tx, err_rx) = mpsc::channel();
+        let mut out = child.stdout.take().expect("stdout pipe");
+        let mut err = child.stderr.take().expect("stderr pipe");
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf);
+            let _ = out_tx.send(buf);
+        });
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf);
+            let _ = err_tx.send(buf);
+        });
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(|err| format!("try_wait: {err}"))? {
+                break status;
+            }
+            if started.elapsed() >= deadline {
+                let pid = child.id();
+                let _ = child.kill();
+                let _ = child.wait();
+                let stdout = out_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap_or_default();
+                let stderr = err_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "child pid {pid} did not exit within {deadline:?}; killed and reaped\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr)
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let remaining = |started: Instant| {
+            deadline
+                .saturating_sub(started.elapsed())
+                .max(Duration::from_secs(2))
+        };
+        let stdout = out_rx.recv_timeout(remaining(started)).map_err(|_| {
+            format!("child exited ({status:?}) but its stdout pipe stayed open past {deadline:?}: another process inherited it")
+        })?;
+        let stderr = err_rx.recv_timeout(remaining(started)).map_err(|_| {
+            format!("child exited ({status:?}) but its stderr pipe stayed open past {deadline:?}: another process inherited it")
+        })?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+    /// Stand-in for a boot child that never exits. Runs only when spawned.
+    #[test]
+    #[ignore = "spawned by output_within_kills_a_child_that_outlives_the_deadline"]
+    fn stalled_child() {
+        if std::env::var("GEN_AUDIO_DESKTOP_STALL_CHILD").is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(20));
+    }
+
+    /// DD-8: the sidecar boot test hung for ~8 minutes in one scripts/test.ps1
+    /// run (artifacts/test-logs/20261123-103041-dd6b) because the re-exec used
+    /// `Command::output()`, which has no deadline. A stalled child must fail
+    /// the test in seconds, killed and reaped, never hang the gate.
+    #[test]
+    fn output_within_kills_a_child_that_outlives_the_deadline() {
+        let mut cmd = Command::new(std::env::current_exe().expect("current_exe"));
+        cmd.args([
+            "--exact",
+            "sidecar_boot::stalled_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("GEN_AUDIO_DESKTOP_STALL_CHILD", "1");
+        let started = Instant::now();
+        let result = output_within(cmd, Duration::from_secs(2));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "a stalled child held the test for {elapsed:?}"
+        );
+        let err = result.expect_err("a stalled child must be an error, not a pass");
+        assert!(err.contains("did not exit within"), "{err}");
     }
 
     #[test]
@@ -566,8 +671,8 @@ mod sidecar_boot {
         let _ = fs::remove_dir_all(&work);
         fs::create_dir_all(&work).expect("work dir");
         let addr_file = work.join("mcp.addr");
-        let output = Command::new(std::env::current_exe().expect("current_exe"))
-            .args(["--exact", TEST_NAME, "--nocapture"])
+        let mut cmd = Command::new(std::env::current_exe().expect("current_exe"));
+        cmd.args(["--exact", TEST_NAME, "--nocapture"])
             .env("GEN_AUDIO_DESKTOP_BOOT_MCP", "1")
             .env(
                 "GEN_AUDIO_DESKTOP_TEST_SIDECAR",
@@ -575,10 +680,10 @@ mod sidecar_boot {
             )
             .env("GEN_AUDIO_MCP_ADDR", "127.0.0.1:0")
             .env("GEN_AUDIO_WORK_DIR", &work)
-            .env("GEN_AUDIO_MCP_ADDR_FILE", &addr_file)
-            .output()
-            .expect("re-exec the desktop test harness");
+            .env("GEN_AUDIO_MCP_ADDR_FILE", &addr_file);
+        let output = output_within(cmd, Duration::from_secs(60));
         let _ = fs::remove_dir_all(&work);
+        let output = output.expect("re-exec the desktop test harness");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(

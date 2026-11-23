@@ -1,5 +1,21 @@
 # Releases
 
+## v0.2.0
+
+- Viewport: the bitcube video renderer (clip.mp4 is the inverse-HDR cube with
+  an audio-synced slice plane, 74a90b4) and the AgentVoice tab with the Yumlog
+  Studio voices as flipcard livetiles; "Audio clips" is now "Audio" (4712647).
+- MCP serverInfo, ACP agentInfo and the desktop clientInfo announce the crate
+  version instead of a literal "0.1.0".
+- Release build: `-WavSource <folder>` stages the media.lock.json WAVs from
+  another verified copy (only locked sha256 bytes are copied); without them
+  the build still refuses, with the staging options in the message.
+- Tests: the desktop sidecar boot test can no longer hang the gate (60 s
+  deadline, child killed and reaped); the sprawl gate skips the
+  toolbox-managed adaptive_framework clones by default and now prunes every
+  `-SprawlExclude` path, not only the last.
+- Assets: same as v0.1.0 plus the AgentVoice catalog; the Windows assets are
+  `Gen-Audio_0.2.0_x64-setup.exe` and `Gen-Audio_0.2.0_x64_en-US.msi`.
 ## v0.1.0
 
 The initial Gen-Audio release combines the Python SDK, the Windows desktop

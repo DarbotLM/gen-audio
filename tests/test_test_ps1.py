@@ -169,6 +169,56 @@ def test_sprawl_gate_fails_on_a_stray_shell_script_or_any_shebang_file(tmp_path)
     assert "main.rs" not in out
 
 
+
+@pytest.mark.skipif(SHELL is None or shutil.which("git") is None, reason="needs PowerShell and git")
+def test_sprawl_gate_skips_the_toolbox_adaptive_framework_clones_by_default_and_says_so(tmp_path):
+    """DD-8: the gitignored upstream clones toolbox.ps1 manages under adaptive_framework/
+    (misaki, kokoro, kokoro-onnx) are not our scripts; they made Sprawl fail with 123
+    findings. They are excluded by default and each exclusion is printed. Anything
+    else under adaptive_framework/ is still scanned."""
+    repo = _temp_repo(tmp_path)
+
+    def sprawl() -> subprocess.CompletedProcess[str]:
+        return subprocess.run([SHELL, "-NoProfile", "-File", str(repo / "scripts" / "test.ps1"), "-Tag", "t",
+                               "-Skip", "Pssa,Regen,Cargo,Npm,Python"], cwd=repo, capture_output=True, text=True, timeout=300)
+
+    for clone, name in (("misaki", "setup.py"), ("kokoro", "demo/app.py"), ("kokoro-onnx", "scripts/build.sh")):
+        target = repo / "adaptive_framework" / clone / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("#!/usr/bin/env bash\necho upstream\n", encoding="utf-8")
+    clean = sprawl()
+    out = clean.stdout + clean.stderr
+    assert clean.returncode == 0, out
+    for clone in ("misaki", "kokoro", "kokoro-onnx"):
+        assert f"SPRAWL_EXCLUDED adaptive_framework/{clone} (default: toolbox-managed upstream clone)" in out, out
+    assert "outside-allowlist adaptive_framework/" not in out
+
+    (repo / "adaptive_framework" / "stray.ps1").write_text("Write-Output 1\n", encoding="utf-8")
+    stray = sprawl()
+    out = stray.stdout + stray.stderr
+    assert stray.returncode != 0, out
+    assert "SPRAWL outside-allowlist adaptive_framework/stray.ps1" in out
+    assert "outside-allowlist adaptive_framework/kokoro" not in out
+
+
+@pytest.mark.skipif(SHELL is None or shutil.which("git") is None, reason="needs PowerShell and git")
+def test_every_sprawl_exclude_is_pruned_not_only_the_last(tmp_path):
+    """Older bug, found in DD-8: `foreach ($exclude in $Exclude)` reused the -Exclude
+    parameter as its loop variable (PowerShell names are case-insensitive), so after
+    printing the list only the last path was actually pruned."""
+    repo = _temp_repo(tmp_path)
+    for folder in ("one", "two"):
+        (repo / folder).mkdir()
+        (repo / folder / "stray.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    run = subprocess.run([SHELL, "-NoProfile", "-File", str(repo / "scripts" / "test.ps1"), "-Tag", "t",
+                          "-Skip", "Pssa,Regen,Cargo,Npm,Python", "-SprawlExclude", "one,two"],
+                         cwd=repo, capture_output=True, text=True, timeout=300)
+    out = run.stdout + run.stderr
+    assert "SPRAWL_EXCLUDED one" in out and "SPRAWL_EXCLUDED two" in out, out
+    assert "outside-allowlist one/stray.sh" not in out, out
+    assert "outside-allowlist two/stray.sh" not in out, out
+    assert run.returncode == 0, out
+
 def _stub_cargo(tmp_path: Path) -> dict[str, str]:
     """PATH with a `cargo` that does nothing, so Regen runs only the python
     generator and its git diff (the build_assets bytes are not the question)."""

@@ -71,6 +71,40 @@ def test_wav_check_fails_on_an_empty_or_missing_lock_instead_of_passing(tmp_path
     assert _ps(f"Get-LibraryWavProblem -Root '{nolock}'", nolock).returncode != 0
 
 
+
+@needs_shell
+def test_import_library_wav_stages_only_locked_bytes_from_another_copy(tmp_path):
+    """DD-8: with SMAX offline the build could only refuse. -WavSource stages the
+    locked WAVs from another verified copy (a node or share); a source file with
+    other bytes is reported and not copied, so the gate after it still refuses."""
+    good, other = b"RIFF good", b"RIFF other"
+    root = _library(tmp_path, {}, {"a.wav": good, "b.wav": other, "c.wav": good})
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a.wav").write_bytes(good)
+    (source / "b.wav").write_bytes(other + b"!")
+    out = _ps(f"Import-LibraryWav -Root '{root}' -From '{source}'", root)
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.strip().splitlines()
+    assert any(line.startswith("WAV_STAGED a.wav") for line in lines), lines
+    assert any(line.startswith("WAV_SOURCE_MISMATCH b.wav") for line in lines), lines
+    assert any(line.startswith("WAV_SOURCE_MISSING c.wav") for line in lines), lines
+    library = root / "apps" / "desktop" / "public" / "library"
+    assert (library / "a.wav").read_bytes() == good
+    assert not (library / "b.wav").exists() and not (library / "c.wav").exists()
+    gate = _ps(f"Get-LibraryWavProblem -Root '{root}'", root).stdout
+    assert "WAV_MISSING b.wav" in gate and "WAV_MISSING c.wav" in gate and " a.wav" not in gate
+    assert _ps(f"Import-LibraryWav -Root '{root}' -From '{tmp_path / 'nowhere'}'", root).returncode != 0
+
+
+def test_build_refusal_names_the_way_to_stage_the_wavs():
+    text = BUILD.read_text(encoding="utf-8")
+    assert "[string]$WavSource" in text
+    gate = text.index("Get-LibraryWavProblem -Root $root")
+    assert text.index("Import-LibraryWav -Root $root -From $WavSource") < gate
+    after = text[gate:text.index("Write-Step 'library WAVs match", gate)]
+    assert "-WavSource" in after and "throw" in after
+
 def test_build_script_checks_the_wavs_before_building_and_never_skips():
     text = BUILD.read_text(encoding="utf-8")
     gate = text.index("Get-LibraryWavProblem -Root $root")

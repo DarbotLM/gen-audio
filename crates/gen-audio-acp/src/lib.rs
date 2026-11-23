@@ -280,7 +280,7 @@ fn initialize(agent: &Agent, params: &Value) -> Result<Value, String> {
             "sessionSemantics": session_semantics,
             "promptCapabilities": {"image": false, "audio": false, "embeddedContext": false}
         },
-        "agentInfo": {"name": "gen-audio", "version": "0.1.0"},
+        "agentInfo": {"name": "gen-audio", "version": env!("CARGO_PKG_VERSION")},
         "authMethods": []
     }))
 }

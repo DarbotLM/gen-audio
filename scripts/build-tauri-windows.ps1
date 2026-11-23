@@ -26,12 +26,17 @@ Works on Windows PowerShell 5.1 and PowerShell 7.
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-tauri-windows.ps1 -Mode Full
 pwsh -NoProfile -File scripts/build-tauri-windows.ps1 -Mode NoBundle
+pwsh -NoProfile -File scripts/build-tauri-windows.ps1 -WavSource \\node\share\gen-audio-library
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Full', 'NoBundle')]
     [string]$Mode = 'Full',
-    [string]$CertificateThumbprint
+    [string]$CertificateThumbprint,
+    # Folder holding verified copies of the media.lock.json WAVs (another
+    # node, a share, SMAX D:\gen-audio\artifacts\library). Only files with the
+    # locked sha256 are staged; the gate below still refuses anything missing.
+    [string]$WavSource
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,10 +114,15 @@ try {
     # zero WAVs and the installed app failed with 'NotSupportedError: no
     # supported sources'. Every WAV in media.lock.json must be staged with the
     # locked bytes, or the build stops here (no skip).
+    if ($WavSource) {
+        Write-Step "stage library WAVs from $WavSource (locked sha256 only)"
+        Import-LibraryWav -Root $root -From $WavSource | ForEach-Object { Write-Output $_ }
+    }
     $wavProblems = @(Get-LibraryWavProblem -Root $root)
     if ($wavProblems.Count -gt 0) {
         $wavProblems | ForEach-Object { Write-Output $_ }
-        throw "$($wavProblems.Count) library WAV(s) missing or not the media.lock.json bytes; stage them in apps\desktop\public\library before a release build"
+        throw ("$($wavProblems.Count) library WAV(s) missing or not the media.lock.json bytes. No release build without them; this gate has no bypass. " +
+            "Stage them in apps\desktop\public\library, or pass -WavSource <folder with verified copies> (SMAX D:\gen-audio\artifacts\library or another node's apps\desktop\public\library).")
     }
     Write-Step 'library WAVs match media.lock.json (sha256, bytes)'
 

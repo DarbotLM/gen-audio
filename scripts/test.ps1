@@ -61,6 +61,10 @@ The sprawl gate scans the working tree on disk, including untracked and
 gitignored files (artifacts/ counts), because one-off scripts hide in ignored
 folders. -SprawlExclude takes paths relative to the repo root to leave out of
 that scan; every excluded path is printed so the run says what it skipped.
+The gitignored upstream clones scripts\toolbox.ps1 manages under
+adaptive_framework/ (misaki, kokoro, kokoro-onnx) are excluded by default and
+printed as SPRAWL_EXCLUDED ... (default: ...); the rest of adaptive_framework/
+is still scanned.
 
 Logs: artifacts/test-logs/<yyyyMMdd-HHmmss>-<Tag>/<step>.log
 Works on Windows PowerShell 5.1 and PowerShell 7.
@@ -251,8 +255,14 @@ function Invoke-SprawlGate {
     }
     $findings = New-Object System.Collections.Generic.List[string]
     $tauriCallers = New-Object System.Collections.Generic.List[string]
-    foreach ($exclude in $Exclude) { Write-Output "SPRAWL_EXCLUDED $exclude" }
-    $files = @(Get-ScriptFile -Root $Root -Exclude $Exclude)
+    # Upstream clones toolbox.ps1 checks out (gitignored). Their scripts are not
+    # ours; scanning them made Sprawl fail with 123 findings on every node that
+    # ran toolbox.ps1 (DD-8).
+    $defaultExcludes = @('adaptive_framework/misaki', 'adaptive_framework/kokoro', 'adaptive_framework/kokoro-onnx')
+    foreach ($defaultPath in $defaultExcludes) { Write-Output "SPRAWL_EXCLUDED $defaultPath (default: toolbox-managed upstream clone)" }
+    # Not $exclude: PowerShell names are case-insensitive, so that loop variable was $Exclude itself and left only the last path to prune.
+    foreach ($excludedPath in $Exclude) { Write-Output "SPRAWL_EXCLUDED $excludedPath" }
+    $files = @(Get-ScriptFile -Root $Root -Exclude (@($defaultExcludes) + @($Exclude)))
     foreach ($file in $files) {
         $rel = $file.Rel
         if ($file.Full -like '*manifest.json') {

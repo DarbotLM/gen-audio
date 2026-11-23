@@ -90,6 +90,47 @@ function Get-LibraryWavProblem {
     }
 }
 
+function Import-LibraryWav {
+    # Stage the media.lock.json WAVs from -From (another node's verified copy,
+    # a share, or SMAX D:\gen-audio\artifacts\library) into
+    # apps\desktop\public\library. Only a file whose byte count and sha256
+    # match the lock is copied; anything else is reported and left out, so
+    # Get-LibraryWavProblem after it still refuses. One line per WAV:
+    # WAV_STAGED / WAV_PRESENT / WAV_SOURCE_MISSING / WAV_SOURCE_MISMATCH.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory = $true)][string]$Root, [Parameter(Mandatory = $true)][string]$From)
+    if (-not (Test-Path -LiteralPath $From -PathType Container)) { throw "-WavSource $From is not a folder" }
+    $lockPath = Join-Path $Root 'schemas\asset-object\media.lock.json'
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { throw "media.lock.json is missing: $lockPath" }
+    $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+    $names = @(if ($lock.PSObject.Properties['media']) { $lock.media.PSObject.Properties | ForEach-Object { $_.Name } })
+    if ($names.Count -eq 0) { throw "$lockPath lists no WAVs" }
+    $library = Join-Path $Root 'apps\desktop\public\library'
+    New-Item -ItemType Directory -Force -Path $library | Out-Null
+    foreach ($name in $names) {
+        $want = ([string]$lock.media.$name.sha256).ToLowerInvariant()
+        $dest = Join-Path $library $name
+        if ((Test-Path -LiteralPath $dest -PathType Leaf) -and (Get-Sha256 -LiteralPath $dest) -eq $want) {
+            "WAV_PRESENT $name"
+            continue
+        }
+        $src = Join-Path $From $name
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
+            "WAV_SOURCE_MISSING $name (not in $From)"
+            continue
+        }
+        $got = Get-Sha256 -LiteralPath $src
+        if ($got -ne $want) {
+            "WAV_SOURCE_MISMATCH $name sha256 $got, media.lock.json $want (not copied)"
+            continue
+        }
+        Copy-Item -LiteralPath $src -Destination $dest -Force
+        if ((Get-Sha256 -LiteralPath $dest) -ne $want) { throw "copy of $name did not keep its bytes" }
+        "WAV_STAGED $name sha256 $want"
+    }
+}
+
 function Select-CargoBinArtifact {
     # From `cargo build --message-format=json*` stdout lines, the
     # compiler-artifact cargo reported for binary $Bin: its executable path and

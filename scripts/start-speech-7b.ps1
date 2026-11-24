@@ -10,13 +10,37 @@ param(
     [string]$Backend = "auto",
     [switch]$Preload,
     [switch]$SkipDlmSpeech,
-    [switch]$PersistEnvironment
+    [switch]$PersistEnvironment,
+    [switch]$ReplaceExisting
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RuntimeRoot = Join-Path $RepoRoot "artifacts\runtime\7b"
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+if ($ReplaceExisting) {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw '-ReplaceExisting requires an elevated PowerShell session.'
+    }
+    foreach ($taskName in @('GenAudio-vibevoice-7B', 'GenAudio-personaplex-7B')) {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    foreach ($listener in @(Get-NetTCPConnection -LocalPort 8996, 8997 -State Listen -ErrorAction SilentlyContinue)) {
+        Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
+    }
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        $listeners = @(Get-NetTCPConnection -LocalPort 8996, 8997 -State Listen -ErrorAction SilentlyContinue)
+        if ($listeners.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    if ($listeners.Count -gt 0) {
+        throw 'Existing Gen-Audio worker listeners did not stop within 30 seconds.'
+    }
+}
 
 function Start-ResidentWorker {
     [CmdletBinding(SupportsShouldProcess = $true)]

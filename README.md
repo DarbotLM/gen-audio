@@ -401,7 +401,7 @@ Health: `http://<node>:8002/genaid-audio/health`
 
 ## Scripts
 
-Windows tooling has seven canonical entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend an existing entry point with a parameter instead of adding an arbitrary script: `scripts/test.ps1` fails on scripts outside its explicit allowlist, including untracked and gitignored files such as anything under `artifacts/`.
+Windows tooling uses a small set of canonical entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend an existing entry point with a parameter instead of adding an arbitrary script: `scripts/test.ps1` fails on scripts outside its explicit allowlist, including untracked and gitignored files such as anything under `artifacts/`.
 
 | Entry point | What it does |
 |---|---|
@@ -409,6 +409,8 @@ Windows tooling has seven canonical entry points. Each one runs under Windows Po
 | `scripts\run.ps1 -Service Mcp\|Node\|Desktop\|Preview [-Port n] [-Check]` | Launches against checkout-local `models/`, `.venv/` and `artifacts/runtime/`. Native desktop children inherit the same configuration. `-Check` prints the launch plan without side effects. |
 | `scripts\build-tauri-windows.ps1 [-Mode Full\|NoBundle] [-CertificateThumbprint thumb]` | The only build path. Imports the MSVC environment (`Import-VsDevEnv`), checks every locked library WAV, builds and handshakes both `gen-audio-mcp` and `gen-audio-acp`, hash-checks their `externalBin` staging, runs `npm ci`, and invokes the locally installed Tauri CLI. `Full` (default) builds and verifies NSIS/MSI payloads first, then creates MSIX and NuGet packages from those exact proven hashes. `NoBundle` runs `tauri build --no-bundle`, which still embeds `frontendDist`. Packages default to unsigned; an operator may opt into signing with an existing code-signing certificate. The build judges `dist`, `gen-audio.exe`, installer payloads and the staged sidecars by content, never mtime, and prints `BUILD_OK` only after every output and provenance gate passes. Every run, failed ones included, saves its transcript to `target/logs/build-<sha>-<timestamp>.log`. |
 | `scripts\pack-windows-msix-nuget.ps1` | Allowlisted packaging helper called by `build-tauri-windows.ps1 -Mode Full` after NSIS/MSI verification. It creates `bundle\msix` and `bundle\nuget` from verified `gen-audio.exe`, MCP and ACP release binaries, rechecks archive payload hashes, and signs both only when `-CertificateThumbprint` names an existing certificate with a private key. |
+| `wingen.audio.exe` | Self-contained .NET 11 Windows-native execution host. C# owns worker HTTP, JSON limits, atomic artifact promotion, and MXC execution; F# owns worker contracts and placement scoring. `worker` drives the `/v1` model-worker API, while `mxc probe` and `mxc run` use DarbotLM/MXC ProcessContainer or WSLC directly. |
+| `scripts\cluster.ps1` / `scripts\model_clients.ps1` | PowerShell 7 production control plane. Cluster control adds CIM, GPU, volume, worker, path, and native-host inventory with SSH and fallback. Model clients prefer `wingen.audio.exe` when available and retain PowerShell HTTP as a resilient extension path. |
 | `scripts\test.ps1 [-Tag name] [-Skip Pssa,Sprawl,Pester,Regen,Cargo,Npm,Python] [-SprawlExclude path] [-FromLock \| -WithWav]` | Runs an EOL preflight, PSScriptAnalyzer 1.24.0, the script-sprawl gate, native Pester 5.7 contracts under `tests/powershell`, generated-output verification, `cargo test --workspace`, the desktop TypeScript/release gates, and pytest only for production behavior that remains in Python. Pester tests use PowerShell's `TestDrive` and clean up automatically. The pytest step receives a unique `--basetemp`, disables its repository cache, and removes that directory in `finally` on both pass and failure. `-FromLock` uses locked WAV facts in CI; `-WithWav` proves staged WAV bytes and sets `GEN_AUDIO_REQUIRE_WAVS=1`. Logs go to `artifacts/test-logs/`. |
 | `scripts\mcp-call.ps1 -Tool <name> [-ArgsJson <json>] [-Port <n>]` | One MCP `tools/call` over HTTP. Finds the server from `-Port`, `GEN_AUDIO_MCP_ADDR`, `127.0.0.1:8765`, then the loopback ports a `gen-audio` process listens on, and checks `initialize` says `gen-audio`. Example: `scripts\mcp-call.ps1 -Tool ui_navigate -ArgsJson '{"slide":"slide:library"}'`. |
 | `scripts\ui-shot.ps1 -Out <png>` | Captures the Gen-Audio window with Win32 `PrintWindow`. No input injection and no screen-scrape fallback. Fails on a blank capture and prints the PNG's sha256. |
@@ -451,10 +453,11 @@ docs/SERVE_APIM.md
 pwsh -NoProfile -File .\scripts\test.ps1
 ```
 
-PowerShell and native script/runtime contracts run natively in Pester. Python's
-remaining production modules are tested by pytest with an ephemeral temporary
-directory until their .NET 11, F#, or C# replacements are in place. A real
-kokoro render is a manual step once the ONNX files are on disk.
+PowerShell, build-script, runner, and native runtime orchestration contracts run
+in the Pester modules under `tests/powershell`. Pytest covers only Python
+production behavior with an ephemeral temporary directory; it does not
+reimplement PowerShell process tests. A real kokoro render is a manual step once
+the ONNX files are on disk.
 
 ## License
 

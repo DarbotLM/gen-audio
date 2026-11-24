@@ -63,9 +63,55 @@ BeforeAll {
             return Invoke-Captured -File $script:Shell -Arguments (@('-NoProfile', '-File', (Join-Path $Root 'scripts\test.ps1'), '-Tag', 't', '-Skip', $Skip) + $Extra) -WorkingDirectory $Root
         } finally {
             foreach ($name in $saved.Keys) {
-                [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
+                if ($null -eq $saved[$name]) {
+                    Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+                } else {
+                    [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
+                }
             }
         }
+    }
+
+    function New-CommandStubs {
+        param(
+            [string]$Root,
+            [switch]$FailGate,
+            [switch]$CargoOnly
+        )
+        $bin = Join-Path $Root 'bin'
+        $calls = Join-Path $Root 'calls.txt'
+        New-Item -ItemType Directory -Force -Path $bin | Out-Null
+        $quote = $calls.Replace("'", "''")
+
+        if ($CargoOnly) {
+            if ($env:OS -eq 'Windows_NT') {
+                "@exit /b 0`r`n" | Set-Content -LiteralPath (Join-Path $bin 'cargo.cmd') -Encoding Ascii
+            } else {
+                "#!/bin/sh`nexit 0`n" | Set-Content -LiteralPath (Join-Path $bin 'cargo') -Encoding Ascii
+                & chmod +x (Join-Path $bin 'cargo')
+            }
+            return [pscustomobject]@{ Bin = $bin; Calls = $calls }
+        }
+
+        $pythonExit = if ($FailGate) { 1 } else { 0 }
+        if ($env:OS -eq 'Windows_NT') {
+            foreach ($name in @('npm', 'npx')) {
+                "@echo off`r`n>> `"$calls`" echo $name %*`r`nexit /b 0`r`n" |
+                    Set-Content -LiteralPath (Join-Path $bin "$name.cmd") -Encoding Ascii
+            }
+            "@echo off`r`n>> `"$calls`" echo python3 %*`r`n>> `"$calls`" echo PYTHONPATH=%PYTHONPATH%`r`nexit /b $pythonExit`r`n" |
+                Set-Content -LiteralPath (Join-Path $bin 'python3.cmd') -Encoding Ascii
+        } else {
+            foreach ($name in @('npm', 'npx')) {
+                "#!/bin/sh`nprintf '%s\n' '$name `$*' >> '$quote'`nexit 0`n" |
+                    Set-Content -LiteralPath (Join-Path $bin $name) -Encoding Ascii
+                & chmod +x (Join-Path $bin $name)
+            }
+            "#!/bin/sh`nprintf '%s\n' 'python3 `$*' >> '$quote'`nprintf '%s\n' `"PYTHONPATH=`$PYTHONPATH`" >> '$quote'`nexit $pythonExit`n" |
+                Set-Content -LiteralPath (Join-Path $bin 'python3') -Encoding Ascii
+            & chmod +x (Join-Path $bin 'python3')
+        }
+        return [pscustomobject]@{ Bin = $bin; Calls = $calls }
     }
 }
 
@@ -84,6 +130,11 @@ Describe 'scripts/test.ps1 repository preflight' {
         $fix.Count | Should -Be 2
         $fix[0].Trim() | Should -Be 'git rm -q --cached -- data.json'
         $fix[1].Trim() | Should -Be 'git restore --source=HEAD --staged --worktree -- data.json'
+        Invoke-Git -Root $repo update-index -q --refresh | Out-Null
+        Invoke-Git -Root $repo rm -q --cached -- data.json | Out-Null
+        Invoke-Git -Root $repo restore --source=HEAD --staged --worktree -- data.json | Out-Null
+        [IO.File]::ReadAllText((Join-Path $repo 'data.json')) | Should -Be "{`n  `"a`": 1`n}`n"
+        (Invoke-TestRepository -Root $repo).ExitCode | Should -Be 0
     }
 
     It 'renormalizes CRLF already committed to the index' {
@@ -101,6 +152,12 @@ Describe 'scripts/test.ps1 repository preflight' {
         $result.Output | Should -Match 'EOL_CRLF data.json \(index crlf\)'
         $result.Output | Should -Match 'git add --renormalize -- data.json'
         $result.Output | Should -Match 'git commit -m ''Renormalize line endings'' -- data.json'
+        Invoke-Git -Root $repo add --renormalize -- data.json | Out-Null
+        Invoke-Git -Root $repo commit -m 'Renormalize line endings' -- data.json | Out-Null
+        Invoke-Git -Root $repo rm -q --cached -- data.json | Out-Null
+        Invoke-Git -Root $repo restore --source=HEAD --staged --worktree -- data.json | Out-Null
+        [IO.File]::ReadAllText((Join-Path $repo 'data.json')) | Should -Be "{`n  `"a`": 2`n}`n"
+        (Invoke-TestRepository -Root $repo).ExitCode | Should -Be 0
     }
 
     It 'checks missing, edited, and locked WAV bytes in WithWav mode' {
@@ -147,13 +204,114 @@ Describe 'scripts/test.ps1 script-sprawl gate' {
         $bad.Output | Should -Match 'SPRAWL outside-allowlist helper.mjs'
         $bad.Output | Should -Not -Match 'outside-allowlist main.rs'
     }
+
+    It 'prunes managed clones and every explicit exclusion' {
+        $repo = New-TestRepository -Path (Join-Path $TestDrive 'sprawl-excludes')
+        foreach ($clone in @(
+            @{ Path = 'adaptive_framework/misaki/setup.py' },
+            @{ Path = 'adaptive_framework/kokoro/demo/app.py' },
+            @{ Path = 'adaptive_framework/kokoro-onnx/scripts/build.sh' }
+        )) {
+            $path = Join-Path $repo ($clone.Path -replace '/', '\')
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+            "#!/bin/sh`necho upstream`n" | Set-Content -LiteralPath $path -Encoding UTF8
+        }
+        foreach ($folder in @('one', 'two')) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $repo $folder) | Out-Null
+            "#!/bin/sh`necho ignored`n" | Set-Content -LiteralPath (Join-Path $repo "$folder\stray.sh") -Encoding UTF8
+        }
+        $skip = 'Pssa,Pester,Regen,Cargo,Npm,Python'
+        $clean = Invoke-TestRepository -Root $repo -Skip $skip -Extra @('-SprawlExclude', 'one,two')
+        $clean.ExitCode | Should -Be 0
+        foreach ($name in @('misaki', 'kokoro', 'kokoro-onnx')) {
+            $clean.Output | Should -Match ([regex]::Escape("SPRAWL_EXCLUDED adaptive_framework/$name (default: toolbox-managed upstream clone)"))
+        }
+        $clean.Output | Should -Match 'SPRAWL_EXCLUDED one'
+        $clean.Output | Should -Match 'SPRAWL_EXCLUDED two'
+        $clean.Output | Should -Not -Match 'outside-allowlist (one|two|adaptive_framework/(misaki|kokoro|kokoro-onnx))'
+
+        'Write-Output 1' | Set-Content -LiteralPath (Join-Path $repo 'adaptive_framework\stray.ps1') -Encoding UTF8
+        $stray = Invoke-TestRepository -Root $repo -Skip $skip
+        $stray.ExitCode | Should -Not -Be 0
+        $stray.Output | Should -Match 'SPRAWL outside-allowlist adaptive_framework/stray.ps1'
+        $stray.Output | Should -Not -Match 'outside-allowlist adaptive_framework/(misaki|kokoro|kokoro-onnx)'
+    }
+}
+
+Describe 'scripts/test.ps1 generation and release gates' {
+    It 'diffs generated synth sidecars after regeneration' -Skip:(-not (Get-Command python3,python -ErrorAction SilentlyContinue)) {
+        $repo = New-TestRepository -Path (Join-Path $TestDrive 'regen')
+        $library = Join-Path $repo 'apps\desktop\public\library'
+        New-Item -ItemType Directory -Force -Path $library | Out-Null
+        [IO.File]::WriteAllText(
+            (Join-Path $library 'a.synth.json'),
+            "{`n  `"engine`": `"x`"`n}`n",
+            (New-Object Text.UTF8Encoding($false))
+        )
+        [IO.File]::WriteAllText(
+            (Join-Path $repo 'scripts\cube_revision.py'),
+            "import sys`n",
+            (New-Object Text.UTF8Encoding($false))
+        )
+        Invoke-Git -Root $repo add . | Out-Null
+        Invoke-Git -Root $repo commit -q -m 'sidecar generator' | Out-Null
+        $stubs = New-CommandStubs -Root (Join-Path $TestDrive 'regen-stubs') -CargoOnly
+        $python = @(Get-Command python3,python -ErrorAction SilentlyContinue | Select-Object -First 1)[0].Source
+        $path = "$($stubs.Bin)$([IO.Path]::PathSeparator)$env:PATH"
+        $skip = 'Pssa,Pester,Sprawl,Cargo,Npm,Python'
+        $environment = @{ PATH = $path; GEN_AUDIO_PYTHON = $python }
+        $clean = Invoke-TestRepository -Root $repo -Skip $skip -Environment $environment
+        $clean.ExitCode | Should -Be 0 -Because $clean.Output
+
+        $generator = @'
+from pathlib import Path
+p = Path("apps/desktop/public/library/a.synth.json")
+p.write_bytes(p.read_bytes().replace(b'"x"', b'"y"'))
+'@
+        [IO.File]::WriteAllText(
+            (Join-Path $repo 'scripts\cube_revision.py'),
+            $generator + "`n",
+            (New-Object Text.UTF8Encoding($false))
+        )
+        Invoke-Git -Root $repo add . | Out-Null
+        Invoke-Git -Root $repo commit -q -m 'drifting generator' | Out-Null
+        $drift = Invoke-TestRepository -Root $repo -Skip $skip -Environment $environment
+        $drift.ExitCode | Should -Not -Be 0
+        $drift.Output | Should -Match 'a\.synth\.json'
+        $drift.Output | Should -Match 'generated files drifted'
+    }
+
+    It 'builds the desktop and propagates release-gate failures' {
+        $repo = New-TestRepository -Path (Join-Path $TestDrive 'npm-gate')
+        New-Item -ItemType Directory -Force -Path (Join-Path $repo 'apps\desktop') | Out-Null
+        $stubsRoot = Join-Path $TestDrive 'npm-stubs'
+        $failing = New-CommandStubs -Root $stubsRoot -FailGate
+        $environment = @{
+            PATH = "$($failing.Bin)$([IO.Path]::PathSeparator)$env:PATH"
+        }
+        $skip = 'Pssa,Pester,Sprawl,Regen,Cargo,Python'
+        $failed = Invoke-TestRepository -Root $repo -Skip $skip -Environment $environment
+        $failed.ExitCode | Should -Not -Be 0
+        $calls = Get-Content -LiteralPath $failing.Calls -Raw
+        $calls | Should -Match 'npm run build'
+        $calls | Should -Match 'python3 -m gen_audio\.cli\.release_gate --dist apps/desktop/dist'
+        $calls | Should -Match ([regex]::Escape("PYTHONPATH=$(Join-Path $repo 'src')"))
+
+        Remove-Item -LiteralPath $failing.Calls -Force
+        $passing = New-CommandStubs -Root $stubsRoot
+        $environment.PATH = "$($passing.Bin)$([IO.Path]::PathSeparator)$env:PATH"
+        $ok = Invoke-TestRepository -Root $repo -Skip $skip -Environment $environment
+        $ok.ExitCode | Should -Be 0
+        (Get-Content -LiteralPath $passing.Calls -Raw) | Should -Match 'python3 -m gen_audio\.cli\.release_gate --dist apps/desktop/dist'
+    }
 }
 
 Describe 'scripts/test.ps1 native-first documentation' {
     It 'documents Pester as the PowerShell runner and checks cube bytes from lock mode' {
         $text = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\test.ps1') -Raw
         $help = $text.Substring(0, $text.IndexOf('#>'))
-        $help | Should -Match 'Pester  PowerShell behavior tests'
+        $help | Should -Match 'Pester  PowerShell behavior and script orchestration tests'
+        $help | Should -Match 'Python  pytest over tests/ \(only Python production behavior remains\)'
         $help | Should -Not -Match 'cannot see a hand-edited cube'
         $fromLock = $help.Substring($help.IndexOf("`n  -FromLock"), $help.IndexOf("`n  -WithWav") - $help.IndexOf("`n  -FromLock"))
         $fromLock | Should -Match 'cubes'

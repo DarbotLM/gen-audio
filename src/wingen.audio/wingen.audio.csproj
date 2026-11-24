@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <AssemblyName>wingen.audio</AssemblyName>
+    <RootNamespace>WingenAudio</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PublishAot>false</PublishAot>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <MxcSdkProject Condition="'$(MxcSdkProject)' == ''">$(MSBuildThisFileDirectory)..\..\..\mxc\sdk\dotnet\Microsoft.Mxc.Sdk\Microsoft.Mxc.Sdk.csproj</MxcSdkProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\WingenAudio.Contracts\WingenAudio.Contracts.fsproj" />
+    <ProjectReference Include="$(MxcSdkProject)" Condition="Exists('$(MxcSdkProject)')" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <Target Name="RequireMxcSdk" BeforeTargets="PrepareForBuild" Condition="!Exists('$(MxcSdkProject)')">
+    <Error Text="Microsoft.Mxc.Sdk project not found at $(MxcSdkProject). Check out darbotlm/mxc beside gen-audio or pass /p:MxcSdkProject=path." />
+  </Target>
+</Project>

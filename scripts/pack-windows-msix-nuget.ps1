@@ -4,8 +4,8 @@ Pack verified Gen-Audio release binaries as MSIX and a tools NuGet package.
 
 .DESCRIPTION
 Runs after scripts\build-tauri-windows.ps1 -Mode Full, so the MSIX and NuGet
-package contain the same gen-audio.exe, gen-audio-mcp.exe and
-gen-audio-acp.exe that passed the build's provenance gates. The build passes
+package contain the same gen-audio.exe, gen-audio-mcp.exe, gen-audio-acp.exe,
+and wingen.audio.exe that passed the build's provenance gates. The build passes
 their sha256 values to make that invariant explicit.
 
 Packages are unsigned by default. When -CertificateThumbprint names an
@@ -24,7 +24,8 @@ param(
     [int]$MsixRevision = 0,
     [string]$ExpectedExeSha256,
     [string]$ExpectedMcpSha256,
-    [string]$ExpectedAcpSha256
+    [string]$ExpectedAcpSha256,
+    [string]$ExpectedWingenSha256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,7 +115,8 @@ function Write-Package([string]$Kind, [string]$Path, [string]$Signed) {
 $payloadSpecs = @(
     [pscustomobject]@{ Name = 'gen-audio.exe'; Expected = $ExpectedExeSha256 },
     [pscustomobject]@{ Name = 'gen-audio-mcp.exe'; Expected = $ExpectedMcpSha256 },
-    [pscustomobject]@{ Name = 'gen-audio-acp.exe'; Expected = $ExpectedAcpSha256 }
+    [pscustomobject]@{ Name = 'gen-audio-acp.exe'; Expected = $ExpectedAcpSha256 },
+    [pscustomobject]@{ Name = 'wingen.audio.exe'; Expected = $ExpectedWingenSha256 }
 )
 $binaries = @(
     foreach ($spec in $payloadSpecs) {
@@ -274,7 +276,7 @@ $nuspec = @"
     <version>$version</version>
     <title>Gen-Audio</title>
     <authors>Darbot Labs</authors>
-    <description>$(& $escapeXml 'Darbot Gen-Audio desktop for Windows x64. tools/ contains gen-audio.exe, the gen-audio-mcp sidecar and the gen-audio-acp agent; the MSIX carries the same verified binaries.')</description>
+    <description>$(& $escapeXml 'Darbot Gen-Audio desktop for Windows x64. tools/ contains gen-audio.exe, the MCP and ACP sidecars, and the self-contained wingen.audio Windows execution host; the MSIX carries the same verified binaries.')</description>
     <projectUrl>https://github.com/darbotlabs/gen-audio</projectUrl>
     <license type="expression">MIT</license>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>

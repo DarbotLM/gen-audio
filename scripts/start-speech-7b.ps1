@@ -28,12 +28,19 @@ if ($ReplaceExisting) {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     }
-    foreach ($listener in @(Get-NetTCPConnection -LocalPort 8996, 8997 -State Listen -ErrorAction SilentlyContinue)) {
+    foreach ($pidFile in @(Get-ChildItem -LiteralPath $RuntimeRoot -Filter '*.control.pid' -File -ErrorAction SilentlyContinue)) {
+        $controlPid = [int](Get-Content -LiteralPath $pidFile.FullName -Raw).Trim()
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$controlPid" -ErrorAction SilentlyContinue
+        if ($process -and $process.Name -eq 'wingen.audio.exe') {
+            Stop-Process -Id $controlPid -Force -ErrorAction SilentlyContinue
+        }
+    }
+    foreach ($listener in @(Get-NetTCPConnection -LocalPort 8996, 8997, 18996, 18997 -State Listen -ErrorAction SilentlyContinue)) {
         Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
     }
     $deadline = (Get-Date).AddSeconds(30)
     do {
-        $listeners = @(Get-NetTCPConnection -LocalPort 8996, 8997 -State Listen -ErrorAction SilentlyContinue)
+        $listeners = @(Get-NetTCPConnection -LocalPort 8996, 8997, 18996, 18997 -State Listen -ErrorAction SilentlyContinue)
         if ($listeners.Count -eq 0) { break }
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
@@ -158,42 +165,46 @@ $env:GEN_AUDIO_PERSONAPLEX_GPU_LAYERS = "4"
 
 $vibe = $null
 if ($Engine -in @("both", "vibevoice")) {
-    $vibe = Start-ResidentWorker -Name "vibevoice" -Python $VibePython -Port 8996 -Arguments @(
+    $vibe = Start-ResidentWorker -Name "vibevoice" -Python $VibePython -Port 18996 -Arguments @(
         "-s", "-P", "-B", "-m", "gen_audio.model_workers.service",
         "--engine", "vibevoice",
         "--model-dir", $VibeModelDir,
         "--tokenizer", (Join-Path $VibeModelDir "tokenizer"),
         "--output-root", $OutputRoot,
         "--voice-root", $VoiceRoot,
-        "--port", "8996",
+        "--port", "18996",
         "--device-index", $(if ($Engine -eq "both" -and (Get-CimInstance Win32_VideoController | Where-Object Name -match "NVIDIA" | Measure-Object).Count -gt 1) { "1" } else { "0" }),
         "--backend", $Backend,
         "--gpu-memory-gib", "4.5",
         "--cpu-memory-gib", "48"
     )
     if ($Preload) {
-        Invoke-ResidentLoad -Port 8996 -Name "vibevoice"
+        Invoke-ResidentLoad -Port 18996 -Name "vibevoice"
     }
+    & (Join-Path $PSScriptRoot 'service.ps1') -Engine vibevoice -Action Start `
+        -Port 8996 -BackendPort 18996 -TimeoutSeconds 1800 | Out-Null
 }
 
 $persona = $null
 if ($Engine -in @("both", "personaplex")) {
-    $persona = Start-ResidentWorker -Name "personaplex" -Python $PersonaPython -Port 8997 -Arguments @(
+    $persona = Start-ResidentWorker -Name "personaplex" -Python $PersonaPython -Port 18997 -Arguments @(
         "-s", "-P", "-B", "-m", "gen_audio.model_workers.service",
         "--engine", "personaplex",
         "--model-dir", $PersonaModelDir,
         "--tokenizer", (Join-Path $PersonaModelDir "tokenizer_spm_32k_3.model"),
         "--output-root", $OutputRoot,
         "--voice-root", $VoiceRoot,
-        "--port", "8997",
+        "--port", "18997",
         "--device-index", "0",
         "--backend", $Backend,
         "--gpu-memory-gib", "5.25",
         "--cpu-memory-gib", "48"
     )
     if ($Preload) {
-        Invoke-ResidentLoad -Port 8997 -Name "personaplex"
+        Invoke-ResidentLoad -Port 18997 -Name "personaplex"
     }
+    & (Join-Path $PSScriptRoot 'service.ps1') -Engine personaplex -Action Start `
+        -Port 8997 -BackendPort 18997 -TimeoutSeconds 1800 | Out-Null
 }
 
 $dlm = $null

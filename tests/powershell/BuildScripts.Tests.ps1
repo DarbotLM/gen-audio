@@ -46,6 +46,21 @@ path = "src/main.rs"
 '@ | Set-Content -LiteralPath (Join-Path $Root 'Cargo.toml') -Encoding UTF8
         'fn main() { println!("v1"); }' | Set-Content -LiteralPath (Join-Path $Root 'src\main.rs') -Encoding UTF8
     }
+
+    function Invoke-Captured {
+        param(
+            [string]$File,
+            [string[]]$Arguments,
+            [string]$WorkingDirectory
+        )
+        Push-Location $WorkingDirectory
+        try {
+            $output = @(& $File @Arguments 2>&1 | ForEach-Object { "$_" })
+            return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output -join [Environment]::NewLine) }
+        } finally {
+            Pop-Location
+        }
+    }
 }
 
 Describe 'library WAV build gate' {
@@ -80,14 +95,40 @@ Describe 'library WAV build gate' {
         { Get-LibraryWavProblem -Root $missing } | Should -Throw
     }
 
+    It 'stages only WAVs whose bytes match the lock' {
+        $good = [Text.Encoding]::UTF8.GetBytes('RIFF good')
+        $other = [Text.Encoding]::UTF8.GetBytes('RIFF other')
+        $root = New-LibraryFixture -Root (Join-Path $TestDrive 'import') -Files @{} -Locked @{
+            'a.wav' = $good
+            'b.wav' = $other
+            'c.wav' = $good
+        }
+        $source = Join-Path $TestDrive 'wav-source'
+        New-Item -ItemType Directory -Path $source | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $source 'a.wav'), $good)
+        [IO.File]::WriteAllBytes((Join-Path $source 'b.wav'), $other + [byte]120)
+        $result = @(Import-LibraryWav -Root $root -From $source)
+        ($result -join "`n") | Should -Match 'WAV_STAGED a\.wav'
+        ($result -join "`n") | Should -Match 'WAV_SOURCE_MISMATCH b.wav'
+        ($result -join "`n") | Should -Match 'WAV_SOURCE_MISSING c.wav'
+        [IO.File]::ReadAllBytes((Join-Path $root 'apps\desktop\public\library\a.wav')) | Should -Be $good
+        (Join-Path $root 'apps\desktop\public\library\b.wav') | Should -Not -Exist
+        (Join-Path $root 'apps\desktop\public\library\c.wav') | Should -Not -Exist
+        @(Get-LibraryWavProblem -Root $root) | Should -HaveCount 2
+        { Import-LibraryWav -Root $root -From (Join-Path $TestDrive 'missing-source') } | Should -Throw
+    }
+
     It 'checks WAVs before either native build' {
         $text = Get-Content -LiteralPath $script:BuildScript -Raw
+        $text | Should -Match '\[string\]\$WavSource'
         $gate = $text.IndexOf('Get-LibraryWavProblem -Root $root')
         $gate | Should -BeGreaterThan -1
+        $text.IndexOf('Import-LibraryWav -Root $root -From $WavSource') | Should -BeLessThan $gate
         $gate | Should -BeLessThan $text.IndexOf('Invoke-CargoBinBuild -Package')
         $gate | Should -BeLessThan $text.IndexOf('npx $($tauriArgs')
         $block = $text.Substring($gate, $text.IndexOf("Write-Step 'library WAVs match", $gate) - $gate)
         $block | Should -Match 'throw'
+        $block | Should -Match '-WavSource'
         $block.ToLowerInvariant() | Should -Not -Match '\bskip\b'
     }
 }
@@ -144,13 +185,20 @@ Describe 'build and packaging contracts' {
     It 'builds both locked sidecars and uses the local Tauri CLI' {
         $text = Get-Content -LiteralPath $script:BuildScript -Raw
         $text | Should -Match ([regex]::Escape('$TauriCli = ''tauri'''))
+        $text | Should -Match ([regex]::Escape('$tauriArgs = @(''--no'', ''--'', $TauriCli, ''build'')'))
         $block = $text.Substring($text.IndexOf("Write-Step 'build gen-audio-mcp sidecar'"), $text.IndexOf("Write-Step 'frontend dependencies") - $text.IndexOf("Write-Step 'build gen-audio-mcp sidecar'"))
         $block | Should -Match 'Invoke-CargoBinBuild -Package gen-audio-mcp -Bin gen-audio-mcp'
         $block | Should -Match 'Invoke-CargoBinBuild -Package gen-audio-acp -Bin gen-audio-acp'
+        $block | Should -Match 'acpInit\.result\.protocolVersion -ne 1'
+        $block | Should -Match "acpInit\.result\.agentInfo\.name -ne 'gen-audio'"
         $block | Should -Match '\$stagedHash -ne \$sidecarHash'
         $block | Should -Match '\$stagedAcpHash -ne \$acpHash'
         $config = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'apps\desktop\src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json
-        $config.bundle.externalBin | Should -Be @('binaries/gen-audio-mcp', 'binaries/gen-audio-acp')
+        $config.bundle.externalBin | Should -Be @('binaries/gen-audio-mcp', 'binaries/gen-audio-acp', 'binaries/wingen.audio')
+        $buildRs = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'apps\desktop\src-tauri\build.rs') -Raw
+        $debug = $buildRs.Substring($buildRs.IndexOf('std::env::set_var'))
+        $debug = $debug.Substring(0, $debug.IndexOf('} else {'))
+        $debug | Should -Match '"bundle":\{"externalBin":\["binaries/gen-audio-mcp"\]\}'
     }
 
     It 'runs provenance checks before MSIX and NuGet packaging' {
@@ -160,7 +208,8 @@ Describe 'build and packaging contracts' {
         foreach ($expected in @('ExpectedExeSha256 = $exe.Sha256', 'ExpectedMcpSha256 = $sidecarHash', 'ExpectedAcpSha256 = $acpHash')) {
             $build | Should -Match ([regex]::Escape($expected))
         }
-        foreach ($name in @('gen-audio.exe', 'gen-audio-mcp.exe', 'gen-audio-acp.exe')) {
+        $build | Should -Match ([regex]::Escape('ExpectedWingenSha256 = $wingenHash'))
+        foreach ($name in @('gen-audio.exe', 'gen-audio-mcp.exe', 'gen-audio-acp.exe', 'wingen.audio.exe')) {
             $pack | Should -Match ([regex]::Escape($name))
         }
         $pack | Should -Match ([regex]::Escape("Assert-ArchivePayload -Kind 'msix'"))
@@ -211,6 +260,8 @@ Describe 'build and packaging contracts' {
             $serializer.DeserializeObject($lockJson)
         }
         $package.engines.node | Should -Be '>=26.0.0 <27'
+        $package.dependencies.'@tauri-apps/api' | Should -Be '2.12.5'
+        $package.devDependencies.'@tauri-apps/cli' | Should -Be '2.12.6'
         $package.devDependencies.vite | Should -Be '^6.4.5'
         $packagesByName = if ($lock -is [Collections.IDictionary]) { $lock['packages'] } else { $lock.PSObject.Properties['packages'].Value }
         $vite = if ($packagesByName -is [Collections.IDictionary]) {
@@ -219,6 +270,10 @@ Describe 'build and packaging contracts' {
             $packagesByName.PSObject.Properties['node_modules/vite'].Value
         }
         $vite.version | Should -Be '6.4.5'
+        $tauriApi = $packagesByName['node_modules/@tauri-apps/api']
+        $tauriCli = $packagesByName['node_modules/@tauri-apps/cli']
+        $tauriApi.version | Should -Be '2.12.5'
+        $tauriCli.version | Should -Be '2.12.6'
         $packages = if ($packagesByName -is [Collections.IDictionary]) { $packagesByName.Values } else { $packagesByName.PSObject.Properties.Value }
         $resolved = @($packages | ForEach-Object {
             if ($_ -is [Collections.IDictionary]) {
@@ -229,6 +284,8 @@ Describe 'build and packaging contracts' {
         })
         $resolved | Should -Not -BeNullOrEmpty
         $resolved | ForEach-Object { $_ | Should -Match '^https://registry\.npmjs\.org/' }
+        (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'apps\desktop\.npmrc') -Raw) |
+            Should -Match 'registry=https://registry\.npmjs\.org/'
     }
 
     It 'stores build transcripts and closes them in finally' {
@@ -241,5 +298,40 @@ Describe 'build and packaging contracts' {
         foreach ($old in @('Assert-Fresh', 'LastWriteTime', '$runStart')) {
             $text | Should -Not -Match ([regex]::Escape($old))
         }
+        $text | Should -Match '\$indexPath = Join-Path \$desktop ''dist\\index\.html'''
+        $text | Should -Match '\$exePath = Join-Path \$releaseDir ''gen-audio\.exe'''
+        foreach ($variable in @('$indexPath', '$exePath', '$installer')) {
+            $text | Should -Match ([regex]::Escape("Assert-BuildOutput -LiteralPath $variable "))
+        }
+        $text | Should -Match 'Get-DistCopyDrift -Source'
+        $text | Should -Match '\$conf\.version'
+    }
+
+    It 'writes and closes a transcript when a build fails' -Skip:(($env:OS -eq 'Windows_NT') -or -not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $root = Join-Path $TestDrive 'build-repo'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'scripts\lib') | Out-Null
+        foreach ($relative in @('scripts\build-tauri-windows.ps1', 'scripts\lib\devenv.ps1', 'scripts\runtime.json', 'scripts\lib\runtime-config.ps1')) {
+            $destination = Join-Path $root $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot $relative) -Destination $destination
+        }
+        $git = @('git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid')
+        (Invoke-Captured -File $git[0] -Arguments (@($git | Select-Object -Skip 1) + @('init', '-q')) -WorkingDirectory $root).ExitCode | Should -Be 0
+        (Invoke-Captured -File 'git' -Arguments (@('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'add', '.')) -WorkingDirectory $root).ExitCode | Should -Be 0
+        (Invoke-Captured -File 'git' -Arguments (@('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'seed')) -WorkingDirectory $root).ExitCode | Should -Be 0
+        $sha = (Invoke-Captured -File 'git' -Arguments @('rev-parse', '--short=12', 'HEAD') -WorkingDirectory $root).Output
+        $result = Invoke-Captured -File (Get-Process -Id $PID).Path `
+            -Arguments @('-NoProfile', '-File', (Join-Path $root 'scripts\build-tauri-windows.ps1'), '-Mode', 'NoBundle') `
+            -WorkingDirectory $root
+        $result.ExitCode | Should -Not -Be 0
+        $result.Output | Should -Match 'run it on Windows'
+        $logs = @(Get-ChildItem -LiteralPath (Join-Path $root 'target\logs') -Filter "build-$sha-*.log")
+        $logs | Should -HaveCount 1
+        $logs[0].Name | Should -Match "^build-$sha-\d{8}-\d{6}\.log$"
+        $transcript = Get-Content -LiteralPath $logs[0].FullName -Raw
+        $transcript | Should -Match 'build-tauri-windows\.ps1 -Mode NoBundle'
+        $transcript | Should -Match 'run it on Windows'
+        $transcript | Should -Match 'PowerShell transcript end'
+        $result.Output | Should -Match ([regex]::Escape("BUILD_LOG $($logs[0].FullName)"))
     }
 }

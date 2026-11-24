@@ -14,7 +14,7 @@ Steps, in order (skip any with -Skip):
           staged in apps/desktop/public/library and its sha256 equals the lock.
   Pssa    PSScriptAnalyzer over scripts/ with ./PSScriptAnalyzerSettings.psd1; any finding fails.
   Sprawl  the script-sprawl gate (see Invoke-SprawlGate below).
-  Pester  PowerShell behavior tests under tests/powershell.
+  Pester  PowerShell behavior and script orchestration tests under tests/powershell.
   Regen   rerun the committed-output generators and fail on any drift:
           cargo run -p gen-audio-core --example build_assets   (assets.json,
             assets.dev.json, fixtures_v1.json, viewport.example/release.json,
@@ -41,7 +41,7 @@ Steps, in order (skip any with -Skip):
           (the same command the desktop-ui CI job runs, from the repo root).
           Windows CI skips Npm, so this is what makes the local script able
           to catch a dist-gate failure CI would catch.
-  Python  pytest over tests/ (only Python production behavior that still remains).
+  Python  pytest over tests/ (only Python production behavior remains).
 
 Modes:
   default   Regen needs the library WAVs on disk; a missing one FAILS Regen.
@@ -231,7 +231,7 @@ function Invoke-SprawlGate {
                          scripts/{build-tauri-windows,pack-windows-msix-nuget,test,
                          mcp-call,ui-shot,run,toolbox,deploy-cluster-node,
                          run-resident-worker,start-speech-7b,Invoke-GenAudio7B,
-                         Invoke-GenAudioCluster}.ps1,
+                         Invoke-GenAudioCluster,cluster,model_clients,service}.ps1,
                          scripts/lib/*.ps1, scripts/*.py, tests/**/*.py, src/**/*.py,
                          tests/powershell/*.Tests.ps1, the NSIS installer hook apps/desktop/src-tauri/windows/hooks.nsh
                          (tauri.conf.json installerHooks), apps/desktop/validate.check.mts
@@ -247,6 +247,7 @@ function Invoke-SprawlGate {
     param([Parameter(Mandatory = $true)][string]$Root, [string[]]$Exclude = @())
     $entryPoints = @('scripts/build-tauri-windows.ps1', 'scripts/pack-windows-msix-nuget.ps1', 'scripts/test.ps1', 'scripts/mcp-call.ps1', 'scripts/ui-shot.ps1', 'scripts/run.ps1', 'scripts/toolbox.ps1',
         'scripts/deploy-cluster-node.ps1', 'scripts/run-resident-worker.ps1', 'scripts/start-speech-7b.ps1', 'scripts/Invoke-GenAudio7B.ps1', 'scripts/Invoke-GenAudioCluster.ps1',
+        'scripts/cluster.ps1', 'scripts/model_clients.ps1', 'scripts/service.ps1',
         'apps/desktop/src-tauri/windows/hooks.nsh', 'apps/desktop/validate.check.mts')
     $self = 'scripts/test.ps1'
     $vcvarsOwner = 'scripts/lib/devenv.ps1'

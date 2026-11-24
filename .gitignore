@@ -48,6 +48,10 @@ apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/*
 !apps/desktop/src-tauri/binaries/.gitkeep
 
+# .NET
+**/bin/
+**/obj/
+
 # Editor / OS
 .DS_Store
 .idea/

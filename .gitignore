@@ -14,6 +14,7 @@ htmlcov/
 
 # Environments
 .venv/
+.venv*/
 venv/
 env/
 .env
@@ -28,6 +29,8 @@ out/
 /adaptive_framework/misaki/
 /adaptive_framework/kokoro/
 /adaptive_framework/kokoro-onnx/
+outputs/
+voice-library/
 *.wav
 *.flac
 *.mp3

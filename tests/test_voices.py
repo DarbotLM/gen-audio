@@ -270,10 +270,10 @@ def test_plugin_framework_registers_and_unregisters():
         unregister("kokoro_onnx")
 
 
-def test_personaplex_plan_is_a_mock_and_does_not_load_weights():
+def test_personaplex_plan_uses_only_the_resident_worker():
     voice = load_voice(ROOT / "voices" / "personaplex" / "NATF2.json")
     plan = get_framework("personaplex").prepare(voice, None)
-    assert plan.wired is False
+    assert plan.wired is True
     assert plan.executable is False
     request = mock_offline_request(plan)
     assert request["module"] == "moshi.offline"
@@ -389,7 +389,7 @@ def test_vibevoice_7b_is_gpu_only_and_1_5b_passes_the_sampler_arguments():
     assert plan["diffusion_steps"] == 20
     assert plan["generate"]["cfg_scale"] == 1.3
     assert plan["generate"]["tokenizer_from"] == "processor.tokenizer"
-    with pytest.raises(EngineRefusal, match="GPU-only"):
+    with pytest.raises(EngineRefusal, match="hybrid worker is unavailable"):
         vibevoice_call_plan(vibevoice_profile("7B"), "Speaker 1: Hello.", ["wav"])
 
 

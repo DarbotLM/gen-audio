@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.15.2"
       - name: libsndfile
         run: sudo apt-get update && sudo apt-get install -y libsndfile1
       - run: python -m pip install -e ".[dev]"
@@ -45,7 +45,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           version: "0.12.23"
-          python-version: "3.14"
+          python-version: "3.15.2"
           enable-cache: false
       - name: uv.lock matches pyproject.toml
         run: uv lock --check
@@ -115,7 +115,7 @@ jobs:
       - run: npm run build
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.15.2"
       - name: Dist release gate
         working-directory: ${{ github.workspace }}
         run: |
@@ -123,11 +123,10 @@ jobs:
           python -m gen_audio.cli.release_gate --dist apps/desktop/dist
 
   windows-scripts:
-    # PSScriptAnalyzer (pinned 1.24.0, any finding fails), the script-sprawl
-    # gate and the regen check (build_assets -FromLock: the library WAVs are
-    # gitignored, so their identity comes from media.lock.json; then
-    # asset_vectors, the manifest cube mirror and git diff --exit-code),
-    # under both PowerShell 7 and Windows PowerShell 5.1.
+    # PSScriptAnalyzer (pinned 1.24.0), Pester 5.7, the script-sprawl gate, and
+    # the regen check (build_assets -FromLock: the library WAVs are gitignored,
+    # so their identity comes from media.lock.json), under both PowerShell 7
+    # and Windows PowerShell 5.1.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -140,9 +139,14 @@ jobs:
           Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
-      - name: PSSA + sprawl gate + regen (pwsh 7)
+      - name: Install Pester 5.7.1 (pwsh and Windows PowerShell 5.1)
+        shell: pwsh
+        run: |
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+          powershell -NoProfile -Command "Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck"
+      - name: PSSA + Pester + sprawl + regen (pwsh 7)
         shell: pwsh
         run: ./scripts/test.ps1 -Tag ci-pwsh -FromLock -Skip Cargo,Npm,Python
-      - name: PSSA + sprawl gate + regen (Windows PowerShell 5.1)
+      - name: PSSA + Pester + sprawl + regen (Windows PowerShell 5.1)
         shell: powershell
         run: .\scripts\test.ps1 -Tag ci-winps -FromLock -Skip Cargo,Npm,Python

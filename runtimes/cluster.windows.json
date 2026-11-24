@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "coordinator": "anton",
+  "transport": "ssh",
+  "nodes": [
+    {
+      "id": "dayour",
+      "ssh": "darbot@dayour",
+      "root": "D:\\darbot\\gen-audio",
+      "output_root": "D:\\darbot\\gen-audio\\outputs",
+      "voice_root": "D:\\darbot\\gen-audio\\voice-library",
+      "model_dirs": {
+        "vibevoice": "D:\\models\\VibeVoice-7B",
+        "personaplex": "D:\\models\\PersonaPlex-7B"
+      },
+      "weight": 1.15
+    },
+    {
+      "id": "darbotlm",
+      "ssh": "darbot@darbotlm",
+      "root": "G:\\gen-audio",
+      "output_root": "G:\\gen-audio\\outputs",
+      "voice_root": "G:\\gen-audio\\voice-library",
+      "model_dirs": {
+        "vibevoice": "G:\\models\\VibeVoice-7B",
+        "personaplex": "G:\\models\\PersonaPlex-7B"
+      },
+      "weight": 1.0
+    },
+    {
+      "id": "darbotlabs",
+      "ssh": "darbot@darbotlabs",
+      "root": "G:\\gen-audio",
+      "output_root": "G:\\gen-audio\\outputs",
+      "voice_root": "G:\\gen-audio\\voice-library",
+      "model_dirs": {
+        "vibevoice": "G:\\models\\VibeVoice-7B",
+        "personaplex": "G:\\models\\PersonaPlex-7B"
+      },
+      "weight": 0.4
+    }
+  ]
+}

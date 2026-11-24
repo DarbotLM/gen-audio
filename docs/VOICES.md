@@ -65,7 +65,7 @@ Reference-wav languages in this commit are `en`, `zh`, and `in` (`in-Samuel_man.
 ### Kokoro (PyTorch) — `kokoro`
 
 Schema: `schemas/voices/frameworks/kokoro.v1.schema.json`. Engine id:
-`kokoro_dayour` (the DarbotLM Python 3.14 fork, pinned at 0.9.4). The adapter
+`kokoro_dayour` (the DarbotLM Python 3.15.2 fork, pinned at 0.9.4). The adapter
 loads one `KModel`, reuses one `KPipeline` per language, and defaults to CPU;
 `GEN_AUDIO_KOKORO_DEVICE=auto|cuda|cuda:N|mps` opts into another device. The voice
 argument is a local `.pt` path from `GENAID_VOICES_DIR` or a weighted tensor. A
@@ -132,7 +132,7 @@ Schema for a voice's params is empty: Misaki is not a voice. The document you au
 line-oriented `<word><tab><phonemes>` / `<word>=<phonemes>` file relative to
 `GENAID_VOICES_DIR`; its entries merge with `custom_entries` into
 `g2p.lexicon.golds`. `transformer` is `false`: the fork refuses `trf=True` on
-Python 3.14. `framework_lang_code` covers `a,b,e,f,h,i,j,p,z`; native Korean and
+Python 3.15.2. `framework_lang_code` covers `a,b,e,f,h,i,j,p,z`; native Korean and
 Vietnamese configs leave it unset because that fork has no Kokoro voice prefix
 for those languages. `gen-audio-voices phonemize` and
 `phonemize_with_misaki` build the backend and refuse missing extras explicitly.

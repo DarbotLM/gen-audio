@@ -11,15 +11,13 @@ checkout-scoped runtime configuration, and launches the node, MCP, and UI
 preview services. Overlapping runs of the same checkout are rejected by a named
 lease. Skipped validation or best-effort warnings produce a degraded exit code.
 
-The Speech step clones missing dayour/misaki, dayour/kokoro and
-dayour/kokoro-onnx checkouts under adaptive_framework, reuses existing local
-checkouts, and pulls only when the remote branch has new commits and the local
-checkout is clean. It installs kokoro-onnx editable into the Gen-Audio venv,
-builds a kokoro venv with misaki[en] editable from kokoro's own lock, verifies
-every import resolves to those checkouts, and renders a real kokoro-onnx WAV.
-The MSVC check accepts only a Visual Studio whose toolset has both the x64
-compiler and the x64 libraries, so a VS 2026 Build Tools install without them
-falls back to VS 2022 (or prompts for it).
+The Speech step reuses or clones the DarbotLM misaki, kokoro and kokoro-onnx
+checkouts under adaptive_framework and preserves local WIP. It installs
+Misaki/Kokoro into a Python 3.15.2 venv, keeps kokoro-onnx in an isolated Python
+3.14 ABI environment until ONNX Runtime publishes cp315 wheels, verifies imports,
+and renders a real ONNX WAV. The MSVC check accepts only a Visual Studio whose
+toolset has both the x64 compiler and the x64 libraries, so a VS 2026 Build Tools
+install without them falls back to VS 2022 (or prompts for it).
 
 .EXAMPLE
 pwsh -NoProfile -File .\scripts\toolbox.ps1 -Step Node -RepoRoot G:\gen-audio
@@ -50,10 +48,10 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$UvMinimumVersion = '0.9.0',
     [ValidatePattern('^\d+\.\d+(\.\d+)?$')]
-    [string]$PythonVersion = '3.14',
+    [string]$PythonVersion = '3.15.2',
     [string]$SpeechSourceRoot,
     [ValidatePattern('^[A-Za-z0-9-]+$')]
-    [string]$SpeechSourceOwner = 'dayour',
+    [string]$SpeechSourceOwner = 'DarbotLM',
     [switch]$SkipTests,
     [switch]$NoBrowser,
     [switch]$Help
@@ -449,7 +447,7 @@ function Install-Uv {
     $uv = Get-Tool @('uv.exe')
     $actual = ((& $uv --version) -replace '^uv\s+(\d+\.\d+\.\d+).*$', '$1').Trim()
     if ([version]$actual -lt [version]$UvMinimumVersion) {
-        # An older uv resolves "3.14" to a pre-release interpreter (0.8.0 picks 3.14.0b4).
+        # Ensure the requested final Python 3.15.2 interpreter is selected deterministically.
         Write-ToolboxLog 'INFO' "uv $actual is older than $UvMinimumVersion; updating it."
         try { Invoke-External $uv @('self', 'update') $RepoRoot }
         catch {
@@ -640,24 +638,19 @@ function Install-DarbotSpeechWheelSet {
     $targets = @(
         @{
             Repository = 'DarbotLM/misaki'
-            Tag = 'py314-2026.11.22'
-            Name = 'misaki-0.9.4+py314.1-py3-none-any.whl'
-            Hash = '82f66b4a0d910ce0cf6836153543f96f33b1499610976b7834ee4fe1d152d31e'
-            Url = 'https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl'
+            Tag = 'py315-2026.11.24'
+            Name = 'misaki-0.9.4+py315.1-py3-none-any.whl'
+            Requirement = 'misaki[en,zh,vi]'
+            Hash = '427359085bfc8378df8d07c2a05b014aceaad5f96413d9cb7c9fc6f1f625f68c'
+            Url = 'https://github.com/DarbotLM/misaki/releases/download/py315-2026.11.24/misaki-0.9.4%2Bpy315.1-py3-none-any.whl'
         },
         @{
             Repository = 'DarbotLM/kokoro'
-            Tag = 'py314-2026.11.22'
+            Tag = 'py315-2026.11.24'
             Name = 'kokoro-0.9.4-py3-none-any.whl'
-            Hash = 'bcc402e20cf898aaa39e29d8ba604e72a8ae077e43eb348c8f4ba5ccd116ae96'
-            Url = 'https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl'
-        },
-        @{
-            Repository = 'DarbotLM/kokoro-onnx'
-            Tag = 'py314-2026.11.22'
-            Name = 'kokoro_onnx-0.6.1-py3-none-any.whl'
-            Hash = '24e7a6c743fae51a72bd565837d9545de9b1b99223bffaa9a37f6aa613dbc538'
-            Url = 'https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl'
+            Requirement = 'kokoro'
+            Hash = '5a7555412b8bc4e2ed992d38142fe2ee05b68e7558072e78d87769b0a7d04e25'
+            Url = 'https://github.com/DarbotLM/kokoro/releases/download/py315-2026.11.24/kokoro-0.9.4-py3-none-any.whl'
         }
     )
     $requirements = [IO.File]::ReadAllText($RequirementsPath)
@@ -681,11 +674,13 @@ function Install-DarbotSpeechWheelSet {
             throw "DarbotLM wheel checksum mismatch: $($target.Name)"
         }
         $count = [regex]::Matches($requirements, [regex]::Escape($target.Url)).Count
-        if ($count -lt 1) {
-            throw "Frozen requirements do not contain $($target.Url)"
-        }
         $fileUri = ([Uri]::new((Get-Item -LiteralPath $destination).FullName)).AbsoluteUri
-        $requirements = $requirements.Replace($target.Url, $fileUri)
+        if ($count -gt 0) {
+            $requirements = $requirements.Replace($target.Url, $fileUri)
+        } else {
+            $requirements += [Environment]::NewLine +
+                ("{0} @ {1} --hash=sha256:{2}" -f $target.Requirement, $fileUri, $target.Hash)
+        }
         Write-ToolboxLog 'OK' "$($target.Name) bytes=$((Get-Item -LiteralPath $destination).Length) sha256=$($target.Hash)"
     }
     [IO.File]::WriteAllText(
@@ -735,7 +730,7 @@ function Invoke-FrameworkBuild {
     $mainLines = @()
     if ($torchStart -gt 0) { $mainLines += $requirementLines[0..($torchStart - 1)] }
     if ($torchEnd -lt $requirementLines.Count) { $mainLines += $requirementLines[$torchEnd..($requirementLines.Count - 1)] }
-    # uv.lock pins PyPI kokoro-onnx 0.6.1, which breaks on Python 3.14. Drop it here;
+    # uv.lock pins PyPI kokoro-onnx 0.6.1, which breaks on Python 3.15. Drop it here;
     # the DarbotLM kokoro-onnx checkout is installed editable below instead.
     $mainLines = @(Get-FilteredRequirementLine -Lines $mainLines -Name 'kokoro-onnx')
     [IO.File]::WriteAllLines($requirements, $mainLines, (New-Object Text.UTF8Encoding($false)))
@@ -746,7 +741,7 @@ function Invoke-FrameworkBuild {
         '-r', $torchRequirements
     ) $RepoRoot
     # A few pure-Python Misaki dependencies publish only an sdist, while the
-    # pinned Kokoro wheels target uv's Python 3.14 resolution despite an older
+    # pinned Kokoro wheels target uv's Python 3.15 resolution despite an older
     # Requires-Python declaration. Prefer wheels where available and preserve
     # the lock's resolved environment instead of re-checking those bounds.
     $pipArguments = @(
@@ -816,7 +811,7 @@ function Initialize-AdaptiveFrameworkCheckout {
     param(
         [string]$Root = (Join-Path $RepoRoot 'adaptive_framework'),
         [ValidatePattern('^[A-Za-z0-9-]+$')]
-        [string]$Owner = 'dayour'
+        [string]$Owner = 'DarbotLM'
     )
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     $git = Get-Tool @('git.exe')
@@ -908,15 +903,19 @@ function Install-SpeechSourceSet {
     $speech = Initialize-SpeechSourceCheckout
     $python = Join-Path $RepoRoot '.venv\Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Run -Step Build first: $python is missing." }
-    $editable = (& $python -m pip show kokoro-onnx 2>$null | Where-Object { $_ -match '^Editable project location:' }) -replace '^Editable project location:\s*', ''
-    if (-not $editable -or [IO.Path]::GetFullPath($editable) -ne $speech['kokoro-onnx']) {
-        Invoke-External $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', $speech['kokoro-onnx']) $RepoRoot
-    }
-    Test-SpeechImport -Python $python -Expected @{ 'kokoro-onnx' = $speech['kokoro-onnx'] }
-
-    # kokoro (PyTorch) and misaki[en] get their own venv from kokoro's uv.lock:
-    # gen-audio pins transformers for VibeVoice, kokoro needs a newer one.
+    # kokoro-onnx stays in a separate Python 3.14 ABI environment until ONNX Runtime
+    # publishes cp315 wheels. The Gen-Audio Python 3.15 control plane never imports it.
     $uv = Get-Tool @('uv.exe')
+    $onnxPython = Join-Path $RepoRoot '.venv-kokoro-onnx\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $onnxPython -PathType Leaf)) {
+        Invoke-External $uv @('venv', '--python', '3.14', '--seed', (Join-Path $RepoRoot '.venv-kokoro-onnx')) $RepoRoot
+    }
+    Invoke-External $uv @('pip', 'install', '--python', $onnxPython, '-e', $speech['kokoro-onnx']) $RepoRoot
+    Invoke-External $onnxPython @('-m', 'pip', 'install', '--disable-pip-version-check', 'soundfile>=0.14', 'scipy>=1.18') $RepoRoot
+    Test-SpeechImport -Python $onnxPython -Expected @{ 'kokoro-onnx' = $speech['kokoro-onnx'] }
+
+    # kokoro (PyTorch) and misaki[en] get their own Python 3.15.2 venv from kokoro's uv.lock:
+    # gen-audio pins transformers for VibeVoice, kokoro needs a newer one.
     $kokoro = $speech['kokoro']
     $kokoroPython = Join-Path $kokoro '.venv\Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $kokoroPython -PathType Leaf)) {
@@ -941,15 +940,21 @@ function Install-SpeechSourceSet {
     $configuration = Get-GenAudioRuntimeEnvironment $script:RuntimeConfig
     $scriptPath = Join-Path $script:RuntimeDir 'kokoro-onnx-smoke.txt'
     $wav = Join-Path $script:RuntimeDir 'kokoro-onnx-smoke.wav'
-    [IO.File]::WriteAllLines($scriptPath, @('Speaker 1: Gen-Audio is running Kokoro from the DarbotLM sources.', 'Speaker 2: This line was rendered by kokoro-onnx on Python 3.14.'), (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllLines($scriptPath, @('Speaker 1: Gen-Audio is running Kokoro from the DarbotLM sources.', 'Speaker 2: This line was rendered by kokoro-onnx on Python 3.15.2.'), (New-Object Text.UTF8Encoding($false)))
     if (Test-Path -LiteralPath $wav) { Remove-Item -LiteralPath $wav -Force }
-    Invoke-External $python @(
-        '-m', 'gen_audio.cli.synth', $scriptPath,
-        '--cast-map', (Join-Path $RepoRoot 'voices\cast_map.example.json'),
-        '--model', $configuration['GEN_AUDIO_KOKORO_MODEL'],
-        '--voices', $configuration['GEN_AUDIO_KOKORO_VOICES'],
-        '-o', $wav
-    ) $RepoRoot
+    $savedPythonPath = $env:PYTHONPATH
+    $env:PYTHONPATH = Join-Path $RepoRoot 'src'
+    try {
+        Invoke-External $onnxPython @(
+            '-m', 'gen_audio.cli.synth', $scriptPath,
+            '--cast-map', (Join-Path $RepoRoot 'voices\cast_map.example.json'),
+            '--model', $configuration['GEN_AUDIO_KOKORO_MODEL'],
+            '--voices', $configuration['GEN_AUDIO_KOKORO_VOICES'],
+            '-o', $wav
+        ) $RepoRoot
+    } finally {
+        $env:PYTHONPATH = $savedPythonPath
+    }
     $header = New-Object byte[] 12
     $stream = [IO.File]::OpenRead($wav)
     try { [void]$stream.Read($header, 0, 12); $length = $stream.Length } finally { $stream.Dispose() }

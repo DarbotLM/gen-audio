@@ -46,7 +46,7 @@ const ENGINES: &[EngineSpec] = &[
         kind: EngineKind::G2p,
         status: EngineStatus::Library,
         weights_bundled: false,
-        summary: "DarbotLM Misaki 0.9.4+py314.1 G2P for English, Japanese, Chinese, Korean, Vietnamese, and eSpeak. It does not emit a waveform.",
+        summary: "DarbotLM Misaki 0.9.4+py315.1 G2P for English, Japanese, Chinese, Vietnamese, and eSpeak. It does not emit a waveform.",
     },
     EngineSpec {
         id: "vibevoice",

@@ -14,6 +14,7 @@ Steps, in order (skip any with -Skip):
           staged in apps/desktop/public/library and its sha256 equals the lock.
   Pssa    PSScriptAnalyzer over scripts/ with ./PSScriptAnalyzerSettings.psd1; any finding fails.
   Sprawl  the script-sprawl gate (see Invoke-SprawlGate below).
+  Pester  PowerShell behavior tests under tests/powershell.
   Regen   rerun the committed-output generators and fail on any drift:
           cargo run -p gen-audio-core --example build_assets   (assets.json,
             assets.dev.json, fixtures_v1.json, viewport.example/release.json,
@@ -40,7 +41,7 @@ Steps, in order (skip any with -Skip):
           (the same command the desktop-ui CI job runs, from the repo root).
           Windows CI skips Npm, so this is what makes the local script able
           to catch a dist-gate failure CI would catch.
-  Python  pytest over tests/ (covers src/gen_audio and the scripts/*.py shims).
+  Python  pytest over tests/ (only Python production behavior that still remains).
 
 Modes:
   default   Regen needs the library WAVs on disk; a missing one FAILS Regen.
@@ -78,7 +79,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -Skip Cargo
 [CmdletBinding()]
 param(
     [string]$Tag = 'local',
-    # Pssa, Sprawl, Regen, Cargo, Npm, Python. Comma-separated also works with -File.
+    # Pssa, Sprawl, Pester, Regen, Cargo, Npm, Python. Comma-separated also works with -File.
     [string[]]$Skip = @(),
     [string[]]$SprawlExclude = @(),
     [string]$Python = '',
@@ -97,7 +98,7 @@ Set-Location $root
 # Script-scope copies; the step bodies below read these.
 $script:skipSteps = @($Skip | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($name in $script:skipSteps) {
-    if (@('Pssa', 'Sprawl', 'Regen', 'Cargo', 'Npm', 'Python') -notcontains $name) { throw "-Skip $name is not a step (Pssa, Sprawl, Regen, Cargo, Npm, Python)" }
+    if (@('Pssa', 'Sprawl', 'Pester', 'Regen', 'Cargo', 'Npm', 'Python') -notcontains $name) { throw "-Skip $name is not a step (Pssa, Sprawl, Pester, Regen, Cargo, Npm, Python)" }
 }
 $script:sprawlExcludes = @($SprawlExclude | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $script:pythonExe = $Python
@@ -203,7 +204,7 @@ function Get-ScriptFile {
     # pyvenv.cfg), and generated app output (apps/desktop/dist, src-tauri/gen).
     param([Parameter(Mandatory = $true)][string]$Root, [string[]]$Exclude = @())
     $pruneNames = @('.git', 'node_modules', 'target', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.venv', 'venv')
-    $prunePaths = @('apps/desktop/dist', 'apps/desktop/src-tauri/gen') + @($Exclude | ForEach-Object { ($_ -replace '\\', '/').Trim('/') })
+    $prunePaths = @('apps/desktop/dist', 'apps/desktop/src-tauri/gen', 'models') + @($Exclude | ForEach-Object { ($_ -replace '\\', '/').Trim('/') })
     $extensions = @('.ps1', '.psm1', '.bat', '.cmd', '.py', '.sh', '.bash', '.zsh', '.ksh', '.fish', '.nsh', '.js', '.mjs', '.cjs', '.mts', '.cts', '.vbs')
     $stack = New-Object System.Collections.Generic.Stack[string]
     $stack.Push($Root)
@@ -228,9 +229,11 @@ function Invoke-SprawlGate {
       outside-allowlist  a script (see Get-ScriptFile: any executable script
                          extension, .sh included, or a shebang) outside the allowlist:
                          scripts/{build-tauri-windows,pack-windows-msix-nuget,test,
-                         mcp-call,ui-shot,run,toolbox}.ps1,
+                         mcp-call,ui-shot,run,toolbox,deploy-cluster-node,
+                         run-resident-worker,start-speech-7b,Invoke-GenAudio7B,
+                         Invoke-GenAudioCluster}.ps1,
                          scripts/lib/*.ps1, scripts/*.py, tests/**/*.py, src/**/*.py,
-                         the NSIS installer hook apps/desktop/src-tauri/windows/hooks.nsh
+                         tests/powershell/*.Tests.ps1, the NSIS installer hook apps/desktop/src-tauri/windows/hooks.nsh
                          (tauri.conf.json installerHooks), apps/desktop/validate.check.mts
       thick-shim         a scripts/*.py that is not a thin CLI shim into gen_audio.cli
                          (over 20 lines or no `from gen_audio.cli` import)
@@ -243,6 +246,7 @@ function Invoke-SprawlGate {
     #>
     param([Parameter(Mandatory = $true)][string]$Root, [string[]]$Exclude = @())
     $entryPoints = @('scripts/build-tauri-windows.ps1', 'scripts/pack-windows-msix-nuget.ps1', 'scripts/test.ps1', 'scripts/mcp-call.ps1', 'scripts/ui-shot.ps1', 'scripts/run.ps1', 'scripts/toolbox.ps1',
+        'scripts/deploy-cluster-node.ps1', 'scripts/run-resident-worker.ps1', 'scripts/start-speech-7b.ps1', 'scripts/Invoke-GenAudio7B.ps1', 'scripts/Invoke-GenAudioCluster.ps1',
         'apps/desktop/src-tauri/windows/hooks.nsh', 'apps/desktop/validate.check.mts')
     $self = 'scripts/test.ps1'
     $vcvarsOwner = 'scripts/lib/devenv.ps1'
@@ -270,7 +274,8 @@ function Invoke-SprawlGate {
             continue
         }
         $allowed = ($entryPoints -contains $rel) -or ($rel -match '^scripts/lib/[^/]+\.ps1$') -or
-            ($rel -match '^scripts/[^/]+\.py$') -or ($rel -match '^tests/.+\.py$') -or ($rel -match '^src/.+\.py$')
+            ($rel -match '^scripts/[^/]+\.py$') -or ($rel -match '^tests/.+\.py$') -or
+            ($rel -match '^tests/powershell/[^/]+\.Tests\.ps1$') -or ($rel -match '^src/.+\.py$')
         if (-not $allowed) { $findings.Add("outside-allowlist $rel") }
         if ($rel -eq $self) { continue }
         $text = [System.IO.File]::ReadAllText($file.Full)
@@ -279,7 +284,7 @@ function Invoke-SprawlGate {
             if ($lineCount -gt 20 -or $text -notmatch 'from gen_audio\.cli') { $findings.Add("thick-shim $rel ($lineCount lines)") }
         }
         if ($text -match $patterns['vcvars'] -and $rel -ne $vcvarsOwner) { $findings.Add("vcvars $rel") }
-        if ($text -match $patterns['tauri-build']) { $tauriCallers.Add($rel) }
+        if ($rel -notmatch '^tests/' -and $text -match $patterns['tauri-build']) { $tauriCallers.Add($rel) }
         if ($text -match $patterns['bare-desktop-cargo']) { $findings.Add("bare-desktop-cargo $rel") }
         if ($text -match $patterns['cargo-clean']) { $findings.Add("cargo-clean $rel") }
     }
@@ -323,7 +328,7 @@ Invoke-Step 'Eol' {
 }
 if (@($results | Where-Object { $_.Step -eq 'Eol' -and $_.Result -eq 'FAIL' }).Count -gt 0) {
     # Every later step would fail or mislead on these bytes; stop here.
-    $script:skipSteps = @('Wavs', 'Pssa', 'Sprawl', 'Regen', 'Cargo', 'Npm', 'Python')
+    $script:skipSteps = @('Wavs', 'Pssa', 'Sprawl', 'Pester', 'Regen', 'Cargo', 'Npm', 'Python')
     $script:skipDetail = 'Eol preflight failed'
 }
 
@@ -365,6 +370,30 @@ Invoke-Step 'Sprawl' {
     $lines | Select-Object -SkipLast 1 | Add-LogLine -Log $log | Out-Host
     if ($count -gt 0) { throw "sprawl findings=$count" }
     'findings=0'
+}
+
+Invoke-Step 'Pester' {
+    param($log)
+    $testPath = Join-Path $root 'tests\powershell'
+    if (-not (Test-Path -LiteralPath $testPath -PathType Container)) {
+        return 'no PowerShell test directory in this fixture'
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 5) { throw 'Pester tests require PowerShell 5.1 or PowerShell 7' }
+    $module = Get-Module -ListAvailable -Name Pester |
+        Where-Object { $_.Version -ge [version]'5.7.1' -and $_.Version.Major -eq 5 } |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+    if (-not $module) { throw 'Pester 5.7.1 or newer (major version 5) is not installed. Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser' }
+    Import-Module $module.Path -Force
+    $configuration = New-PesterConfiguration
+    $configuration.Run.Path = $testPath
+    $configuration.Run.PassThru = $true
+    $configuration.Output.Verbosity = 'Detailed'
+    $pester = Invoke-Pester -Configuration $configuration
+    $summary = "Pester: $($pester.PassedCount) passed, $($pester.FailedCount) failed, $($pester.SkippedCount) skipped"
+    $summary | Add-LogLine -Log $log | Out-Host
+    if ($pester.FailedCount -gt 0) { throw $summary }
+    $summary
 }
 
 Invoke-Step 'Regen' {
@@ -455,11 +484,14 @@ Invoke-Step 'Python' {
     $env:PYTHONPATH = (Join-Path $root 'src') + $(if ($saved) { "$sep$saved" } else { '' })
     $savedRequire = $env:GEN_AUDIO_REQUIRE_WAVS
     if ($script:withWav) { $env:GEN_AUDIO_REQUIRE_WAVS = '1' }
+    $pytestTemp = Join-Path ([IO.Path]::GetTempPath()) ("gen-audio-pytest-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $pytestTemp -Force | Out-Null
     try {
-        $code = Invoke-Logged -Log $log -File $py -Arguments @('-m', 'pytest', 'tests')
+        $code = Invoke-Logged -Log $log -File $py -Arguments @('-m', 'pytest', 'tests', '-p', 'no:cacheprovider', '--basetemp', $pytestTemp)
     } finally {
         $env:PYTHONPATH = $saved
         $env:GEN_AUDIO_REQUIRE_WAVS = $savedRequire
+        Remove-Item -LiteralPath $pytestTemp -Recurse -Force -ErrorAction Stop
     }
     if ($code -ne 0) { throw "pytest exit $code" }
     $summary = Select-String -LiteralPath $log -Pattern '\d+ passed' | Select-Object -Last 1

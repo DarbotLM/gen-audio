@@ -29,7 +29,7 @@ Use the currently mounted drive when `G:` is unavailable. For this node, pass
 The `Node` path:
 
 1. Clones the selected ref when needed and preserves an existing checkout.
-2. Installs Node 26, `uv`, Python 3.14, Git, GitHub CLI, FFmpeg, Rust, WebView2, and the
+2. Installs Node 26, `uv`, Python 3.15.2, Git, GitHub CLI, FFmpeg, Rust, WebView2, and the
    Visual Studio C++ build tools. Node 26 and Python come from checksum-checked
    archives or `uv`. A missing WinGet package (Git, GitHub CLI, uv, FFmpeg,
    Rustup, Build Tools, WebView2) is installed only when its id is passed to
@@ -38,8 +38,8 @@ The `Node` path:
    prints the exact `winget install` command so you can install it yourself.
    A missing `uv` is installed from PyPI (`pip install --user uv`) first, and a
    `uv` older than `-UvMinimumVersion` (default 0.9.0) is updated, because older
-   releases resolve `3.14` to a pre-release interpreter. The venv must be a final
-   Python `-PythonVersion` (default 3.14) release.
+   releases resolve the final `3.15.2` interpreter. The venv must be a final
+   Python `-PythonVersion` (default 3.15.2) release.
    Python wheels come from `GEN_AUDIO_PIP_INDEX_URL` when set, else pip's own
    `global.index-url`, else PyPI; torch wheels come from
    `GEN_AUDIO_TORCH_INDEX_URL` (default `https://download.pytorch.org/whl/cpu`).
@@ -101,4 +101,3 @@ Invoke-RestMethod 'http://127.0.0.1:8002/genaid-audio/health'
 Invoke-RestMethod 'http://127.0.0.1:8002/genaid-audio/ready'
 Invoke-RestMethod 'http://127.0.0.1:8765/health'
 ```
-

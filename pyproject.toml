@@ -7,12 +7,12 @@ name = "gen-audio"
 version = "0.2.0"
 description = "GenAID Audio toolkit: multi-speaker podcast synthesis, a 24 kHz publish chain, spectrograms, and a cube-revision sketch."
 readme = "README.md"
-requires-python = ">=3.14,<3.15"
+requires-python = ">=3.15,<3.16"
 license = { text = "MIT" }
 authors = [{ name = "Darbot Labs" }]
 keywords = ["audio", "tts", "podcast", "kokoro", "genaid"]
 classifiers = [
-    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 ]
 dependencies = [
     "numpy>=1.26",
@@ -22,51 +22,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-kokoro = [
-    "kokoro @ https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl",
-    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl",
-    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
-    "fugashi>=1.5.2,<2",
-    "jaconv>=0.5.0,<1",
-    "pyopenjtalk-plus>=0.4.1.post9,<1",
-]
-kokoro-onnx = [
-    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl",
-    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
-    "fugashi>=1.5.2,<2",
-    "jaconv>=0.5.0,<1",
-    "pyopenjtalk-plus>=0.4.1.post9,<1",
-]
-kokoro-torch = [
-    "kokoro @ https://github.com/DarbotLM/kokoro/releases/download/py314-2026.11.22/kokoro-0.9.4-py3-none-any.whl",
-    "misaki[en,zh] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
-    "fugashi>=1.5.2,<2",
-    "jaconv>=0.5.0,<1",
-    "pyopenjtalk-plus>=0.4.1.post9,<1",
-]
-kokoro-gpu = [
-    "kokoro-onnx @ https://github.com/DarbotLM/kokoro-onnx/releases/download/py314-2026.11.22/kokoro_onnx-0.6.1-py3-none-any.whl",
-    "onnxruntime-gpu[cuda,cudnn]>=1.30.0,<2; (platform_machine == 'x86_64' or platform_machine == 'AMD64') and sys_platform != 'darwin'",
-]
-misaki = [
-    "misaki[en,ko,zh,vi] @ https://github.com/DarbotLM/misaki/releases/download/py314-2026.11.22/misaki-0.9.4%2Bpy314.1-py3-none-any.whl",
-    "fugashi>=1.5.2,<2",
-    "jaconv>=0.5.0,<1",
-    "pyopenjtalk-plus>=0.4.1.post9,<1",
-]
+kokoro = []
+kokoro-onnx = []
+kokoro-torch = []
+kokoro-gpu = []
+misaki = []
 dev = [
     "pytest>=8",
 ]
-asr = [
-    "faster-whisper>=1.1",
-    "av>=12,<17",
-]
+asr = []
 # VibeVoice-1.5B inference runtime (VibeVoice-community @ 952326d, which is
 # located by env/config and never vendored). Inference only: datasets, gradio,
 # peft, ml-collections, absl-py, av and aiortc from upstream's pyproject are
 # fine-tuning / demo-UI deps and are deliberately left out. torch comes from
 # the PyTorch CPU index (see [tool.uv.sources]); native inference packages must
-# resolve to CPython 3.14 wheels.
+# resolve to CPython 3.15 wheels.
 vibevoice = [
     "torch==2.14.1",
     "transformers>=5.17.0,<6",
@@ -92,6 +62,9 @@ gen-audio-release-gate = "gen_audio.cli.release_gate:main"
 gen-audio-transcribe-vibevoice = "gen_audio.cli.transcribe_vibevoice:main"
 gen-audio-voices = "gen_audio.cli.voices:main"
 gen-audio-agent-yankers = "gen_audio.cli.agent_yankers:main"
+gen-audio-7b = "gen_audio.cli.model7b:main"
+gen-audio-7b-worker = "gen_audio.model_workers.service:main"
+gen-audio-cluster = "gen_audio.cli.cluster:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

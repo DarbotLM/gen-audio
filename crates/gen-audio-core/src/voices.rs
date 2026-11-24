@@ -227,7 +227,7 @@ pub fn validate_g2p_json(value: &Value) -> Result<G2pConfig, String> {
         return Err("g2p id must be a misaki config".into());
     }
     if config.transformer == Some(true) {
-        return Err("bad_transformer: misaki transformer=true is rejected on Python 3.14".into());
+        return Err("bad_transformer: misaki transformer=true is rejected on Python 3.15.2".into());
     }
     if let Some(path) = &config.lexicon {
         if !path_ok(path) {

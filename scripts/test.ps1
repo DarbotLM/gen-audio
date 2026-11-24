@@ -379,12 +379,17 @@ Invoke-Step 'Pester' {
         return 'no PowerShell test directory in this fixture'
     }
     if ($PSVersionTable.PSVersion.Major -lt 5) { throw 'Pester tests require PowerShell 5.1 or PowerShell 7' }
-    $module = Get-Module -ListAvailable -Name Pester |
-        Where-Object { $_.Version -ge [version]'5.7.1' -and $_.Version.Major -eq 5 } |
-        Sort-Object Version -Descending |
-        Select-Object -First 1
-    if (-not $module) { throw 'Pester 5.7.1 or newer (major version 5) is not installed. Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser' }
-    Import-Module $module.Path -Force
+    $module = Get-Module -Name Pester | Where-Object {
+        $_.Version -ge [version]'5.7.1' -and $_.Version.Major -eq 5
+    } | Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $module) {
+        $module = Get-Module -ListAvailable -Name Pester |
+            Where-Object { $_.Version -ge [version]'5.7.1' -and $_.Version.Major -eq 5 } |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+        if (-not $module) { throw 'Pester 5.7.1 or newer (major version 5) is not installed. Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser' }
+        Import-Module $module.Path
+    }
     $configuration = New-PesterConfiguration
     $configuration.Run.Path = $testPath
     $configuration.Run.PassThru = $true

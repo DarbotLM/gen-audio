@@ -275,7 +275,7 @@ $nuspec = @"
     <title>Gen-Audio</title>
     <authors>Darbot Labs</authors>
     <description>$(& $escapeXml 'Darbot Gen-Audio desktop for Windows x64. tools/ contains gen-audio.exe, the gen-audio-mcp sidecar and the gen-audio-acp agent; the MSIX carries the same verified binaries.')</description>
-    <projectUrl>https://github.com/darbotlabs/gen-audio</projectUrl>
+    <projectUrl>https://github.com/DarbotLM/gen-audio</projectUrl>
     <license type="expression">MIT</license>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <tags>gen-audio tts tauri desktop mcp acp windows</tags>

@@ -76,9 +76,9 @@ vibevoice = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/darbotlabs/gen-audio"
-Documentation = "https://github.com/darbotlabs/gen-audio/blob/main/docs/ARCHITECTURE.md"
-Issues = "https://github.com/darbotlabs/gen-audio/issues"
+Homepage = "https://github.com/DarbotLM/gen-audio"
+Documentation = "https://github.com/DarbotLM/gen-audio/blob/main/docs/ARCHITECTURE.md"
+Issues = "https://github.com/DarbotLM/gen-audio/issues"
 
 [project.scripts]
 gen-audio-synth = "gen_audio.cli.synth:main"

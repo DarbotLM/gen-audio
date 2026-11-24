@@ -952,7 +952,7 @@ mod tests {
             ]
         );
         assert!(framework("kokoro_onnx").unwrap().wired);
-        assert!(!framework("personaplex").unwrap().wired);
+        assert!(framework("personaplex").unwrap().wired);
         assert!(framework("livevoice").unwrap().engine_id.is_none());
     }
 

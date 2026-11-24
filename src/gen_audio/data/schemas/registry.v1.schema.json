@@ -52,7 +52,7 @@
         "upstream": { "type": "string", "minLength": 1, "maxLength": 80 },
         "revision": { "type": ["string", "null"] },
         "max_position_embeddings": { "type": "integer", "minimum": 1 },
-        "device_policy": { "enum": ["cpu", "gpu"] },
+        "device_policy": { "enum": ["cpu", "gpu", "hybrid"] },
         "cfg_scale": { "type": "number", "minimum": 0.5, "maximum": 5 },
         "diffusion_steps": { "type": "integer", "minimum": 1, "maximum": 100 },
         "max_speakers": { "type": "integer", "minimum": 1, "maximum": 8 },

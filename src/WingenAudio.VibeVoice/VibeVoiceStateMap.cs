@@ -131,6 +131,40 @@ public sealed class VibeVoiceStateMap : IDisposable
         }
     }
 
+    public async ValueTask<Dictionary<string, Tensor>> LoadPrefixAsync(
+        string prefix,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        string[] names = Entries
+            .Where(entry => entry.Name.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(entry => entry.Name)
+            .ToArray();
+        if (names.Length == 0)
+        {
+            throw new InvalidDataException(
+                $"Checkpoint is missing state prefix '{prefix}'.");
+        }
+        var state = new Dictionary<string, Tensor>(names.Length, StringComparer.Ordinal);
+        try
+        {
+            foreach (string name in names)
+            {
+                state.Add(name, await LoadTensorAsync(name, cancellationToken: cancellationToken));
+            }
+            return state;
+        }
+        catch
+        {
+            foreach (Tensor tensor in state.Values)
+            {
+                tensor.Dispose();
+            }
+            throw;
+        }
+    }
+
     public IReadOnlyList<string> Validate()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -198,6 +232,7 @@ public sealed class VibeVoiceStateMap : IDisposable
         RequireRegion(VibeVoiceStateRegion.AcousticConnector, "acoustic connector", errors);
         RequireRegion(VibeVoiceStateRegion.SemanticConnector, "semantic connector", errors);
         RequireRegion(VibeVoiceStateRegion.DiffusionHead, "diffusion head", errors);
+        VibeVoiceTokenizerState.Validate(this, errors);
         for (int layer = 0; layer < Configuration.DiffusionHead.Layers; layer++)
         {
             RequireDecoderShape(
@@ -218,7 +253,7 @@ public sealed class VibeVoiceStateMap : IDisposable
         return [];
     }
 
-    private void RequireDecoderShape(
+    internal void RequireDecoderShape(
         string name,
         IReadOnlyList<long> expected,
         ICollection<string> errors)

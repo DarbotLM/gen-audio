@@ -97,7 +97,16 @@ public sealed record VibeVoiceConfiguration(
             ParseRatios(Required(value, "encoder_ratios")),
             ParseRatios(Optional(value, "decoder_ratios")),
             Boolean(value, "causal"),
-            Double(value, "layernorm_eps"));
+            Double(value, "layernorm_eps"),
+            value.TryGetProperty("decoder_n_filters", out JsonElement decoderFilters)
+                ? decoderFilters.GetInt32()
+                : Integer(value, "encoder_n_filters"),
+            value.TryGetProperty("decoder_depths", out JsonElement decoderDepths) &&
+                decoderDepths.ValueKind is not JsonValueKind.Null
+                    ? Integers(value, "decoder_depths")
+                    : Integers(value, "encoder_depths").Reverse().ToArray(),
+            Double(value, "fix_std"),
+            String(value, "std_dist_type"));
 
     private static int[] ParseRatios(JsonElement value)
     {
@@ -164,7 +173,11 @@ public sealed record AcousticTokenizerConfiguration(
     int[] EncoderRatios,
     int[] DecoderRatios,
     bool Causal,
-    double NormEpsilon);
+    double NormEpsilon,
+    int DecoderFilters,
+    int[] DecoderDepths,
+    double FixedStandardDeviation,
+    string DistributionType);
 
 public sealed record DiffusionHeadConfiguration(
     int HiddenSize,

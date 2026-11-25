@@ -39,7 +39,11 @@ public sealed record VibeVoiceSyntheticReceipt(
     int PromptTokenCount,
     bool? SpeakerConfinementValid,
     bool WaveValidationValid,
-    IReadOnlyList<int> ResampledRates);
+    IReadOnlyList<int> ResampledRates,
+    bool CodecGraphValid,
+    IReadOnlyList<long> AcousticLatentShape,
+    IReadOnlyList<long> AcousticDecodedShape,
+    IReadOnlyList<long> SemanticLatentShape);
 
 public static class VibeVoiceRuntime
 {
@@ -117,9 +121,20 @@ public static class VibeVoiceRuntime
             "WingenAudio.VibeVoice BPE, vocab, merges, special-token, and script prompt loader");
         AddIntrinsic(implemented, "audio.wave_io",
             "bounded mono PCM16 WAV loader with 24 kHz linear resampling");
+        AddIntrinsic(implemented, "audio.acoustic_tokenizer.encoder",
+            "BF16 causal downsampling encoder with depthwise blocks and state-map validation");
+        AddIntrinsic(implemented, "audio.acoustic_tokenizer.decoder",
+            "BF16 causal upsampling decoder using PowerTorch ConvTranspose1D");
+        AddIntrinsic(implemented, "audio.semantic_tokenizer.encoder",
+            "BF16 semantic encoder with state-map validation");
         foreach (string capability in required)
         {
-            if (capability is "text.qwen2_bpe_tokenizer" or "audio.wave_io")
+            if (capability is
+                "text.qwen2_bpe_tokenizer" or
+                "audio.wave_io" or
+                "audio.acoustic_tokenizer.encoder" or
+                "audio.acoustic_tokenizer.decoder" or
+                "audio.semantic_tokenizer.encoder")
             {
                 continue;
             }
@@ -306,11 +321,14 @@ public static class VibeVoiceRuntime
             catch (IOException)
             {
             }
+            VibeVoiceCodecSyntheticResult codec =
+                RunCodecSyntheticValidation(backend);
             return new(
                 Ok: finite &&
                     tokenizerValid is not false &&
                     speakerConfinementValid is not false &&
                     waveValid &&
+                    codec.Valid &&
                     output.Shape.SequenceEqual(new long[] { 1, 3, hidden }),
                 Test: "qwen2-prefill-and-native-tokenizer-wav-boundary",
                 Shape: output.Shape,
@@ -320,7 +338,11 @@ public static class VibeVoiceRuntime
                 PromptTokenCount: promptTokenCount,
                 SpeakerConfinementValid: speakerConfinementValid,
                 WaveValidationValid: waveValid,
-                ResampledRates: resampledRates);
+                ResampledRates: resampledRates,
+                CodecGraphValid: codec.Valid,
+                AcousticLatentShape: codec.AcousticLatentShape,
+                AcousticDecodedShape: codec.AcousticDecodedShape,
+                SemanticLatentShape: codec.SemanticLatentShape);
         }
 
         finally
@@ -337,6 +359,246 @@ public static class VibeVoiceRuntime
         string name,
         string boundary) =>
         capabilities.Add(new(name, true, boundary));
+
+    private static VibeVoiceCodecSyntheticResult RunCodecSyntheticValidation(
+        ITensorBackend backend)
+    {
+        var configuration = new AcousticTokenizerConfiguration(
+            "vibevoice_acoustic_tokenizer",
+            1,
+            2,
+            2,
+            [1, 1],
+            [2],
+            [2],
+            true,
+            1e-5,
+            2,
+            [1, 1],
+            0.5,
+            "gaussian");
+        var state = new Dictionary<string, Tensor>(StringComparer.Ordinal);
+        try
+        {
+            AddEncoderState(
+                state,
+                configuration,
+                "model.acoustic_tokenizer.encoder.");
+            AddDecoderState(
+                state,
+                configuration,
+                "model.acoustic_tokenizer.decoder.");
+            AddEncoderState(
+                state,
+                configuration,
+                "model.semantic_tokenizer.encoder.");
+            var acoustic = new VibeVoiceAcousticTokenizer(
+                backend,
+                configuration,
+                state);
+            var semantic = new VibeVoiceSemanticTokenizer(
+                backend,
+                configuration,
+                state);
+            using Tensor waveform = TensorFactory.FromArray(
+                Enumerable.Range(0, 16)
+                    .Select(value => (BFloat16)(value / 32f))
+                    .ToArray(),
+                [1, 1, 16]);
+            using Tensor acousticLatent = acoustic.Encode(waveform);
+            using Tensor acousticDecoded = acoustic.Decode(acousticLatent);
+            using Tensor semanticLatent = semantic.Encode(waveform);
+            bool valid =
+                acousticLatent.Shape.SequenceEqual(new long[] { 1, 8, 2 }) &&
+                acousticDecoded.Shape.SequenceEqual(new long[] { 1, 1, 16 }) &&
+                semanticLatent.Shape.SequenceEqual(new long[] { 1, 8, 2 }) &&
+                acousticLatent.AsSpan<BFloat16>().ToArray().All(value => float.IsFinite(value)) &&
+                acousticDecoded.AsSpan<BFloat16>().ToArray().All(value => float.IsFinite(value)) &&
+                semanticLatent.AsSpan<BFloat16>().ToArray().All(value => float.IsFinite(value));
+            return new(
+                valid,
+                acousticLatent.Shape.ToArray(),
+                acousticDecoded.Shape.ToArray(),
+                semanticLatent.Shape.ToArray());
+        }
+        finally
+        {
+            foreach (Tensor tensor in state.Values)
+            {
+                tensor.Dispose();
+            }
+        }
+    }
+
+    private static void AddEncoderState(
+        IDictionary<string, Tensor> state,
+        AcousticTokenizerConfiguration configuration,
+        string prefix)
+    {
+        int[] ratios = configuration.EncoderRatios.Reverse().ToArray();
+        AddFilled(
+            state,
+            prefix + "downsample_layers.0.0.conv.conv.weight",
+            0.05,
+            configuration.Filters,
+            configuration.Channels,
+            7);
+        AddFilled(
+            state,
+            prefix + "downsample_layers.0.0.conv.conv.bias",
+            0.01,
+            configuration.Filters);
+        for (int stage = 1; stage < configuration.EncoderDepths.Length; stage++)
+        {
+            int input = configuration.Filters * (1 << (stage - 1));
+            int output = input * 2;
+            AddFilled(
+                state,
+                prefix + $"downsample_layers.{stage}.0.conv.conv.weight",
+                0.05,
+                output,
+                input,
+                ratios[stage - 1] * 2);
+            AddFilled(
+                state,
+                prefix + $"downsample_layers.{stage}.0.conv.conv.bias",
+                0.01,
+                output);
+        }
+        for (int stage = 0; stage < configuration.EncoderDepths.Length; stage++)
+        {
+            for (int block = 0;
+                 block < configuration.EncoderDepths[stage];
+                 block++)
+            {
+                AddBlockState(
+                    state,
+                    prefix + $"stages.{stage}.{block}.",
+                    configuration.Filters * (1 << stage));
+            }
+        }
+        AddFilled(
+            state,
+            prefix + "head.conv.conv.weight",
+            0.05,
+            configuration.VaeDimension,
+            configuration.Filters *
+                (1 << (configuration.EncoderDepths.Length - 1)),
+            7);
+        AddFilled(
+            state,
+            prefix + "head.conv.conv.bias",
+            0.01,
+            configuration.VaeDimension);
+    }
+
+    private static void AddDecoderState(
+        IDictionary<string, Tensor> state,
+        AcousticTokenizerConfiguration configuration,
+        string prefix)
+    {
+        int lastStage = configuration.DecoderDepths.Length - 1;
+        int largest = configuration.DecoderFilters * (1 << lastStage);
+        AddFilled(
+            state,
+            prefix + "upsample_layers.0.0.conv.conv.weight",
+            0.05,
+            largest,
+            configuration.VaeDimension,
+            7);
+        AddFilled(
+            state,
+            prefix + "upsample_layers.0.0.conv.conv.bias",
+            0.01,
+            largest);
+        for (int index = 0; index < configuration.DecoderRatios.Length; index++)
+        {
+            int input = configuration.DecoderFilters *
+                (1 << (lastStage - index));
+            int output = input / 2;
+            AddFilled(
+                state,
+                prefix + $"upsample_layers.{index + 1}.0.convtr.convtr.weight",
+                0.05,
+                input,
+                output,
+                configuration.DecoderRatios[index] * 2);
+            AddFilled(
+                state,
+                prefix + $"upsample_layers.{index + 1}.0.convtr.convtr.bias",
+                0.01,
+                output);
+        }
+        for (int stage = 0; stage < configuration.DecoderDepths.Length; stage++)
+        {
+            for (int block = 0;
+                 block < configuration.DecoderDepths[stage];
+                 block++)
+            {
+                AddBlockState(
+                    state,
+                    prefix + $"stages.{stage}.{block}.",
+                    configuration.DecoderFilters * (1 << (lastStage - stage)));
+            }
+        }
+        AddFilled(
+            state,
+            prefix + "head.conv.conv.weight",
+            0.05,
+            configuration.Channels,
+            configuration.DecoderFilters,
+            7);
+        AddFilled(
+            state,
+            prefix + "head.conv.conv.bias",
+            0.01,
+            configuration.Channels);
+    }
+
+    private static void AddBlockState(
+        IDictionary<string, Tensor> state,
+        string prefix,
+        int channels)
+    {
+        AddFilled(state, prefix + "norm.weight", 1, channels);
+        AddFilled(state, prefix + "gamma", 0.1, channels);
+        AddFilled(state, prefix + "ffn_norm.weight", 1, channels);
+        AddFilled(state, prefix + "ffn_gamma", 0.1, channels);
+        AddFilled(
+            state,
+            prefix + "mixer.conv.conv.conv.weight",
+            0.05,
+            channels,
+            1,
+            7);
+        AddFilled(
+            state,
+            prefix + "mixer.conv.conv.conv.bias",
+            0.01,
+            channels);
+        AddFilled(
+            state,
+            prefix + "ffn.linear1.weight",
+            0.05,
+            channels * 4,
+            channels);
+        AddFilled(
+            state,
+            prefix + "ffn.linear1.bias",
+            0.01,
+            channels * 4);
+        AddFilled(
+            state,
+            prefix + "ffn.linear2.weight",
+            0.05,
+            channels,
+            channels * 4);
+        AddFilled(
+            state,
+            prefix + "ffn.linear2.bias",
+            0.01,
+            channels);
+    }
 
     private static MemoryStream CreateSyntheticWave(
         int sampleRate,
@@ -384,3 +646,9 @@ public static class VibeVoiceRuntime
                 shape));
     }
 }
+
+internal sealed record VibeVoiceCodecSyntheticResult(
+    bool Valid,
+    IReadOnlyList<long> AcousticLatentShape,
+    IReadOnlyList<long> AcousticDecodedShape,
+    IReadOnlyList<long> SemanticLatentShape);

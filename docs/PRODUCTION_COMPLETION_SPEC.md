@@ -134,6 +134,13 @@ and rollback on the supported hardware. Mark a row complete only when a fresh
 release install can run that path with the Python package absent from the
 worker graph. Coordinate live model and service changes separately.
 
+**Campaign scoring:** a verified remediation on `main` earns one point. Award
+two additional points, shared once per retired production Python module, when
+reviewers can identify the old caller, its replacement, and the passing parity
+and safety checks. Prefer PowerShell for Windows operator workflows, F# for
+typed contracts and placement, and .NET 11 for execution. A wrapper that still
+launches Python, a renamed file, or an unverified port earns no migration bonus.
+
 ### Forward log: scanner reconciliation
 
 The initial GitHub inventory at `1085a73` contained 44 Dependabot records and

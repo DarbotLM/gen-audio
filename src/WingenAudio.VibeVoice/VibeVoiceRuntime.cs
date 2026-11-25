@@ -35,9 +35,9 @@ public sealed record VibeVoiceSyntheticReceipt(
     IReadOnlyList<long> Shape,
     string DataType,
     bool AllFinite,
-    bool TokenizerValid,
+    bool? TokenizerValid,
     int PromptTokenCount,
-    bool SpeakerConfinementValid,
+    bool? SpeakerConfinementValid,
     bool WaveValidationValid,
     IReadOnlyList<int> ResampledRates);
 
@@ -212,9 +212,9 @@ public static class VibeVoiceRuntime
             using Tensor output = layer.Forward(input, positions);
             bool finite = output.AsSpan<BFloat16>().ToArray()
                 .All(value => float.IsFinite(value));
-            bool tokenizerValid = false;
+            bool? tokenizerValid = null;
             int promptTokenCount = 0;
-            bool speakerConfinementValid = false;
+            bool? speakerConfinementValid = null;
             if (tokenizerDirectory is not null)
             {
                 Qwen2BpeTokenizer tokenizer = Qwen2BpeTokenizer.Load(tokenizerDirectory);
@@ -248,7 +248,7 @@ public static class VibeVoiceRuntime
                 {
                     speakerConfinementValid = true;
                 }
-                speakerConfinementValid &=
+                speakerConfinementValid = speakerConfinementValid is not false &&
                     VibeVoiceSpeakerScript.Parse(
                         "Speaker 1: one\nSpeaker 2: two\nSpeaker 3: three\nSpeaker 4: four")
                     .Speakers.Count == 4;
@@ -308,8 +308,8 @@ public static class VibeVoiceRuntime
             }
             return new(
                 Ok: finite &&
-                    (tokenizerDirectory is null || tokenizerValid) &&
-                    (tokenizerDirectory is null || speakerConfinementValid) &&
+                    tokenizerValid is not false &&
+                    speakerConfinementValid is not false &&
                     waveValid &&
                     output.Shape.SequenceEqual(new long[] { 1, 3, hidden }),
                 Test: "qwen2-prefill-and-native-tokenizer-wav-boundary",

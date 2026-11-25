@@ -40,6 +40,67 @@ public sealed class Qwen2DecoderModel
                 hidden.Dispose();
                 hidden = next;
             }
+
+            return _backend.RmsNorm(
+                hidden,
+                [_configuration.HiddenSize],
+                _finalNormWeight,
+                _configuration.RmsNormEpsilon);
+        }
+        finally
+        {
+            hidden.Dispose();
+        }
+    }
+
+    public Tensor ForwardEmbeddings(Tensor embeddings, Tensor positions) =>
+        ForwardHidden(embeddings, positions);
+
+    public Qwen2DecoderStep ForwardCached(
+        Tensor embeddings,
+        Tensor positions,
+        Qwen2DecoderCache cache)
+    {
+        Tensor hidden = embeddings.Clone();
+        try
+        {
+            for (int layerIndex = 0; layerIndex < _layers.Length; layerIndex++)
+            {
+                Qwen2LayerStep step = _layers[layerIndex].ForwardCached(
+                    hidden,
+                    positions,
+                    cache.Get(layerIndex));
+                hidden.Dispose();
+                hidden = step.Output;
+                cache.Set(layerIndex, step.Key, step.Value);
+            }
+            return new(
+                _backend.RmsNorm(
+                    hidden,
+                    [_configuration.HiddenSize],
+                    _finalNormWeight,
+                    _configuration.RmsNormEpsilon));
+        }
+        finally
+        {
+            hidden.Dispose();
+        }
+    }
+
+    public Tensor Embed(Tensor inputIds) =>
+        _backend.Embedding(_embeddingWeight, inputIds);
+
+    private Tensor ForwardHidden(Tensor embeddings, Tensor positions)
+    {
+        Tensor hidden = embeddings.Clone();
+        try
+        {
+            foreach (Qwen2DecoderLayer layer in _layers)
+            {
+                Tensor next = layer.Forward(hidden, positions);
+                hidden.Dispose();
+                hidden = next;
+            }
             return _backend.RmsNorm(
                 hidden,
                 [_configuration.HiddenSize],
@@ -156,6 +217,60 @@ public sealed class Qwen2DecoderLayer
         }
     }
 
+    internal Qwen2LayerStep ForwardCached(
+        Tensor input,
+        Tensor positions,
+        Qwen2LayerCache? previous)
+    {
+        using Tensor attentionInput = _backend.RmsNorm(
+            input,
+            [_configuration.HiddenSize],
+            _inputNormWeight,
+            _configuration.RmsNormEpsilon);
+        Qwen2AttentionStep attention = _attention.ForwardCached(
+            attentionInput,
+            positions,
+            previous);
+        try
+        {
+            Tensor afterAttention = _backend.Add(input, attention.Output);
+            try
+            {
+                using Tensor mlpInput = _backend.RmsNorm(
+                    afterAttention,
+                    [_configuration.HiddenSize],
+                    _postAttentionNormWeight,
+                    _configuration.RmsNormEpsilon);
+                using Tensor gated = TensorLinear.Forward(
+                    _backend,
+                    mlpInput,
+                    _gateWeight);
+                using Tensor activated = TensorMath.SiLu(gated);
+                using Tensor up = TensorLinear.Forward(
+                    _backend,
+                    mlpInput,
+                    _upWeight);
+                using Tensor product = _backend.Multiply(activated, up);
+                using Tensor mlpOutput = TensorLinear.Forward(
+                    _backend,
+                    product,
+                    _downWeight);
+                return new(
+                    _backend.Add(afterAttention, mlpOutput),
+                    attention.Key,
+                    attention.Value);
+            }
+            finally
+            {
+                afterAttention.Dispose();
+            }
+        }
+        finally
+        {
+            attention.Output.Dispose();
+        }
+    }
+
     private static Tensor Require(IReadOnlyDictionary<string, Tensor> state, string name) =>
         state.TryGetValue(name, out Tensor? tensor)
             ? tensor
@@ -249,6 +364,148 @@ public sealed class Qwen2Attention
             [batch, sequence, _configuration.HiddenSize]);
         return TensorLinear.Forward(_backend, merged, _outputWeight);
     }
+
+    internal Qwen2AttentionStep ForwardCached(
+        Tensor input,
+        Tensor positions,
+        Qwen2LayerCache? previous)
+    {
+        int headWidth = _configuration.HiddenSize / _configuration.AttentionHeads;
+        long batch = input.Shape[0];
+        long sequence = input.Shape[1];
+        using Tensor queryProjection = TensorLinear.Forward(
+            _backend, input, _queryWeight, _queryBias);
+        using Tensor keyProjection = TensorLinear.Forward(
+            _backend, input, _keyWeight, _keyBias);
+        using Tensor valueProjection = TensorLinear.Forward(
+            _backend, input, _valueWeight, _valueBias);
+        using Tensor queryShaped = _backend.Reshape(
+            queryProjection,
+            [batch, sequence, _configuration.AttentionHeads, headWidth]);
+        using Tensor keyShaped = _backend.Reshape(
+            keyProjection,
+            [batch, sequence, _configuration.KeyValueHeads, headWidth]);
+        using Tensor valueShaped = _backend.Reshape(
+            valueProjection,
+            [batch, sequence, _configuration.KeyValueHeads, headWidth]);
+        using Tensor queryHeads = _backend.Permute(queryShaped, [0, 2, 1, 3]);
+        using Tensor keyHeads = _backend.Permute(keyShaped, [0, 2, 1, 3]);
+        using Tensor valueHeads = _backend.Permute(valueShaped, [0, 2, 1, 3]);
+        using Tensor rotatedQuery = _backend.Rotary(
+            queryHeads,
+            positions,
+            sequenceDimension: 2,
+            rotaryDimension: headWidth,
+            baseFrequency: _configuration.RopeTheta,
+            interleaved: false);
+        Tensor rotatedKey = _backend.Rotary(
+            keyHeads,
+            positions,
+            sequenceDimension: 2,
+            rotaryDimension: headWidth,
+            baseFrequency: _configuration.RopeTheta,
+            interleaved: false);
+        Tensor key = rotatedKey;
+        Tensor value = valueHeads.Clone();
+        try
+        {
+            if (previous is not null)
+            {
+                key = _backend.KvCacheAppend(previous.Key, rotatedKey);
+                rotatedKey.Dispose();
+                value = _backend.KvCacheAppend(previous.Value, valueHeads);
+            }
+            using Tensor attention = _backend.CausalAttention(
+                rotatedQuery,
+                key,
+                value,
+                scale: null);
+            using Tensor mergedHeads = _backend.Permute(
+                attention,
+                [0, 2, 1, 3]);
+            using Tensor merged = _backend.Reshape(
+                mergedHeads,
+                [batch, sequence, _configuration.HiddenSize]);
+            Tensor output = TensorLinear.Forward(
+                _backend,
+                merged,
+                _outputWeight);
+            return new(output, key, value);
+        }
+        catch
+        {
+            key.Dispose();
+            value.Dispose();
+            throw;
+        }
+    }
+}
+
+public sealed class Qwen2DecoderCache : IDisposable
+{
+    private readonly Qwen2LayerCache?[] _layers;
+
+    public Qwen2DecoderCache(int layerCount)
+    {
+        if (layerCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(layerCount));
+        }
+        _layers = new Qwen2LayerCache?[layerCount];
+    }
+
+    public long SequenceLength =>
+        _layers.FirstOrDefault(cache => cache is not null)?.Key.Shape[2] ?? 0;
+
+    internal Qwen2LayerCache? Get(int layer) => _layers[layer];
+
+    internal void Set(int layer, Tensor key, Tensor value)
+    {
+        Qwen2LayerCache? previous = _layers[layer];
+        _layers[layer] = new(key, value);
+        previous?.Dispose();
+    }
+
+    public void Dispose()
+    {
+        foreach (Qwen2LayerCache? layer in _layers)
+        {
+            layer?.Dispose();
+        }
+        Array.Clear(_layers);
+    }
+}
+
+internal sealed record Qwen2LayerCache(
+    Tensor Key,
+    Tensor Value) : IDisposable
+{
+    public void Dispose()
+    {
+        Key.Dispose();
+        Value.Dispose();
+    }
+}
+
+public sealed record Qwen2DecoderStep(Tensor Output) : IDisposable
+{
+    public void Dispose() => Output.Dispose();
+}
+
+internal sealed record Qwen2LayerStep(
+    Tensor Output,
+    Tensor Key,
+    Tensor Value) : IDisposable
+{
+    public void Dispose() => Output.Dispose();
+}
+
+internal sealed record Qwen2AttentionStep(
+    Tensor Output,
+    Tensor Key,
+    Tensor Value) : IDisposable
+{
+    public void Dispose() => Output.Dispose();
 }
 
 internal static class TensorLinear

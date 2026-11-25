@@ -47,7 +47,8 @@ public sealed record VibeVoiceSyntheticReceipt(
     bool DiffusionGraphValid,
     IReadOnlyList<long> DiffusionOutputShape,
     IReadOnlyList<int> DiffusionTimesteps,
-    bool DiffusionDeterministic);
+    bool DiffusionDeterministic,
+    bool KvCacheValid);
 
 public static class VibeVoiceRuntime
 {
@@ -117,11 +118,11 @@ public static class VibeVoiceRuntime
             "audio.diffusion_scheduler",
             "audio.streaming_cache",
             "model.generation",
-            "device.transfer",
-            "device.tensor_residency",
         ];
         var implemented = new List<VibeVoiceCapability>();
         var missing = new List<VibeVoiceCapability>();
+        AddIntrinsic(implemented, "device.cpu_residency",
+            "CPU generation path; accelerator transfer and tensor residency are not required");
         AddIntrinsic(implemented, "text.qwen2_bpe_tokenizer",
             "WingenAudio.VibeVoice BPE, vocab, merges, special-token, and script prompt loader");
         AddIntrinsic(implemented, "audio.wave_io",
@@ -238,6 +239,54 @@ public static class VibeVoiceRuntime
             using Tensor output = layer.Forward(input, positions);
             bool finite = output.AsSpan<BFloat16>().ToArray()
                 .All(value => float.IsFinite(value));
+            using var cache = new Qwen2DecoderCache(1);
+            using Tensor prefill = TensorFactory.FromArray(
+                Enumerable.Range(0, 12)
+                    .Select(value => BFloat16.FromSingle(value / 20f))
+                    .ToArray(),
+                [1, 3, hidden]);
+            using Tensor prefillPositions = TensorFactory.FromArray(
+                new long[] { 0, 1, 2 },
+                [3]);
+            using Qwen2LayerStep prefillStep = layer.ForwardCached(
+                prefill,
+                prefillPositions,
+                null);
+            cache.Set(0, prefillStep.Key, prefillStep.Value);
+            using Tensor next = TensorFactory.FromArray(
+                new[]
+                {
+                    (BFloat16)0.2f,
+                    (BFloat16)0.25f,
+                    (BFloat16)0.3f,
+                    (BFloat16)0.35f,
+                },
+                [1, 1, hidden]);
+            using Tensor nextPosition = TensorFactory.FromArray(
+                new long[] { 3 },
+                [1]);
+            using Qwen2LayerStep decodedStep = layer.ForwardCached(
+                next,
+                nextPosition,
+                cache.Get(0));
+            cache.Set(0, decodedStep.Key, decodedStep.Value);
+            using Tensor all = TensorFactory.FromArray(
+                [
+                    .. prefill.AsSpan<BFloat16>().ToArray(),
+                    .. next.AsSpan<BFloat16>().ToArray(),
+                ],
+                [1, 4, hidden]);
+            using Tensor allPositions = TensorFactory.FromArray(
+                new long[] { 0, 1, 2, 3 },
+                [4]);
+            using Tensor uncached = layer.Forward(all, allPositions);
+            using Tensor uncachedLast = TensorFactory.FromArray(
+                uncached.AsSpan<BFloat16>().ToArray().TakeLast(hidden).ToArray(),
+                [1, 1, hidden]);
+            bool kvCacheValid =
+                cache.SequenceLength == 4 &&
+                decodedStep.Output.AsSpan<BFloat16>()
+                    .SequenceEqual(uncachedLast.AsSpan<BFloat16>());
             bool? tokenizerValid = null;
             int promptTokenCount = 0;
             bool? speakerConfinementValid = null;
@@ -343,6 +392,7 @@ public static class VibeVoiceRuntime
                     waveValid &&
                     codec.Valid &&
                     diffusion.Valid &&
+                    kvCacheValid &&
                     output.Shape.SequenceEqual(new long[] { 1, 3, hidden }),
                 Test: "qwen2-prefill-and-native-tokenizer-wav-boundary",
                 Shape: output.Shape,
@@ -360,7 +410,8 @@ public static class VibeVoiceRuntime
                 DiffusionGraphValid: diffusion.Valid,
                 DiffusionOutputShape: diffusion.OutputShape,
                 DiffusionTimesteps: diffusion.Timesteps,
-                DiffusionDeterministic: diffusion.Deterministic);
+                DiffusionDeterministic: diffusion.Deterministic,
+                KvCacheValid: kvCacheValid);
         }
 
         finally

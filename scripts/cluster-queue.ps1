@@ -64,9 +64,9 @@ function Assert-Lease {
 }
 
 function Add-Event {
-    param([pscustomobject]$Job, [string]$Event, [hashtable]$Details = @{})
+    param([pscustomobject]$Job, [string]$EventName, [hashtable]$Details = @{})
     $entry = [ordered]@{
-        event = $Event
+        event = $EventName
         at = [DateTimeOffset]::UtcNow.ToString("o")
     }
     foreach ($item in $Details.GetEnumerator()) {
@@ -76,7 +76,7 @@ function Add-Event {
 }
 
 function Invoke-Locked {
-    param([scriptblock]$Operation)
+    param([string]$QueueAction, [scriptblock]$Operation)
     $lock = Join-Path $QueueRoot ".queue.lock"
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
@@ -90,14 +90,15 @@ function Invoke-Locked {
         }
     } while ($true)
     try {
-        & $Operation
+        & $Operation $QueueAction
     } finally {
         if ($handle) { $handle.Dispose() }
     }
 }
 
-$Result = Invoke-Locked {
-    switch ($Action) {
+$Result = Invoke-Locked $Action {
+    param($QueueAction)
+    switch ($QueueAction) {
         "submit" {
             if ($Payload.engine -notin @("vibevoice", "personaplex")) {
                 throw "unknown cluster engine: $($Payload.engine)"

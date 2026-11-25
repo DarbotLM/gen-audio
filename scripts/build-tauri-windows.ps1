@@ -243,7 +243,14 @@ try {
     if ($mxcIdentity.ok -ne $true -or $mxcIdentity.supported -ne $true) {
         throw "wingen.audio requires a supported MXC host: $wingenMxc"
     }
-    Write-Step "wingen.audio $($wingen.FullName) $($wingen.Length) bytes sha256 $wingenHash; MXC $($mxcIdentity.nativeVersion), supported=$($mxcIdentity.supported)"
+    $wingenPowerTorch = & $wingen.FullName powertorch probe 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "wingen.audio PowerTorch probe failed with exit ${LASTEXITCODE}: $wingenPowerTorch" }
+    $powerTorchIdentity = $wingenPowerTorch | Select-Object -Last 1 | ConvertFrom-Json
+    $powerTorchPin = Get-Content -LiteralPath (Join-Path $root 'runtimes\powertorch.version.json') -Raw | ConvertFrom-Json
+    if ($powerTorchIdentity.ok -ne $true -or $powerTorchIdentity.pin -ne $powerTorchPin.commit) {
+        throw "wingen.audio PowerTorch pin/probe failed: $wingenPowerTorch"
+    }
+    Write-Step "wingen.audio $($wingen.FullName) $($wingen.Length) bytes sha256 $wingenHash; MXC $($mxcIdentity.nativeVersion); PowerTorch $($powerTorchIdentity.pin)"
 
     # Stage the sidecar where tauri externalBin expects it. Never copy a file
     # onto itself (the old script copied target\release\gen-audio-mcp.exe onto

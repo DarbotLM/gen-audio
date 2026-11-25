@@ -859,7 +859,7 @@ mod tests {
             &[wav.uid.clone()],
         )
         .unwrap();
-        assert!(cube.uid.starts_with("ga:cube_ihdr:"), "{}", cube.uid);
+        assert!(cube.uid.starts_with("ga:cube_ihdr:"));
         let manifest = json!({
             "duration_s": 1.0,
             "engine": "kokoro_onnx",
@@ -880,9 +880,9 @@ mod tests {
             "files": {"wav": "fitted.wav", "cubeJson": "cube.json", "cubePng": "cube.png"}
         });
         let imported = import_pipeline(&work, &manifest).expect("import");
-        assert_eq!(imported.cube_uid, cube.uid);
-        match crate::asset_catalog::resolve(&imported.cube_uid).expect("resolve") {
-            crate::asset_catalog::Resolve::Found(asset) => {
+        assert!(imported.cube_uid == cube.uid, "import changed the minted cube UID");
+        match crate::asset_catalog::resolve(&imported.cube_uid) {
+            Ok(crate::asset_catalog::Resolve::Found(asset)) => {
                 let roles: Vec<&str> = asset["media"].as_array().unwrap().iter().map(|item| item["role"].as_str().unwrap()).collect();
                 assert_eq!(roles, ["cube_json", "cube_png"]);
                 assert!(asset["honesty"]["claims"].as_array().unwrap().iter().any(|claim| claim == "library_cube"));
@@ -894,7 +894,7 @@ mod tests {
                 assert_eq!(asset["provenance"]["params"]["n_fft"], 1024);
                 assert!(asset["provenance"].get("module").is_none());
             }
-            other => panic!("expected the imported cube, got {other:?}"),
+            _ => panic!("expected the imported cube to resolve uniquely"),
         }
         set_root_override_for_test(None);
         let _ = fs::remove_dir_all(&root);

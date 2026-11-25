@@ -2943,72 +2943,32 @@ mod tests {
             .map(|view| view["snapshot"].clone())
             .collect();
 
-        let relations = vp
-            .apply(Action::Flip {
-                view: "view:conn-mcp".into(),
-                to: FlipTo::Face("relations".into()),
-            })
-            .unwrap_err();
+        let mut rejected_flip = |view: &str, face: &str| {
+            let Err(error) = vp.apply(Action::Flip {
+                view: view.into(),
+                to: FlipTo::Face(face.into()),
+            }) else {
+                panic!("flip unexpectedly accepted the omitted face");
+            };
+            error
+        };
+        let relations = rejected_flip("view:conn-mcp", "relations");
         assert_eq!(relations.code, -32602);
-        assert!(
-            relations.message.contains("valid faces: connector"),
-            "{}",
-            relations.message
-        );
-        assert!(
-            relations.message.contains("aliases: front, back"),
-            "{}",
-            relations.message
-        );
+        assert!(relations.message.contains("valid faces: connector"));
+        assert!(relations.message.contains("aliases: front, back"));
 
-        let magpie = vp
-            .apply(Action::Flip {
-                view: "view:engine-magpie".into(),
-                to: FlipTo::Face("relations".into()),
-            })
-            .unwrap_err();
-        assert!(
-            magpie.message.contains("valid faces: model"),
-            "{}",
-            magpie.message
-        );
+        let magpie = rejected_flip("view:engine-magpie", "relations");
+        assert!(magpie.message.contains("valid faces: model"));
 
-        let misaki = vp
-            .apply(Action::Flip {
-                view: "view:engine-misaki".into(),
-                to: FlipTo::Face("cubes".into()),
-            })
-            .unwrap_err();
-        assert!(
-            misaki.message.contains("valid faces: model, relations"),
-            "{}",
-            misaki.message
-        );
+        let misaki = rejected_flip("view:engine-misaki", "cubes");
+        assert!(misaki.message.contains("valid faces: model, relations"));
 
-        let back = vp
-            .apply(Action::Flip {
-                view: "view:engine-magpie".into(),
-                to: FlipTo::Face("back".into()),
-            })
-            .unwrap_err();
-        assert!(back.message.contains("needs 2 faces"), "{}", back.message);
-        assert!(
-            back.message.contains("view:engine-magpie has 1 (model)"),
-            "{}",
-            back.message
-        );
+        let back = rejected_flip("view:engine-magpie", "back");
+        assert!(back.message.contains("needs 2 faces"));
+        assert!(back.message.contains("view:engine-magpie has 1 (model)"));
 
-        let cube = vp
-            .apply(Action::Flip {
-                view: "view:lib-magpie".into(),
-                to: FlipTo::Face("cube".into()),
-            })
-            .unwrap_err();
-        assert!(
-            cube.message.contains("valid faces: clip, relations"),
-            "{}",
-            cube.message
-        );
+        let cube = rejected_flip("view:lib-magpie", "cube");
+        assert!(cube.message.contains("valid faces: clip, relations"));
 
         let moved = vp
             .apply(Action::Flip {
@@ -3038,7 +2998,7 @@ mod tests {
             .iter()
             .map(|view| view["snapshot"].clone())
             .collect();
-        assert_eq!(snapshots_before, snapshots_after);
+        assert!(snapshots_before == snapshots_after, "flip changed a view snapshot");
         let relations_face = vp
             .apply(Action::Flip {
                 view: "view:lib-misaki-kokoro".into(),
@@ -3610,8 +3570,8 @@ mod tests {
                 if let Some(links) = relations["links"].as_array() {
                     for link in links {
                         let target = link["target_uid"].as_str().unwrap();
-                        assert!(target.starts_with("ga:"), "{target}");
-                        assert!(crate::asset_catalog::require(target).is_ok(), "{target}");
+                        assert!(target.starts_with("ga:"));
+                        assert!(crate::asset_catalog::require(target).is_ok());
                     }
                 }
             }
@@ -3621,11 +3581,8 @@ mod tests {
             ) {
                 for row in cubes["rows"].as_array().unwrap() {
                     let cube_uid = row["cube_uid"].as_str().unwrap();
-                    assert!(cube_uid.starts_with("ga:cube_ihdr:"), "{cube_uid}");
-                    assert!(
-                        crate::asset_catalog::require(cube_uid).is_ok(),
-                        "{cube_uid}"
-                    );
+                    assert!(cube_uid.starts_with("ga:cube_ihdr:"));
+                    assert!(crate::asset_catalog::require(cube_uid).is_ok());
                     assert!(row["clip_uid"]
                         .as_str()
                         .unwrap()

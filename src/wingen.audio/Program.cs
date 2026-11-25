@@ -17,6 +17,11 @@ return await WingenAudioHost.RunAsync(args);
 
 internal static class WingenAudioHost
 {
+    private const int MaxRequestBytes = 64 * 1024;
+    private const int MaxResponseBytes = 4 * 1024 * 1024;
+    private const string RequestLimitMessage = "JSON request exceeds 64 KiB.";
+    private const string ResponseLimitMessage = "Worker response exceeds 4 MiB.";
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false,
@@ -122,71 +127,87 @@ internal static class WingenAudioHost
                 return;
             }
 
-            await using var requestBuffer = new MemoryStream();
-            if (context.Request.ContentLength is > 64 * 1024)
+            if (context.Request.ContentLength > MaxRequestBytes ||
+                await ReadBoundedBodyAsync(context.Request.Body, MaxRequestBytes, cancellationToken) is not { } requestBody)
             {
-                context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
-                await context.Response.WriteAsJsonAsync(new
-                {
-                    ok = false,
-                    errors = new[] { new { code = "resource_limit", message = "JSON request exceeds 64 KiB." } },
-                }, cancellationToken);
-                return;
-            }
-            await context.Request.Body.CopyToAsync(requestBuffer, cancellationToken);
-            if (requestBuffer.Length > 64 * 1024)
-            {
-                context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+                await WriteLimitErrorAsync(context, StatusCodes.Status413PayloadTooLarge, RequestLimitMessage, cancellationToken);
                 return;
             }
 
-            var upstreamRequest = new HttpRequestMessage(
+            using var upstreamRequest = new HttpRequestMessage(
                 new HttpMethod(context.Request.Method),
                 path + context.Request.QueryString);
-            if (requestBuffer.Length > 0)
+            if (requestBody.Length > 0)
             {
-                upstreamRequest.Content = new ByteArrayContent(requestBuffer.ToArray());
+                upstreamRequest.Content = new ByteArrayContent(requestBody);
                 if (context.Request.ContentType is not null)
                 {
                     upstreamRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(context.Request.ContentType);
                 }
             }
-            using var upstreamResponse = await factory.CreateClient("wingen-worker")
-                .SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            await using var upstreamStream = await upstreamResponse.Content.ReadAsStreamAsync(cancellationToken);
-            await using var responseBuffer = new MemoryStream();
-            var responseChunk = new byte[65536];
-            int responseRead;
-            var responseTotal = 0;
-            while ((responseRead = await upstreamStream.ReadAsync(responseChunk, cancellationToken)) > 0)
+            using var client = factory.CreateClient("wingen-worker");
+            using var upstreamResponse = await client.SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var responseBody = await ReadWorkerResponseAsync(upstreamResponse, cancellationToken);
+            if (responseBody is not null && path is ("/" or "/status" or "/v1/status"))
             {
-                responseTotal += responseRead;
-                if (responseTotal > 4 * 1024 * 1024)
-                {
-                    throw new IOException("Worker backend response exceeds 4 MiB.");
-                }
-                await responseBuffer.WriteAsync(responseChunk.AsMemory(0, responseRead), cancellationToken);
-            }
-
-            context.Response.StatusCode = (int)upstreamResponse.StatusCode;
-            context.Response.ContentType = "application/json; charset=utf-8";
-            if (path is "/" or "/status" or "/v1/status")
-            {
-                var node = JsonNode.Parse(responseBuffer.ToArray()) as JsonObject
+                var node = JsonNode.Parse(responseBody) as JsonObject
                     ?? throw new JsonException("Worker status returned non-object JSON.");
                 node["controlMode"] = "wingen.audio/mxc";
                 node["controlPid"] = Environment.ProcessId;
                 node["controlEngine"] = WorkerDomain.EngineId(engine);
-                await context.Response.WriteAsync(node.ToJsonString(JsonOptions), cancellationToken);
+                responseBody = JsonSerializer.SerializeToUtf8Bytes(node, JsonOptions);
+            }
+            // Status decoration can grow a valid upstream body beyond the wire limit.
+            if (responseBody is null || responseBody.Length > MaxResponseBytes)
+            {
+                await WriteLimitErrorAsync(context, StatusCodes.Status502BadGateway, ResponseLimitMessage, cancellationToken);
                 return;
             }
-            await context.Response.Body.WriteAsync(responseBuffer.ToArray(), cancellationToken);
+
+            context.Response.StatusCode = (int)upstreamResponse.StatusCode;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            await context.Response.Body.WriteAsync(responseBody, cancellationToken);
         });
 
         app.Lifetime.ApplicationStarted.Register(() =>
             Console.Error.WriteLine($"wingen.audio worker-server engine={WorkerDomain.EngineId(engine)} listen={listen} upstream={upstream} pid={Environment.ProcessId}"));
         await app.RunAsync();
         return 0;
+    }
+
+    private static Task WriteLimitErrorAsync(HttpContext context, int status, string message, CancellationToken cancellationToken)
+    {
+        context.Response.StatusCode = status;
+        return context.Response.WriteAsJsonAsync(new
+        {
+            ok = false,
+            errors = new[] { new { code = "resource_limit", message } },
+        }, cancellationToken);
+    }
+
+    private static async Task<byte[]?> ReadWorkerResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.Content.Headers.ContentLength > MaxResponseBytes)
+        {
+            return null;
+        }
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await ReadBoundedBodyAsync(stream, MaxResponseBytes, cancellationToken);
+    }
+
+    private static async Task<byte[]?> ReadBoundedBodyAsync(Stream source, int limit, CancellationToken cancellationToken)
+    {
+        using var buffer = new MemoryStream();
+        var chunk = new byte[8192];
+        while (true)
+        {
+            var remaining = limit - (int)buffer.Length;
+            // At the limit, probe one byte to distinguish exact-size EOF from overflow.
+            var count = await source.ReadAsync(chunk.AsMemory(0, Math.Min(chunk.Length, remaining + 1)), cancellationToken);
+            if (count == 0) return buffer.ToArray();
+            if (count > remaining) return null;
+            buffer.Write(chunk, 0, count);
+        }
     }
 
     private static async Task<int> RunWorkerAsync(string[] args)
@@ -215,29 +236,19 @@ internal static class WingenAudioHost
         using var message = new HttpRequestMessage(new HttpMethod(method), path.TrimStart('/'));
         if (method == "POST")
         {
-            message.Content = new StringContent(
-                request?.ToJsonString(JsonOptions) ?? "{}",
-                Encoding.UTF8,
-                "application/json");
-        }
-
-        using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead);
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var buffer = new MemoryStream();
-        var chunk = new byte[65536];
-        var total = 0;
-        int read;
-        while ((read = await stream.ReadAsync(chunk)) > 0)
-        {
-            total += read;
-            if (total > 4 * 1024 * 1024)
+            var json = request?.ToJsonString(JsonOptions) ?? "{}";
+            if (Encoding.UTF8.GetByteCount(json) > MaxRequestBytes)
             {
-                throw new IOException("Worker response exceeds 4 MiB.");
+                throw new IOException(RequestLimitMessage);
             }
-            await buffer.WriteAsync(chunk.AsMemory(0, read));
+            message.Content = new StringContent(json, Encoding.UTF8, "application/json");
         }
 
-        var receipt = JsonNode.Parse(buffer.ToArray()) as JsonObject
+        using var timeout = new CancellationTokenSource(client.Timeout);
+        using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        var responseBody = await ReadWorkerResponseAsync(response, timeout.Token) ?? throw new IOException(ResponseLimitMessage);
+
+        var receipt = JsonNode.Parse(responseBody) as JsonObject
             ?? throw new JsonException("Worker returned a non-object response.");
         ValidateReceipt(action, receipt);
         if (action == WorkerAction.Generate && options.TryGetValue("output", out var output))
@@ -431,7 +442,13 @@ internal static class WingenAudioHost
     private static async Task<JsonObject> ReadObjectAsync(string path)
     {
         await using var stream = File.OpenRead(path);
-        var node = await JsonNode.ParseAsync(stream, documentOptions: new JsonDocumentOptions { MaxDepth = 32 }) as JsonObject
+        if ((stream.CanSeek && stream.Length > MaxRequestBytes) ||
+            await ReadBoundedBodyAsync(stream, MaxRequestBytes, CancellationToken.None) is not { } bytes)
+        {
+            throw new IOException(RequestLimitMessage);
+        }
+        using var buffer = new MemoryStream(bytes);
+        var node = JsonNode.Parse(buffer, documentOptions: new JsonDocumentOptions { MaxDepth = 32 }) as JsonObject
             ?? throw new JsonException("Request file must contain a JSON object.");
         return node;
     }

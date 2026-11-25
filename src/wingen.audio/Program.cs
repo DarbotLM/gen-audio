@@ -328,7 +328,7 @@ internal static class WingenAudioHost
         {
             ok = cpu.IsAvailable && accelerator.IsAvailable,
             runtime = Environment.Version.ToString(),
-            pin = "b25c915c3d2d6576c2a62c7e933625ec4df7415d",
+            pin = "f5e69b794e47ec4ebe54dbec1e6e9f9557c137b2",
             cpu,
             directMl = accelerator,
             cuda,

@@ -286,14 +286,18 @@ def test_core_boundary_delegates_when_installed_and_reports_absence(monkeypatch)
 
 def test_named_recording_is_mixed_and_paths_stay_in_the_artifact_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("GEN_AUDIO_ARTIFACT_DIR", str(tmp_path))
-    _tone(tmp_path / "clip.wav")
+    _tone(tmp_path / "clip.WAV")
     payload = _body()
-    payload["recordings"] = {"rec-desk-moss": "clip.wav"}
+    payload["output_dir"] = "episodes/first"
+    payload["recordings"] = {"rec-desk-moss": "clip.WAV"}
     status, body = dispatch("POST", "/genaid-audio/agentyankers/episode", body=payload)
     assert status == 200
     assert body["speech_synthesized"] is False
-    notes = json.loads((tmp_path / "episode" / "quality.json").read_text(encoding="utf-8"))
+    notes = json.loads((tmp_path / "episodes" / "first" / "quality.json").read_text(encoding="utf-8"))
     assert all("call clip placeholder" not in item for item in notes["asset_warnings"])
+    payload["recordings"] = {"rec-desk-moss": "unused/clip.WAV"}
+    status, body = dispatch("POST", "/genaid-audio/agentyankers/episode", body=payload)
+    assert (status, body["error"]) == (409, "missing_recording")
     outside = tmp_path / "outside"
     outside.mkdir()
     _tone(outside / "foreign.wav")
@@ -303,6 +307,24 @@ def test_named_recording_is_mixed_and_paths_stay_in_the_artifact_dir(tmp_path: P
     assert body["error"] == "missing_recording"
     assert "foreign.wav" not in json.dumps(body)
     assert str(outside) not in json.dumps(body)
+
+
+def test_recording_link_must_resolve_inside_artifact_root(tmp_path: Path, monkeypatch):
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    monkeypatch.setenv("GEN_AUDIO_ARTIFACT_DIR", str(root))
+    tone = tmp_path / "tone.wav"
+    _tone(tone)
+    try:
+        (root / "clip.wav").symlink_to(tone)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    payload = _body()
+    payload["recordings"] = {"rec-desk-moss": "clip.wav"}
+    status, body = handle_episode(payload)
+    assert status == 400
+    assert str(tmp_path) not in json.dumps(body)
+    assert not (root / "episode").exists()
 
 
 def test_duration_rules_and_vibevoice_env_name():

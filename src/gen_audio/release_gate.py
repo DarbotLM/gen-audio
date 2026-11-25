@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 _FORBIDDEN = re.compile(
@@ -40,7 +41,7 @@ _PLACEHOLDER_OK = re.compile(
 # An HTML attribute whose value is quoted: placeholder="name". placeholder=yes
 # has no quotes, so it is copy, not this form.
 _PLACEHOLDER_ATTR = re.compile(
-    r"""\bplaceholder\s*=\s*(["'`])(?:\\.|(?!\1).)*\1""",
+    r"""\bplaceholder\s*=\s*(["'`])(?:\\.|(?!\1)[^\\\n])*\1""",
     re.IGNORECASE,
 )
 _QUOTED = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`', re.DOTALL)
@@ -108,11 +109,23 @@ def _evaluated_strings(text: str) -> str:
     return "\n".join(parts)
 
 
-def _html_text(text: str) -> str:
-    """Text nodes. Script and style bodies are not HTML copy."""
-    stripped = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-    stripped = re.sub(r"<style\b[^>]*>.*?</style>", " ", stripped, flags=re.IGNORECASE | re.DOTALL)
-    return re.sub(r"<[^>]+>", " ", stripped)
+class _HTMLText(HTMLParser):
+    """Collect text nodes; inline script and style bodies are not HTML copy."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self.skip_body = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.skip_body = tag in {"script", "style"}
+
+    def handle_endtag(self, tag: str) -> None:
+        self.skip_body = False
+
+    def handle_data(self, data: str) -> None:
+        if not self.skip_body:
+            self.parts.append(data)
 
 
 def _mask_legitimate(text: str) -> str:
@@ -133,7 +146,10 @@ def bundle_scan_text(text: str, *, html: bool) -> str:
     masked = _mask_legitimate(text)
     parts = [_evaluated_strings(masked)]
     if html:
-        parts.append(_html_text(masked))
+        parser = _HTMLText()
+        parser.feed(masked)
+        parser.close()
+        parts.extend(parser.parts)
     return "\n".join(parts)
 
 

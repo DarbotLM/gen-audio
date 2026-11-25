@@ -26,7 +26,7 @@ Use the currently mounted drive when `G:` is unavailable. For this node, pass
 
 ## Local speech job queue
 
-`scripts\cluster-queue.ps1` records jobs on disk; it does not launch or deploy a
+`scripts\cluster.ps1 -Action Queue` records jobs on disk; it does not launch or deploy a
 model. Set `-StatePath` to a directory writable only by trusted operators and
 workers. Jobs and receipts can contain private paths. All workers for a queue
 must use the same state directory.
@@ -34,8 +34,8 @@ must use the same state directory.
 ```powershell
 $job = @{ engine = 'vibevoice'; request = @{ text = 'Hello' }; idempotencyKey = 'hello-1' }
 $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($job | ConvertTo-Json -Compress)))
-.\scripts\cluster-queue.ps1 -Action submit -PayloadBase64 $payload -StatePath .\artifacts\cluster
-.\scripts\cluster-queue.ps1 -Action stats -StatePath .\artifacts\cluster
+.\scripts\cluster.ps1 -Action Queue -QueueAction submit -PayloadBase64 $payload -StatePath .\artifacts\cluster
+.\scripts\cluster.ps1 -Action Queue -QueueAction stats -StatePath .\artifacts\cluster
 ```
 
 Submitting the same key returns the existing job. `claim` issues a lease;

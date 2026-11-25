@@ -66,14 +66,7 @@ def runtime_spec(engine: str) -> dict[str, Any]:
             "revision": VIBEVOICE_REVISION,
             "requirements": "runtimes/requirements-vibevoice-hybrid.txt",
             "capability": "script_tts",
-            "versions": {
-                "vibevoice": "0.1.0",
-                "torch": "2.6.0+cu124",
-                "transformers": "4.51.3",
-                "accelerate": "1.6.0",
-                "safetensors": "0.5.3",
-                "numpy": "2.1.3",
-            },
+            "cuda_build": "12.4",
         }
     if engine == "personaplex":
         return {
@@ -83,14 +76,7 @@ def runtime_spec(engine: str) -> dict[str, Any]:
             "revision": PERSONAPLEX_REVISION,
             "requirements": "runtimes/requirements-personaplex-hybrid.txt",
             "capability": "speech_to_speech",
-            "versions": {
-                "moshi-personaplex": "0.1.0",
-                "torch": "2.4.1+cu121",
-                "accelerate": "1.6.0",
-                "numpy": "1.26.4",
-                "safetensors": "0.4.5",
-                "sentencepiece": "0.2.0",
-            },
+            "cuda_build": "12.1",
         }
     raise WorkerError("unsupported_engine", f"Unknown engine: {engine}")
 

@@ -40,11 +40,17 @@ if (Test-Path -LiteralPath (Join-Path `$root '.git')) {
 if (-not `$SkipRuntimeInstall) {
   Set-Location -LiteralPath `$root
   & uv venv --python 3.15.2 --seed .venv
+  if (`$LASTEXITCODE -ne 0) { throw 'Gen-Audio app venv creation failed' }
   & uv pip install --python .venv\Scripts\python.exe -e '.[dev]'
+  if (`$LASTEXITCODE -ne 0) { throw 'Gen-Audio app dependency installation failed' }
   & uv venv --python 3.12 --seed .venv-vibevoice-hybrid
+  if (`$LASTEXITCODE -ne 0) { throw 'VibeVoice worker venv creation failed' }
   & uv pip install --python .venv-vibevoice-hybrid\Scripts\python.exe -r runtimes\requirements-vibevoice-hybrid.txt --index-strategy unsafe-best-match
+  if (`$LASTEXITCODE -ne 0) { throw 'VibeVoice worker dependency installation failed' }
   & uv venv --python 3.12 --seed .venv-personaplex-hybrid
+  if (`$LASTEXITCODE -ne 0) { throw 'PersonaPlex worker venv creation failed' }
   & uv pip install --python .venv-personaplex-hybrid\Scripts\python.exe -r runtimes\requirements-personaplex-hybrid.txt
+  if (`$LASTEXITCODE -ne 0) { throw 'PersonaPlex worker dependency installation failed' }
 }
 & (Join-Path `$root 'scripts\start-speech-7b.ps1') -Engine both -SkipDlmSpeech
 "@

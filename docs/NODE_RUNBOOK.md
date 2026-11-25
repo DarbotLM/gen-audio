@@ -24,6 +24,25 @@ The toolbox never accepts or writes a token.
 Use the currently mounted drive when `G:` is unavailable. For this node, pass
 `-RepoRoot 'Q:\gen-audio'`.
 
+## Local speech job queue
+
+`scripts\cluster.ps1 -Action Queue` records jobs on disk; it does not launch or deploy a
+model. Set `-StatePath` to a directory writable only by trusted operators and
+workers. Jobs and receipts can contain private paths. All workers for a queue
+must use the same state directory.
+
+```powershell
+$job = @{ engine = 'vibevoice'; request = @{ text = 'Hello' }; idempotencyKey = 'hello-1' }
+$payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($job | ConvertTo-Json -Compress)))
+.\scripts\cluster.ps1 -Action Queue -QueueAction submit -PayloadBase64 $payload -StatePath .\artifacts\cluster
+.\scripts\cluster.ps1 -Action Queue -QueueAction stats -StatePath .\artifacts\cluster
+```
+
+Submitting the same key returns the existing job. `claim` issues a lease;
+`heartbeat`, `succeed`, and `fail` require its `jobId` and `leaseToken`.
+`get` and `cancel` take a `jobId`. A subsequent claim requeues an expired
+lease or marks the job failed if its attempt budget is exhausted.
+
 ## What `Node` does
 
 The `Node` path:

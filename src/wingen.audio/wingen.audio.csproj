@@ -21,6 +21,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\WingenAudio.Contracts\WingenAudio.Contracts.fsproj" />
+    <ProjectReference Include="..\WingenAudio.VibeVoice\WingenAudio.VibeVoice.csproj" />
     <ProjectReference Include="$(MxcSdkProject)" Condition="Exists('$(MxcSdkProject)')" />
     <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Abstractions\PowerTorch.Abstractions.csproj" />
     <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Core\PowerTorch.Core.csproj" />

@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using PowerTorch;
 using PowerTorch.Cpu;
 using PowerTorch.DirectML;
+using WingenAudio.VibeVoice;
 using WingenAudio.Contracts;
 
 return await WingenAudioHost.RunAsync(args);
@@ -41,6 +42,7 @@ internal static class WingenAudioHost
                 "cube-layers" => RunCubeLayers(args[1..]),
                 "mxc" => await RunMxcAsync(args[1..]),
                 "powertorch" => RunPowerTorch(args[1..]),
+                "vibevoice" => RunVibeVoice(args[1..]),
                 "worker" => await RunWorkerAsync(args[1..]),
                 "worker-server" => await RunWorkerServerAsync(args[1..]),
                 "score" => RunScore(args[1..]),
@@ -336,6 +338,31 @@ internal static class WingenAudioHost
         return cpu.IsAvailable && accelerator.IsAvailable ? 0 : 2;
     }
 
+    private static int RunVibeVoice(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            throw new ArgumentException("vibevoice requires capability or synthetic.");
+        }
+
+        if (args[0] == "synthetic")
+        {
+            var receipt = VibeVoiceRuntime.RunSyntheticValidation();
+            Console.WriteLine(JsonSerializer.Serialize(receipt, JsonOptions));
+            return receipt.Ok ? 0 : 2;
+        }
+
+        if (args[0] != "capability")
+        {
+            throw new ArgumentException($"Unknown vibevoice command '{args[0]}'.");
+        }
+        var options = ParseOptions(args[1..]);
+        var receiptCapability = VibeVoiceRuntime.Inspect(
+            Require(options, "model-dir"));
+        Console.WriteLine(JsonSerializer.Serialize(receiptCapability, JsonOptions));
+        return receiptCapability.GenerationReady ? 0 : 2;
+    }
+
     private static async Task<int> RunMxcAsync(string[] args)
     {
         if (args.Length == 0)
@@ -547,6 +574,8 @@ wingen.audio worker --action <status|preflight|load|unload|generate> --engine <v
 wingen.audio worker-server --engine ENGINE --listen http://127.0.0.1:PORT --upstream http://127.0.0.1:PORT [--timeout SECONDS]
 wingen.audio mxc probe
 wingen.audio powertorch probe
+wingen.audio vibevoice capability --model-dir PATH
+wingen.audio vibevoice synthetic
 wingen.audio mxc run --command COMMAND [--backend process|processcontainer|wslc] [--readonly P1;P2] [--readwrite P1;P2] [--deny P1;P2] [--host-loopback allow] [--network-egress allow] [--timeout-ms MS] [--gpu true]
 wingen.audio score --engine ENGINE --free-memory-gib N [placement signals]
 """);

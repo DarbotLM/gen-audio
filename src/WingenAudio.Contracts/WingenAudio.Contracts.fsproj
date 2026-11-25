@@ -6,5 +6,6 @@
   <ItemGroup>
     <Compile Include="Placement.fs" />
     <Compile Include="CubeLayers.fs" />
+    <Compile Include="VibeVoice.fs" />
   </ItemGroup>
 </Project>

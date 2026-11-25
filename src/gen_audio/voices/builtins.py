@@ -520,8 +520,6 @@ def prepare_vibevoice(voice, library: Path | None = None) -> SynthesisPlan:
                 missing.append("GEN_AUDIO_VIBEVOICE_7B_MODEL is unset")
             elif not Path(model).exists():
                 missing.append("VibeVoice 7B weights are not present at GEN_AUDIO_VIBEVOICE_7B_MODEL")
-            if not _torch_cuda():
-                missing.append("VibeVoice 7B hybrid worker or CUDA runtime is unavailable")
     elif size != "1.5B":
         missing.append(f"unknown VibeVoice size {size}")
     else:

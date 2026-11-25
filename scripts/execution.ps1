@@ -68,11 +68,6 @@ function Get-WingenVibeVoiceExecution {
         DirectML = Get-PowerTorchDevice -Backend DirectML -AdapterIndex $DeviceIndex
         Cuda = Get-PowerTorchDevice -Backend Cuda -AdapterIndex $DeviceIndex
     }
-    $selected = if ($Backend -eq 'Auto') {
-        if ($devices.Cuda.IsAvailable) { 'Cuda' }
-        elseif ($devices.DirectML.IsAvailable) { 'DirectML' }
-        else { 'Cpu' }
-    } else { $Backend }
     $required = @(
         'tensor.matmul', 'tensor.reshape', 'tensor.slice', 'tensor.transpose',
         'tensor.embedding', 'tensor.softmax', 'tensor.layer_norm', 'tensor.rms_norm',
@@ -80,6 +75,14 @@ function Get-WingenVibeVoiceExecution {
         'model.safe_state_load', 'model.sharded_checkpoint', 'model.generation',
         'audio.codec', 'audio.diffusion', 'device.transfer', 'device.tensor_residency'
     )
+    $selected = if ($Backend -eq 'Auto') {
+        @('Cuda', 'DirectML', 'Cpu') | ForEach-Object {
+            $name = $_
+            $features = $devices[$name].Features
+            $score = @($required | Where-Object { $features.ContainsKey($_) -and $features[$_] }).Count
+            [pscustomobject]@{ name = $name; available = $devices[$name].IsAvailable; score = $score }
+        } | Where-Object available | Sort-Object score -Descending | Select-Object -First 1 -ExpandProperty name
+    } else { $Backend }
     $supported = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($feature in $devices[$selected].Features.GetEnumerator()) {
         if ($feature.Value) { [void]$supported.Add($feature.Key) }

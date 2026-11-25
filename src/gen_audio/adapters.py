@@ -7,6 +7,7 @@ is missing. Nothing here writes a substitute tone.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -128,6 +129,59 @@ def _module_present(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ModuleNotFoundError, ValueError):
         return False
+
+
+def _plugin(engine: str, action: str, request: dict | None = None, output: Path | None = None) -> dict:
+    script = Path(__file__).resolve().parents[2] / "scripts" / "plugins.ps1"
+    shell = shutil.which("pwsh")
+    if shell is None:
+        raise EngineRefusal(engine, ["PowerShell 7 is required for the native plugin host"])
+    arguments = [
+        shell,
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        str(script),
+        "-Action",
+        action,
+        "-Engine",
+        engine,
+        "-TimeoutSeconds",
+        "1200",
+    ]
+    with TemporaryDirectory(prefix="gen-audio-plugin-") as temporary:
+        if request is not None:
+            request_path = Path(temporary) / "request.json"
+            request_path.write_text(
+                json.dumps(request, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            arguments += ["-RequestPath", str(request_path)]
+        if output is not None:
+            arguments += ["-OutputPath", str(output)]
+        result = subprocess.run(
+            arguments,
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=1_800,
+            check=False,
+        )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise EngineRefusal(engine, [f"PowerShell plugin failed: {detail[-2000:]}"])
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip().startswith("{")]
+    if not lines:
+        raise EngineRefusal(engine, ["PowerShell plugin returned no JSON receipt"])
+    try:
+        receipt = json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise EngineRefusal(engine, ["PowerShell plugin returned invalid JSON"]) from exc
+    if not isinstance(receipt, dict):
+        raise EngineRefusal(engine, ["PowerShell plugin returned a non-object receipt"])
+    return receipt
 
 
 _KOKORO_LANG_CODE = {
@@ -350,14 +404,15 @@ def _vibevoice_torch_dtype(torch, name: str):
 
 def _missing_vibevoice() -> list[str]:
     if os.environ.get("GEN_AUDIO_VIBEVOICE_SIZE", "1.5B").strip() == "7B":
-        from gen_audio.model_clients import require_worker, worker_url
-
-        if worker_url("vibevoice") is not None:
+        if os.environ.get("GEN_AUDIO_VIBEVOICE_WORKER_URL", "").strip():
             try:
-                require_worker("vibevoice")
-            except ValueError as exc:
-                return [str(exc)]
-            return []
+                status = _plugin("vibevoice", "Probe")
+            except EngineRefusal as exc:
+                return exc.missing
+            if status.get("ok") is True and status.get("loaded") is True:
+                return []
+            detail = status.get("phase") or "model is not loaded"
+            return [f"vibevoice plugin is not ready: {detail}"]
     missing: list[str] = []
     if not _module_present("torch"):
         missing.append("PyTorch is not installed")
@@ -376,8 +431,6 @@ def _missing_vibevoice() -> list[str]:
     device = _vibevoice_device()
     if device.lower().startswith("cuda") and _module_present("torch") and not _cuda_available():
         missing.append(f"GEN_AUDIO_VIBEVOICE_DEVICE is {device} and CUDA is not available")
-    if profile["device_policy"] == "hybrid" and not device.lower().startswith("cuda"):
-        missing.append("VibeVoice 7B requires the configured hybrid CUDA worker")
     return missing
 
 
@@ -492,7 +545,7 @@ def _pocket_voice_state(model, voice: str):
 
 
 def vibevoice_profile(size: str | None = None) -> dict:
-    """Render profile for 1.5B (CPU) or 7B (GPU + RAM)."""
+    """Render profile for 1.5B or 7B with an explicit execution policy."""
     chosen = (size or os.environ.get("GEN_AUDIO_VIBEVOICE_SIZE", "1.5B")).strip()
     if chosen == "7B":
         return {
@@ -526,16 +579,8 @@ def vibevoice_call_plan(profile: dict, script: str, wavs: list) -> dict:
 
     ``voice_samples`` is one list per script, speakers in first-appearance order.
     ``set_ddpm_inference_steps`` is called before ``generate``. ``tokenizer`` is
-    the processor tokenizer. 7B is refused on CPU before this plan is used.
+    the processor tokenizer. Device placement is selected by the runtime.
     """
-    from gen_audio.model_clients import worker_url
-
-    if (
-        profile["device_policy"] == "hybrid"
-        and worker_url("vibevoice") is None
-        and not _cuda_available()
-    ):
-        raise EngineRefusal("vibevoice", ["VibeVoice 7B hybrid worker is unavailable"])
     if len(wavs) > int(profile["max_speakers"]):
         raise EngineRefusal("vibevoice", [f"VibeVoice supports at most {profile['max_speakers']} speakers"])
     return {
@@ -572,7 +617,7 @@ def _synth_vibevoice(turns: list[Turn], cast: CastMap, output: Path) -> dict:
 
     profile = vibevoice_profile()
     model_dir = os.environ.get(profile["local_env"], "").strip()
-    from gen_audio.model_clients import generate_worker, worker_url
+    from gen_audio.model_clients import worker_url
 
     if profile["id"] == "7B" and worker_url("vibevoice") is not None:
         speaker_numbers: dict[str, int] = {}
@@ -584,9 +629,10 @@ def _synth_vibevoice(turns: list[Turn], cast: CastMap, output: Path) -> dict:
                 wavs.append(_vibevoice_prompt_ref(turn, cast))
             lines.append(f"Speaker {speaker_numbers[turn.speaker_id]}: {turn.text}")
         try:
-            receipt = generate_worker(
+            receipt = _plugin(
                 "vibevoice",
-                {
+                "Generate",
+                request={
                     "scriptText": "\n".join(lines),
                     "voiceRefs": wavs,
                     "maxNewTokens": max(64, min(1024, sum(len(turn.text) for turn in turns) * 2)),
@@ -595,10 +641,10 @@ def _synth_vibevoice(turns: list[Turn], cast: CastMap, output: Path) -> dict:
                     "inferenceSteps": profile["diffusion_steps"],
                     "seed": 0,
                 },
-                local_output=output,
+                output=output,
             )
-        except ValueError as exc:
-            raise EngineRefusal("vibevoice", [str(exc)]) from exc
+        except EngineRefusal as exc:
+            raise exc
         if receipt.get("sample_rate") != 24000 or not receipt.get("samples"):
             raise EngineRefusal("vibevoice", ["7B worker returned an invalid audio receipt"])
         return {
@@ -608,8 +654,6 @@ def _synth_vibevoice(turns: list[Turn], cast: CastMap, output: Path) -> dict:
             "turns": len(turns),
             "worker": receipt,
         }
-    if profile["device_policy"] == "hybrid" and not _cuda_available():
-        raise EngineRefusal("vibevoice", ["VibeVoice 7B hybrid CUDA runtime is unavailable"])
     device = _vibevoice_device()
     try:
         from vibevoice.modular.modeling_vibevoice_inference import (

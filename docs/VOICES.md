@@ -140,7 +140,7 @@ for those languages. `gen-audio-voices phonemize` and
 
 ### VibeVoice — `vibevoice`
 
-Schema: `schemas/voices/frameworks/vibevoice.v1.schema.json`. Wired. 1.5B loads with `device_map="cpu"` and `attn_implementation="sdpa"` when `GEN_AUDIO_VIBEVOICE_MODEL` points at a local checkout. The processor is called as `processor(text=[script], voice_samples=[[wav, ...]], padding=True, return_tensors="pt", return_attention_mask=True)`. Then `set_ddpm_inference_steps` and `generate(..., cfg_scale, tokenizer=processor.tokenizer, generation_config={"do_sample": False})`. Speakers are numbered in first-appearance order, at most 4. 7B (`vibevoice/VibeVoice-7B`, env `GEN_AUDIO_VIBEVOICE_7B_MODEL`) refuses without CUDA. Real-time factor is not measured here, so a plan with weights still does not claim a speed.
+Schema: `schemas/voices/frameworks/vibevoice.v1.schema.json`. Wired. 1.5B loads with `device_map="cpu"` and `attn_implementation="sdpa"` when `GEN_AUDIO_VIBEVOICE_MODEL` points at a local checkout. The processor is called as `processor(text=[script], voice_samples=[[wav, ...]], padding=True, return_tensors="pt", return_attention_mask=True)`. Then `set_ddpm_inference_steps` and `generate(..., cfg_scale, tokenizer=processor.tokenizer, generation_config={"do_sample": False})`. Speakers are numbered in first-appearance order, at most 4. 7B (`vibevoice/VibeVoice-7B`, env `GEN_AUDIO_VIBEVOICE_7B_MODEL`) uses the selected CPU, DirectML, CUDA, or hybrid placement policy and reports insufficient capability or memory from preflight instead of assuming that CPU is unsupported. Real-time factor is measured per run.
 
 Voices are reference WAVs:
 
@@ -236,6 +236,6 @@ without `--require-assets`, because the runner has no voice library.
 2. Add a row to `schemas/voices/registry.v1.json` (`id`, `kind`, `engine_id`, `params_schema`, `wired`, `summary`). `wired` stays false until a synthesizer in this repo actually runs it.
 3. Register a `FrameworkSpec` from Python: `validate_params(params, *, language, gender, assets)` and `prepare(voice, library)`. Built-ins live in `src/gen_audio/voices/builtins.py` and must match the registry row, including the summary text. A process-local experiment can `register` without a row and `unregister` afterwards; built-ins cannot be removed.
 4. Add a match arm in `crates/gen-audio-core/src/voices.rs` (`validate_params`) so the Rust checker knows the new id. The registry test lists the shipped ids in file order.
-5. Add an example under `voices/<id>/`, point `voices/catalog.example.json` at it, and extend `tests/test_voices.py`. The Rust test `voices_v1` checks every catalog entry against JSON Schema and `validate_voice_json`.
+5. Add an example under `voices/<id>/`, point `voices/catalog.example.json` at it, and validate it through the PowerShell-native voice preflight. That path validates the schema and model/voice confinement before `.NET` execution.
 
 Set `speaker_limit` when the model cannot take as many speakers as the cast map (8). VibeVoice is 4, livevoice and PersonaPlex are 1.

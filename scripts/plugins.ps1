@@ -167,8 +167,14 @@ function Invoke-WingenRemoteCommand {
         $Transport = if ($remoting.enabled) { 'PowerShell' } else { 'WindowsSsh' }
     }
     if ($Transport -eq 'PowerShell') {
-        $computerName = ($Target -split '@')[-1]
-        $job = Invoke-Command -ComputerName $computerName -ScriptBlock ([scriptblock]::Create($Script)) -AsJob
+        $parts = $Target -split '@', 2
+        $parameters = @{
+            HostName = $parts[-1]
+            ScriptBlock = [scriptblock]::Create($Script)
+            AsJob = $true
+        }
+        if ($parts.Count -eq 2) { $parameters.UserName = $parts[0] }
+        $job = Invoke-Command @parameters
         Wait-Job $job -Timeout $TimeoutSeconds | Out-Null
         if ($job.State -ne 'Completed') {
             Stop-Job $job

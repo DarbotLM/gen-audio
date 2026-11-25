@@ -130,8 +130,17 @@ function Get-WingenRemotingStatus {
     $service = Get-Service WinRM -ErrorAction SilentlyContinue
     $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
         IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $sshAvailable = $false
+    try {
+        [void](Get-WingenSshContext -Store Auto)
+        $sshAvailable = $true
+    } catch {
+        $sshAvailable = $false
+    }
     [pscustomobject]@{
-        enabled = $configuration.Count -gt 0 -and $service -and $service.Status -eq 'Running'
+        enabled = $sshAvailable -or ($configuration.Count -gt 0 -and $service -and $service.Status -eq 'Running')
+        mode = if ($sshAvailable) { 'ssh+powershell' } else { 'winrm' }
+        winrm_configuration_verified = $null -eq $configurationDiagnostic
         service = if ($service) { [string]$service.Status } else { 'missing' }
         endpoints = @($configuration | ForEach-Object Name)
         elevated = $admin

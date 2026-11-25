@@ -45,8 +45,8 @@ function Resolve-WingenAudioNativeHost {
     $candidates = @(
         $ExplicitPath,
         $env:WINGEN_AUDIO_EXE,
-        (Join-Path (Split-Path -Parent $PSScriptRoot) 'target\wingen.audio\publish\wingen.audio.exe'),
         (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\wingen.audio\bin\Release\net11.0\win-x64\wingen.audio.exe'),
+        (Join-Path (Split-Path -Parent $PSScriptRoot) 'target\wingen.audio\publish\wingen.audio.exe'),
         (Get-Command wingen.audio.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
     ) | Where-Object { $_ }
     foreach ($candidate in $candidates) {

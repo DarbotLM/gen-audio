@@ -5,7 +5,7 @@ class VoiceError(ValueError):
     """A voice, G2P config, catalog, or cast reference failed validation.
 
     ``code`` is the stable token shared with the Rust checker and the invalid
-    fixtures under ``tests/fixtures/voices/invalid``.
+    native voice preflight and schema contracts.
     """
 
     def __init__(self, message: str, code: str = "invalid"):

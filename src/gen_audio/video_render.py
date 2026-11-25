@@ -4,7 +4,7 @@ This is an offline port of the desktop Cube viewport (``apps/desktop/src/cubevie
 the same cube JSON fields (``points_preview``, ``cube_shape_f_t``, ``bin_seconds``,
 ``cube_covers_s``), the same box, camera, projection, layer colours, point size and
 alpha rules, grid and playhead geometry, and the same audio-time to time-bin rule
-as ``getCubePlayhead``. ``tests/test_cube_video.py`` reads those constants out of
+as ``getCubePlayhead``. The desktop contract suite reads these constants from
 ``cubeview.ts`` so the two cannot drift apart silently.
 
 Every frame ``i`` shows the slice for ``t = i / fps``:

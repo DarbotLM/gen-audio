@@ -14,7 +14,7 @@ Steps, in order (skip any with -Skip):
           staged in apps/desktop/public/library and its sha256 equals the lock.
   Pssa    PSScriptAnalyzer over scripts/ with ./PSScriptAnalyzerSettings.psd1; any finding fails.
   Sprawl  the script-sprawl gate (see Invoke-SprawlGate below).
-  Pester  PowerShell behavior and script orchestration tests under tests/powershell.
+  Pester  PowerShell behavior and script orchestration tests under runtimes/powershell.
   Regen   rerun the committed-output generators and fail on any drift:
           cargo run -p gen-audio-core --example build_assets   (assets.json,
             assets.dev.json, fixtures_v1.json, viewport.example/release.json,
@@ -31,17 +31,14 @@ Steps, in order (skip any with -Skip):
           file (JSON and PNG) byte for byte against media.lock.json "cubes".
           PNGs (*_spec2d.png, cube PNGs) are not byte-diffed: CPython on
           Windows ships zlib-ng, so the same pixels compress to different bytes.
-          tests/test_spectrogram_strip.py regenerates each strip and compares
-          decoded pixels, and tests/test_cube_layers.py regenerates all five
-          rev 3 cube JSON files byte for byte (both need the WAVs).
+          the Rust asset gates verify strip, cube identity, and geometry from
+          locked bytes.
   Cargo   cargo test --workspace (Windows; elsewhere the Tauri crate is excluded,
           the same as the Linux CI job, because it needs the GTK/WebKit libs).
   Npm     apps/desktop: npm test, tsc --noEmit, npm run build, then
-          python -m gen_audio.cli.release_gate --dist apps/desktop/dist
-          (the same command the desktop-ui CI job runs, from the repo root).
+          the native PowerShell dist release gate under scripts/lib.
           Windows CI skips Npm, so this is what makes the local script able
           to catch a dist-gate failure CI would catch.
-  Python  pytest over tests/ (only Python production behavior remains).
 
 Modes:
   default   Regen needs the library WAVs on disk; a missing one FAILS Regen.
@@ -51,10 +48,7 @@ Modes:
             hand-edited cube fails it, naming the file.
   -WithWav  the merge check (SMAX before review, Optimus before stamping; the
             PR template asks for it). Adds the Wavs step, runs Regen in the
-            default mode, and sets GEN_AUDIO_REQUIRE_WAVS=1 so pytest FAILS
-            any test that would skip for a missing WAV (tests/conftest.py):
-            the byte-for-byte cube regeneration, inv_hdr and strip tests
-            must run. Stage the WAVs first (from SMAX D:\gen-audio\artifacts\library
+            default mode. Stage the WAVs first (from SMAX D:\gen-audio\artifacts\library
             or another verified copy); the Wavs step proves they are the
             locked bytes.
 
@@ -72,14 +66,14 @@ Works on Windows PowerShell 5.1 and PowerShell 7.
 
 .EXAMPLE
 pwsh -NoProfile -File scripts/test.ps1 -Tag pr5
-pwsh -NoProfile -File scripts/test.ps1 -Tag ci -FromLock -Skip Cargo,Npm,Python
+pwsh -NoProfile -File scripts/test.ps1 -Tag ci -FromLock -Skip Cargo,Npm
 pwsh -NoProfile -File scripts/test.ps1 -Tag merge-check -WithWav
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -Skip Cargo,Npm,Python
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -Skip Cargo,Npm
 #>
 [CmdletBinding()]
 param(
     [string]$Tag = 'local',
-    # Pssa, Sprawl, Pester, Regen, Cargo, Npm, Python. Comma-separated also works with -File.
+    # Pssa, Sprawl, Pester, Regen, Cargo, Npm. Comma-separated also works with -File.
     [string[]]$Skip = @(),
     [string[]]$SprawlExclude = @(),
     [string]$Python = '',
@@ -92,13 +86,14 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'lib\devenv.ps1')
+. (Join-Path $PSScriptRoot 'lib\release-gate.ps1')
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 # Script-scope copies; the step bodies below read these.
 $script:skipSteps = @($Skip | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($name in $script:skipSteps) {
-    if (@('Pssa', 'Sprawl', 'Pester', 'Regen', 'Cargo', 'Npm', 'Python') -notcontains $name) { throw "-Skip $name is not a step (Pssa, Sprawl, Pester, Regen, Cargo, Npm, Python)" }
+    if (@('Pssa', 'Sprawl', 'Pester', 'Regen', 'Cargo', 'Npm') -notcontains $name) { throw "-Skip $name is not a step (Pssa, Sprawl, Pester, Regen, Cargo, Npm)" }
 }
 $script:sprawlExcludes = @($SprawlExclude | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $script:pythonExe = $Python
@@ -231,9 +226,10 @@ function Invoke-SprawlGate {
                          scripts/{build-tauri-windows,pack-windows-msix-nuget,test,
                          mcp-call,ui-shot,run,toolbox,deploy-cluster-node,
                          run-resident-worker,start-speech-7b,Invoke-GenAudio7B,
-                         Invoke-GenAudioCluster,cluster,model_clients,service}.ps1,
+                         Invoke-GenAudioCluster,cluster,model_clients,service,
+                         contracts,execution,preflight,vibevoice,plugins}.ps1,
                          scripts/lib/*.ps1, scripts/*.py, tests/**/*.py, src/**/*.py,
-                         tests/powershell/*.Tests.ps1, the NSIS installer hook apps/desktop/src-tauri/windows/hooks.nsh
+                         runtimes/powershell/*.Tests.ps1, the NSIS installer hook apps/desktop/src-tauri/windows/hooks.nsh
                          (tauri.conf.json installerHooks), apps/desktop/validate.check.mts
       thick-shim         a scripts/*.py that is not a thin CLI shim into gen_audio.cli
                          (over 20 lines or no `from gen_audio.cli` import)
@@ -247,7 +243,8 @@ function Invoke-SprawlGate {
     param([Parameter(Mandatory = $true)][string]$Root, [string[]]$Exclude = @())
     $entryPoints = @('scripts/build-tauri-windows.ps1', 'scripts/pack-windows-msix-nuget.ps1', 'scripts/test.ps1', 'scripts/mcp-call.ps1', 'scripts/ui-shot.ps1', 'scripts/run.ps1', 'scripts/toolbox.ps1',
         'scripts/deploy-cluster-node.ps1', 'scripts/run-resident-worker.ps1', 'scripts/start-speech-7b.ps1', 'scripts/Invoke-GenAudio7B.ps1', 'scripts/Invoke-GenAudioCluster.ps1',
-        'scripts/cluster.ps1', 'scripts/model_clients.ps1', 'scripts/service.ps1',
+        'scripts/cluster.ps1', 'scripts/model_clients.ps1', 'scripts/service.ps1', 'scripts/cube_layers.ps1', 'scripts/contracts.ps1',
+        'scripts/execution.ps1', 'scripts/preflight.ps1', 'scripts/vibevoice.ps1', 'scripts/plugins.ps1',
         'apps/desktop/src-tauri/windows/hooks.nsh', 'apps/desktop/validate.check.mts')
     $self = 'scripts/test.ps1'
     $vcvarsOwner = 'scripts/lib/devenv.ps1'
@@ -276,7 +273,7 @@ function Invoke-SprawlGate {
         }
         $allowed = ($entryPoints -contains $rel) -or ($rel -match '^scripts/lib/[^/]+\.ps1$') -or
             ($rel -match '^scripts/[^/]+\.py$') -or ($rel -match '^tests/.+\.py$') -or
-            ($rel -match '^tests/powershell/[^/]+\.Tests\.ps1$') -or ($rel -match '^src/.+\.py$')
+            ($rel -match '^runtimes/powershell/[^/]+\.Tests\.ps1$') -or ($rel -match '^src/.+\.py$')
         if (-not $allowed) { $findings.Add("outside-allowlist $rel") }
         if ($rel -eq $self) { continue }
         $text = [System.IO.File]::ReadAllText($file.Full)
@@ -285,7 +282,7 @@ function Invoke-SprawlGate {
             if ($lineCount -gt 20 -or $text -notmatch 'from gen_audio\.cli') { $findings.Add("thick-shim $rel ($lineCount lines)") }
         }
         if ($text -match $patterns['vcvars'] -and $rel -ne $vcvarsOwner) { $findings.Add("vcvars $rel") }
-        if ($rel -notmatch '^tests/' -and $text -match $patterns['tauri-build']) { $tauriCallers.Add($rel) }
+        if ($rel -notmatch '^(tests|runtimes/powershell)/' -and $text -match $patterns['tauri-build']) { $tauriCallers.Add($rel) }
         if ($text -match $patterns['bare-desktop-cargo']) { $findings.Add("bare-desktop-cargo $rel") }
         if ($text -match $patterns['cargo-clean']) { $findings.Add("cargo-clean $rel") }
     }
@@ -329,7 +326,7 @@ Invoke-Step 'Eol' {
 }
 if (@($results | Where-Object { $_.Step -eq 'Eol' -and $_.Result -eq 'FAIL' }).Count -gt 0) {
     # Every later step would fail or mislead on these bytes; stop here.
-    $script:skipSteps = @('Wavs', 'Pssa', 'Sprawl', 'Pester', 'Regen', 'Cargo', 'Npm', 'Python')
+    $script:skipSteps = @('Wavs', 'Pssa', 'Sprawl', 'Pester', 'Regen', 'Cargo', 'Npm')
     $script:skipDetail = 'Eol preflight failed'
 }
 
@@ -375,7 +372,7 @@ Invoke-Step 'Sprawl' {
 
 Invoke-Step 'Pester' {
     param($log)
-    $testPath = Join-Path $root 'tests\powershell'
+    $testPath = Join-Path $root 'runtimes\powershell'
     if (-not (Test-Path -LiteralPath $testPath -PathType Container)) {
         return 'no PowerShell test directory in this fixture'
     }
@@ -478,42 +475,13 @@ Invoke-Step 'Npm' {
     } finally {
         Pop-Location
     }
-    # Same command as ci.yml's "Dist release gate", from the repo root.
-    # PYTHONPATH=src so the module resolves without a one-off wrapper.
-    $py = Get-PythonExe
-    $sep = [System.IO.Path]::PathSeparator
-    $saved = $env:PYTHONPATH
-    $env:PYTHONPATH = (Join-Path $root 'src') + $(if ($saved) { "$sep$saved" } else { '' })
-    try {
-        $code = Invoke-Logged -Log $log -File $py -Arguments @('-m', 'gen_audio.cli.release_gate', '--dist', 'apps/desktop/dist')
-    } finally {
-        $env:PYTHONPATH = $saved
+    $dist = Join-Path $root 'apps\desktop\dist'
+    $releaseHits = @(Get-ReleaseGateHit -Dist $dist)
+    if ($releaseHits.Count -gt 0) {
+        $releaseHits | Add-LogLine -Log $log | Out-Host
+        throw "release gate findings=$($releaseHits.Count)"
     }
-    if ($code -ne 0) { throw "release gate exit $code" }
-    $pass = Select-String -LiteralPath $log -Pattern '^# pass (\d+)' | Select-Object -Last 1
-    "npm test + tsc --noEmit + dist release gate ok$(if ($pass) { ', ' + $pass.Matches[0].Value.TrimStart('# ') })"
-}
-
-Invoke-Step 'Python' {
-    param($log)
-    $py = Get-PythonExe
-    $sep = [System.IO.Path]::PathSeparator
-    $saved = $env:PYTHONPATH
-    $env:PYTHONPATH = (Join-Path $root 'src') + $(if ($saved) { "$sep$saved" } else { '' })
-    $savedRequire = $env:GEN_AUDIO_REQUIRE_WAVS
-    if ($script:withWav) { $env:GEN_AUDIO_REQUIRE_WAVS = '1' }
-    $pytestTemp = Join-Path ([IO.Path]::GetTempPath()) ("gen-audio-pytest-" + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $pytestTemp -Force | Out-Null
-    try {
-        $code = Invoke-Logged -Log $log -File $py -Arguments @('-m', 'pytest', 'tests', '-p', 'no:cacheprovider', '--basetemp', $pytestTemp)
-    } finally {
-        $env:PYTHONPATH = $saved
-        $env:GEN_AUDIO_REQUIRE_WAVS = $savedRequire
-        Remove-Item -LiteralPath $pytestTemp -Recurse -Force -ErrorAction Stop
-    }
-    if ($code -ne 0) { throw "pytest exit $code" }
-    $summary = Select-String -LiteralPath $log -Pattern '\d+ passed' | Select-Object -Last 1
-    "pytest: $(if ($summary) { $summary.Line.Trim() })$(if ($script:withWav) { ' (GEN_AUDIO_REQUIRE_WAVS=1: no WAV skips)' })"
+    'npm test + tsc --noEmit + native PowerShell dist release gate ok'
 }
 
 $failed = @($results | Where-Object { $_.Result -eq 'FAIL' })

@@ -136,6 +136,31 @@ def _plugin(engine: str, action: str, request: dict | None = None, output: Path 
     shell = shutil.which("pwsh")
     if shell is None:
         raise EngineRefusal(engine, ["PowerShell 7 is required for the native plugin host"])
+    repo = Path(__file__).resolve().parents[2]
+    voice_root = repo / "voice-library"
+    output_root = repo / "outputs"
+    if request is not None:
+        request = dict(request)
+        normalized_refs = []
+        for reference in request.get("voiceRefs", []):
+            candidate = Path(str(reference))
+            if candidate.is_absolute():
+                try:
+                    candidate = candidate.resolve().relative_to(voice_root.resolve())
+                except ValueError:
+                    pass
+            normalized_refs.append(str(candidate).replace(os.sep, "/"))
+        if "voiceRefs" in request:
+            request["voiceRefs"] = normalized_refs
+        input_audio = request.get("inputAudio")
+        if input_audio:
+            candidate = Path(str(input_audio))
+            if candidate.is_absolute():
+                try:
+                    candidate = candidate.resolve().relative_to(output_root.resolve())
+                except ValueError:
+                    pass
+            request["inputAudio"] = str(candidate).replace(os.sep, "/")
     arguments = [
         shell,
         "-NoProfile",
@@ -161,7 +186,7 @@ def _plugin(engine: str, action: str, request: dict | None = None, output: Path 
             arguments += ["-OutputPath", str(output)]
         result = subprocess.run(
             arguments,
-            cwd=Path(__file__).resolve().parents[2],
+            cwd=repo,
             capture_output=True,
             text=True,
             encoding="utf-8",

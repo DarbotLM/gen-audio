@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gen-audio"
-version = "0.2.0"
+version = "0.7.0"
 description = "GenAID Audio toolkit: multi-speaker podcast synthesis, a 24 kHz publish chain, spectrograms, and a cube-revision sketch."
 readme = "README.md"
 requires-python = ">=3.15,<3.16"
@@ -27,9 +27,7 @@ kokoro-onnx = []
 kokoro-torch = []
 kokoro-gpu = []
 misaki = []
-dev = [
-    "pytest>=8",
-]
+dev = []
 asr = []
 # VibeVoice-1.5B inference runtime (VibeVoice-community @ 952326d, which is
 # located by env/config and never vendored). Inference only: datasets, gradio,
@@ -58,7 +56,6 @@ gen-audio-cube = "gen_audio.cli.cube:main"
 gen-audio-spectrogram-strip = "gen_audio.cli.spectrogram_strip:main"
 gen-audio-compare = "gen_audio.cli.compare:main"
 gen-audio-generate = "gen_audio.cli.generate:main"
-gen-audio-release-gate = "gen_audio.cli.release_gate:main"
 gen-audio-transcribe-vibevoice = "gen_audio.cli.transcribe_vibevoice:main"
 gen-audio-voices = "gen_audio.cli.voices:main"
 gen-audio-agent-yankers = "gen_audio.cli.agent_yankers:main"
@@ -93,7 +90,3 @@ torch = [{ index = "pytorch-cpu" }]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"

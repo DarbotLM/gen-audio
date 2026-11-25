@@ -270,6 +270,11 @@ internal static class WingenAudioHost
         var receipt = JsonNode.Parse(buffer.ToArray()) as JsonObject
             ?? throw new JsonException("Worker returned a non-object response.");
         ValidateReceipt(action, receipt);
+        if (receipt["ok"]?.GetValue<bool>() == false)
+        {
+            Console.WriteLine(receipt.ToJsonString(JsonOptions));
+            return 2;
+        }
         if (action == WorkerAction.Generate && options.TryGetValue("output", out var output))
         {
             var source = Path.GetFullPath(receipt["output"]?.GetValue<string>()

@@ -1,5 +1,18 @@
 # Releases
 
+## v0.7.0
+
+- Windows production control moved further into PowerShell 7 and the
+  self-contained .NET 11 `wingen.audio.exe` host.
+- Library rev-3 cubes now generate through `scripts\cube_layers.ps1`: F# owns
+  WAV parsing, STFT, layer math, preview JSON, provenance hashing, and PNG
+  output without launching Python.
+- Release validation is PowerShell-native; the redundant Python test and
+  release-gate suites were removed, along with pytest from the project lock.
+- `Gen-Audio_0.7.0_x64-setup.exe`, `Gen-Audio_0.7.0_x64_en-US.msi`,
+  MSIX and NuGet packages share the native MCP, ACP and wingen.audio payload
+  hashes.
+
 ## v0.2.0
 
 - Viewport: the bitcube video renderer (clip.mp4 is the inverse-HDR cube with

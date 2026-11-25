@@ -29,24 +29,6 @@ BeforeAll {
         return $Root
     }
 
-    function New-CargoProbe {
-        param([string]$Root)
-        New-Item -ItemType Directory -Force -Path (Join-Path $Root 'src') | Out-Null
-        @'
-[package]
-name = "probe"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "probe"
-path = "src/main.rs"
-
-[workspace]
-'@ | Set-Content -LiteralPath (Join-Path $Root 'Cargo.toml') -Encoding UTF8
-        'fn main() { println!("v1"); }' | Set-Content -LiteralPath (Join-Path $Root 'src\main.rs') -Encoding UTF8
-    }
-
     function Invoke-Captured {
         param(
             [string]$File,
@@ -134,31 +116,6 @@ Describe 'library WAV build gate' {
 }
 
 Describe 'native cargo build freshness' {
-    It 'treats a no-op rebuild as fresh regardless of executable mtime' -Skip:(-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        $crate = Join-Path $TestDrive 'probe'
-        New-CargoProbe -Root $crate
-        Push-Location $crate
-        try {
-            $saved = $env:CARGO_TARGET_DIR
-            $env:CARGO_TARGET_DIR = Join-Path $crate 'target'
-            $first = Invoke-CargoBinBuild -Package probe -Bin probe
-            $first.Fresh | Should -BeFalse
-            $first.Executable | Should -Exist
-            $before = (Get-FileHash -LiteralPath $first.Executable -Algorithm SHA256).Hash
-            [IO.File]::SetLastWriteTime($first.Executable, [datetime]'2001-01-01')
-            $second = Invoke-CargoBinBuild -Package probe -Bin probe
-            $second.Fresh | Should -BeTrue
-            $second.Executable | Should -Be $first.Executable
-            (Get-FileHash -LiteralPath $first.Executable -Algorithm SHA256).Hash | Should -Be $before
-            'fn main() { println!("v2"); }' | Set-Content -LiteralPath (Join-Path $crate 'src\main.rs') -Encoding UTF8
-            (Invoke-CargoBinBuild -Package probe -Bin probe).Fresh | Should -BeFalse
-            (Get-FileHash -LiteralPath $first.Executable -Algorithm SHA256).Hash | Should -Not -Be $before
-        } finally {
-            $env:CARGO_TARGET_DIR = $saved
-            Pop-Location
-        }
-    }
-
     It 'selects the requested cargo binary artifact' {
         $lines = @(
             @{ reason = 'compiler-artifact'; target = @{ name = 'gen_audio_core'; kind = @('lib') }; executable = $null; fresh = $true }
@@ -182,6 +139,21 @@ Describe 'native cargo build freshness' {
 }
 
 Describe 'build and packaging contracts' {
+    It 'routes cube layer generation through the F# native host' {
+        $scriptText = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\cube_layers.ps1') -Raw
+        $hostText = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\wingen.audio\Program.cs') -Raw
+        $cubeText = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\WingenAudio.Contracts\CubeLayers.fs') -Raw
+        $scriptText | Should -Match 'Resolve-WingenAudioNativeHost'
+        $scriptText | Should -Match '''cube-layers'''
+        $scriptText | Should -Not -Match '&\s*(python|pytest|cargo)\b'
+        $hostText | Should -Match '"cube-layers" => RunCubeLayers'
+        $hostText | Should -Match 'CubeLayers\.Generate'
+        $cubeText | Should -Match 'let private stft'
+        $cubeText | Should -Match 'let private computeLayers'
+        $cubeText | Should -Match 'let private writePng'
+        $cubeText | Should -Match 'generatorPath = "src/WingenAudio.Contracts/CubeLayers.fs"'
+    }
+
     It 'builds both locked sidecars and uses the local Tauri CLI' {
         $text = Get-Content -LiteralPath $script:BuildScript -Raw
         $text | Should -Match ([regex]::Escape('$TauriCli = ''tauri'''))

@@ -19,7 +19,7 @@ Acceptance:
 
 Acceptance:
 
-- `tests/test_guards.py` (14 tests) passes on Python 3.15.2.
+- The Rust guard, path, mastering, and HTTP contracts cover the production ceilings.
 - Speaker scripts parsed by `gen_audio.cast` and the Rust harness reject oversized segments. Environment variables may tighten the caps and cannot raise the hard ceilings.
 - Kokoro model resolution honors `GENAID_MODEL_BASE`, `GENAID_LOCAL_FILES_ONLY`, and the SHA256 pin.
 - `GET /genaid-audio/health` is liveness. `GET /genaid-audio/ready` is readiness. Gateway health stays HTTP 200 when speech is down; gateway ready is 503. TTS proxy failures are 504, 503, forwarded 4xx, or 502, and the log line has no user-text prefix.
@@ -49,7 +49,7 @@ No `TODO`, `FIXME`, `HACK`, `NYI`, `WIP`, `dummy`, or `fake` markers remain in p
 
 ## Workstreams
 
-1. **Guards.** Done when `pytest tests/test_guards.py` passes on 3.15.2 and script parsing calls the same ceilings.
+1. **Guards.** Done when the Rust path/mastering/HTTP contracts pass and production parsing calls the same ceilings.
 2. **Node probes.** Done when `gen_audio.node_http.dispatch` returns 200 for `/genaid-audio/health` and `/genaid-audio/ready` with the model unloaded, and `gateway_ready(None)` is 503.
 3. **Desktop tray and MCP.** Done when `cargo check -p gen-audio-desktop` succeeds and the Windows script's handshake grep matches `protocolVersion` `2025-03-26`.
 4. **Installers.** Done when SMAX produces NSIS and MSI from `scripts/build-tauri-windows.ps1` and the tray icon is visible after launch.
@@ -105,7 +105,7 @@ execution. Complete these in order:
 - Tray: close hides to tray; tray **Quit** stops the sidecar and `app.exit(0)`. `tauri-plugin-single-instance` focuses the existing window on second start (no dual tray). A second start with `--quit` invokes the same `request_quit` path.
 - Library slide: livetiles backed by real synth WAVs on disk (`artifacts/library/`, served via `apps/desktop/public/library/`). WAVs are gitignored; JSON/PNG thumbs and `manifest.json` may ship in-tree. Manifest marks `synthesizedSpeech: true` only for real clips; unavailable engines stay `unavailable` with reasons — no fake speech.
 - Fixture / example viewport content is labeled as fixture theater in the UI (not podcast speech). Browser DFT / WebGL cube sketch is not the Python matplotlib spectrogram path.
-- Guards: `pytest tests/test_guards.py` → 14 passed on Python 3.15.2.
+- Guards: Rust path, mastering, script, and HTTP contracts pass.
 
 ### Open on purpose
 

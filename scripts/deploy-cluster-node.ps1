@@ -3,6 +3,8 @@ param(
     [ValidateSet('all', 'darbot', 'dayour', 'darbotlm', 'darbotlabs')]
     [string]$Node = 'all',
     [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'runtimes\cluster.windows.json'),
+    [ValidatePattern('^[A-Za-z0-9._/-]+$')]
+    [string]$GitRef,
     [switch]$StageModels,
     [switch]$SkipRuntimeInstall
 )
@@ -35,6 +37,15 @@ $results = foreach ($node in $nodes) {
 if (Test-Path -LiteralPath (Join-Path `$root '.git')) {
   git -C `$root fetch origin
   if (`$LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+  if ('$GitRef') {
+    git -C `$root show-ref --verify --quiet 'refs/heads/$GitRef'
+    if (`$LASTEXITCODE -eq 0) {
+      git -C `$root switch '$GitRef'
+    } else {
+      git -C `$root switch -c '$GitRef' --track 'origin/$GitRef'
+    }
+    if (`$LASTEXITCODE -ne 0) { throw "git switch $GitRef failed; preserve local work and resolve the checkout before deployment" }
+  }
   git -C `$root pull --ff-only
   if (`$LASTEXITCODE -ne 0) { throw 'git pull --ff-only failed' }
 } else {

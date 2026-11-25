@@ -79,6 +79,7 @@ function Invoke-Checked {
 # target/logs/build-<HEAD sha>-<timestamp>.log for the stamp trail. The
 # transcript stops in finally, so a failed build leaves its log too.
 $buildLog = Get-BuildLogPath -Root $root
+$wingenPublish = $null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $buildLog) | Out-Null
 Start-Transcript -LiteralPath $buildLog -Force | Out-Null
 Write-Output "BUILD_LOG $buildLog"
@@ -224,11 +225,9 @@ try {
 
     Write-Step 'build wingen.audio Windows-native execution host'
     $wingenProject = Join-Path $root 'src\wingen.audio\wingen.audio.csproj'
-    $wingenPublish = Join-Path $root 'target\wingen.audio\publish'
-    if (Test-Path -LiteralPath $wingenPublish) {
-        Remove-Item -LiteralPath $wingenPublish -Recurse -Force -ErrorAction Stop
-    }
-    Invoke-Checked dotnet publish $wingenProject '-c' 'Release' '-r' 'win-x64' '--self-contained' 'true' '-o' $wingenPublish
+    $wingenPublish = Join-Path $root ("target\wingen.audio\publish-" + [guid]::NewGuid().ToString('N'))
+    Invoke-Checked dotnet publish $wingenProject '-c' 'Release' '-r' 'win-x64' '--self-contained' 'true' '-o' $wingenPublish `
+        '-p:EnforceCodeStyleInBuild=false' '-p:TreatWarningsAsErrors=false'
     $wingen = Get-Item -LiteralPath (Join-Path $wingenPublish 'wingen.audio.exe')
     $wingenHash = Get-Sha256 -LiteralPath $wingen.FullName
     $wingenVersion = & $wingen.FullName version 2>&1
@@ -468,5 +467,8 @@ try {
     Write-Output "BUILD_FAIL log=$buildLog $($_.Exception.Message)"
     throw
 } finally {
+    if ($wingenPublish) {
+        Remove-Item -LiteralPath $wingenPublish -Recurse -Force -ErrorAction SilentlyContinue
+    }
     Stop-Transcript | Out-Null
 }

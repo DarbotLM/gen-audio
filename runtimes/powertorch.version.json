@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "repository": "https://github.com/DarbotLM/PowerTorch.git",
-  "commit": "f5e69b794e47ec4ebe54dbec1e6e9f9557c137b2",
+  "commit": "89ed20f04a1572b926637c435471ede084940bb9",
   "target_framework": "net11.0",
   "module_relative_path": "artifacts\\module\\PowerTorch.psd1",
   "native_role": "PowerShell-native tensor, CUDA/DirectML backend, safetensors, and ONNX foundation"

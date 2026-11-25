@@ -330,7 +330,7 @@ internal static class WingenAudioHost
         {
             ok = cpu.IsAvailable && accelerator.IsAvailable,
             runtime = Environment.Version.ToString(),
-            pin = "f5e69b794e47ec4ebe54dbec1e6e9f9557c137b2",
+            pin = "89ed20f04a1572b926637c435471ede084940bb9",
             cpu,
             directMl = accelerator,
             cuda,
@@ -347,7 +347,9 @@ internal static class WingenAudioHost
 
         if (args[0] == "synthetic")
         {
-            var receipt = VibeVoiceRuntime.RunSyntheticValidation();
+            var syntheticOptions = ParseOptions(args[1..]);
+            var receipt = VibeVoiceRuntime.RunSyntheticValidation(
+                syntheticOptions.GetValueOrDefault("tokenizer-dir"));
             Console.WriteLine(JsonSerializer.Serialize(receipt, JsonOptions));
             return receipt.Ok ? 0 : 2;
         }
@@ -358,7 +360,13 @@ internal static class WingenAudioHost
         }
         var options = ParseOptions(args[1..]);
         var receiptCapability = VibeVoiceRuntime.Inspect(
-            Require(options, "model-dir"));
+            Require(options, "model-dir"),
+            options.GetValueOrDefault("tokenizer-dir"),
+            options.GetValueOrDefault("script"),
+            options.GetValueOrDefault("voice-root"),
+            options.TryGetValue("voice-refs", out string? voiceRefs)
+                ? voiceRefs.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                : null);
         Console.WriteLine(JsonSerializer.Serialize(receiptCapability, JsonOptions));
         return receiptCapability.GenerationReady ? 0 : 2;
     }
@@ -574,8 +582,8 @@ wingen.audio worker --action <status|preflight|load|unload|generate> --engine <v
 wingen.audio worker-server --engine ENGINE --listen http://127.0.0.1:PORT --upstream http://127.0.0.1:PORT [--timeout SECONDS]
 wingen.audio mxc probe
 wingen.audio powertorch probe
-wingen.audio vibevoice capability --model-dir PATH
-wingen.audio vibevoice synthetic
+wingen.audio vibevoice capability --model-dir PATH [--tokenizer-dir PATH] [--script TEXT --voice-root PATH --voice-refs A;B]
+wingen.audio vibevoice synthetic [--tokenizer-dir PATH]
 wingen.audio mxc run --command COMMAND [--backend process|processcontainer|wslc] [--readonly P1;P2] [--readwrite P1;P2] [--deny P1;P2] [--host-loopback allow] [--network-egress allow] [--timeout-ms MS] [--gpu true]
 wingen.audio score --engine ENGINE --free-memory-gib N [placement signals]
 """);

@@ -39,3 +39,32 @@ type VibeVoiceCapability =
     { Name: string
       Available: bool
       Boundary: string }
+
+type VibeVoiceSpeakerLine =
+    { Speaker: int
+      Text: string }
+
+type VibeVoiceTokenizedScript =
+    { Speakers: VibeVoiceSpeakerLine[]
+      InputIds: int[]
+      SpeechInputMask: bool[]
+      SpeechStartId: int
+      SpeechEndId: int
+      SpeechDiffusionId: int }
+
+type VibeVoiceWaveInfo =
+    { Path: string
+      SampleRate: int
+      TargetSampleRate: int
+      Channels: int
+      BitsPerSample: int
+      DurationSeconds: double
+      SourceSamples: int
+      TargetSamples: int
+      Peak: double }
+
+type VibeVoiceSpecialTokens =
+    { EndOfText: int
+      SpeechStart: int
+      SpeechEnd: int
+      SpeechDiffusion: int }

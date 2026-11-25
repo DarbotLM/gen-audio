@@ -233,6 +233,7 @@ public sealed class VibeVoiceStateMap : IDisposable
         RequireRegion(VibeVoiceStateRegion.SemanticConnector, "semantic connector", errors);
         RequireRegion(VibeVoiceStateRegion.DiffusionHead, "diffusion head", errors);
         VibeVoiceTokenizerState.Validate(this, errors);
+        VibeVoiceDiffusionState.Validate(this, errors);
         for (int layer = 0; layer < Configuration.DiffusionHead.Layers; layer++)
         {
             RequireDecoderShape(

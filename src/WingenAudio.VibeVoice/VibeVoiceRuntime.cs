@@ -43,7 +43,11 @@ public sealed record VibeVoiceSyntheticReceipt(
     bool CodecGraphValid,
     IReadOnlyList<long> AcousticLatentShape,
     IReadOnlyList<long> AcousticDecodedShape,
-    IReadOnlyList<long> SemanticLatentShape);
+    IReadOnlyList<long> SemanticLatentShape,
+    bool DiffusionGraphValid,
+    IReadOnlyList<long> DiffusionOutputShape,
+    IReadOnlyList<int> DiffusionTimesteps,
+    bool DiffusionDeterministic);
 
 public static class VibeVoiceRuntime
 {
@@ -109,6 +113,7 @@ public static class VibeVoiceRuntime
             "audio.acoustic_tokenizer.encoder",
             "audio.acoustic_tokenizer.decoder",
             "audio.semantic_tokenizer.encoder",
+            "audio.diffusion_head",
             "audio.diffusion_scheduler",
             "audio.streaming_cache",
             "model.generation",
@@ -127,6 +132,10 @@ public static class VibeVoiceRuntime
             "BF16 causal upsampling decoder using PowerTorch ConvTranspose1D");
         AddIntrinsic(implemented, "audio.semantic_tokenizer.encoder",
             "BF16 semantic encoder with state-map validation");
+        AddIntrinsic(implemented, "audio.diffusion_head",
+            "BF16 timestep embedding, AdaLN SwiGLU layers, final projection, and CFG interaction");
+        AddIntrinsic(implemented, "audio.diffusion_scheduler",
+            "cosine DDPM schedule, v-prediction conversion, posterior stepping, and noise injection");
         foreach (string capability in required)
         {
             if (capability is
@@ -134,7 +143,9 @@ public static class VibeVoiceRuntime
                 "audio.wave_io" or
                 "audio.acoustic_tokenizer.encoder" or
                 "audio.acoustic_tokenizer.decoder" or
-                "audio.semantic_tokenizer.encoder")
+                "audio.semantic_tokenizer.encoder" or
+                "audio.diffusion_head" or
+                "audio.diffusion_scheduler")
             {
                 continue;
             }
@@ -323,12 +334,15 @@ public static class VibeVoiceRuntime
             }
             VibeVoiceCodecSyntheticResult codec =
                 RunCodecSyntheticValidation(backend);
+            VibeVoiceDiffusionSyntheticResult diffusion =
+                RunDiffusionSyntheticValidation(backend);
             return new(
                 Ok: finite &&
                     tokenizerValid is not false &&
                     speakerConfinementValid is not false &&
                     waveValid &&
                     codec.Valid &&
+                    diffusion.Valid &&
                     output.Shape.SequenceEqual(new long[] { 1, 3, hidden }),
                 Test: "qwen2-prefill-and-native-tokenizer-wav-boundary",
                 Shape: output.Shape,
@@ -342,7 +356,11 @@ public static class VibeVoiceRuntime
                 CodecGraphValid: codec.Valid,
                 AcousticLatentShape: codec.AcousticLatentShape,
                 AcousticDecodedShape: codec.AcousticDecodedShape,
-                SemanticLatentShape: codec.SemanticLatentShape);
+                SemanticLatentShape: codec.SemanticLatentShape,
+                DiffusionGraphValid: diffusion.Valid,
+                DiffusionOutputShape: diffusion.OutputShape,
+                DiffusionTimesteps: diffusion.Timesteps,
+                DiffusionDeterministic: diffusion.Deterministic);
         }
 
         finally
@@ -430,6 +448,181 @@ public static class VibeVoiceRuntime
         }
     }
 
+    private static VibeVoiceDiffusionSyntheticResult RunDiffusionSyntheticValidation(
+        ITensorBackend backend)
+    {
+        var configuration = new DiffusionHeadConfiguration(
+                HiddenSize: 8,
+                LatentSize: 2,
+                Layers: 1,
+                FfnRatio: 2,
+                TrainingSteps: 16,
+                InferenceSteps: 4,
+                BetaSchedule: "cosine",
+                PredictionType: "v_prediction",
+                RmsNormEpsilon: 1e-5);
+        var state = new Dictionary<string, Tensor>(StringComparer.Ordinal);
+        try
+        {
+                AddDiffusionState(state, configuration);
+                var head = new VibeVoiceDiffusionHead(
+                    backend,
+                    configuration,
+                    state);
+                using Tensor latent = TensorFactory.FromArray(
+                    [(BFloat16)0.25f, (BFloat16)(-0.5f)],
+                    [1, 2]);
+                using Tensor timestep = TensorFactory.FromArray(new long[] { 7 }, [1]);
+                using Tensor condition = TensorFactory.FromArray(
+                    Enumerable.Range(0, 8)
+                        .Select(value => (BFloat16)(value / 20f))
+                        .ToArray(),
+                    [1, 8]);
+                using Tensor negative = TensorFactory.FromArray(
+                    Enumerable.Range(0, 8)
+                        .Select(value => (BFloat16)(-value / 40f))
+                        .ToArray(),
+                    [1, 8]);
+                using Tensor prediction = head.Predict(latent, timestep, condition);
+                using Tensor guided = head.PredictWithClassifierFreeGuidance(
+                    latent,
+                    timestep,
+                    condition,
+                    negative,
+                    1.3);
+                var scheduler = new CosineDdpmScheduler(
+                    backend,
+                    configuration.TrainingSteps,
+                    configuration.PredictionType);
+                int[] timesteps = scheduler.SetTimesteps(
+                    configuration.InferenceSteps);
+                using Tensor noise = TensorFactory.FromArray(
+                    [(BFloat16)0.1f, (BFloat16)(-0.1f)],
+                    [1, 2]);
+                using Tensor noisy = scheduler.AddNoise(latent, noise, timestep);
+                using Tensor zeroNoise = TensorFactory.Empty(
+                    DataType.BFloat16,
+                    1,
+                    2);
+                using Tensor stepped = scheduler.Step(
+                    prediction,
+                    timestep,
+                    latent,
+                    zeroNoise,
+                    previousTimestep: 6);
+                using Tensor steppedAgain = scheduler.Step(
+                    prediction,
+                    timestep,
+                    latent,
+                    zeroNoise,
+                    previousTimestep: 6);
+                bool finite =
+                    prediction.AsSpan<BFloat16>().ToArray().All(value => float.IsFinite(value)) &&
+                    guided.AsSpan<BFloat16>().ToArray().All(value => float.IsFinite(value)) &&
+                    noisy.AsSpan<BFloat16>().ToArray().All(value => float.IsFinite(value)) &&
+                    stepped.AsSpan<BFloat16>().ToArray().All(value => float.IsFinite(value));
+                bool deterministic = stepped.AsSpan<BFloat16>()
+                    .SequenceEqual(steppedAgain.AsSpan<BFloat16>());
+                bool scheduleValid =
+                    timesteps.Length == configuration.InferenceSteps &&
+                    timesteps[0] == configuration.TrainingSteps - 1 &&
+                    timesteps.Zip(timesteps.Skip(1)).All(pair => pair.First > pair.Second) &&
+                    scheduler.AlphaCumulative
+                        .Zip(scheduler.AlphaCumulative.Skip(1))
+                        .All(pair => pair.First > pair.Second);
+                return new(
+                    finite &&
+                        deterministic &&
+                        scheduleValid &&
+                        prediction.Shape.SequenceEqual(new long[] { 1, 2 }) &&
+                        guided.Shape.SequenceEqual(new long[] { 1, 2 }),
+                    prediction.Shape.ToArray(),
+                    timesteps,
+                    deterministic);
+        }
+        finally
+        {
+            foreach (Tensor tensor in state.Values)
+            {
+                tensor.Dispose();
+            }
+        }
+    }
+
+    private static void AddDiffusionState(
+        IDictionary<string, Tensor> state,
+        DiffusionHeadConfiguration configuration)
+    {
+            int hidden = configuration.HiddenSize;
+            int latent = configuration.LatentSize;
+            int ffn = checked((int)Math.Round(
+                hidden * configuration.FfnRatio));
+            AddFilled(
+                state,
+                "model.prediction_head.noisy_images_proj.weight",
+                0.05,
+                hidden,
+                latent);
+            AddFilled(
+                state,
+                "model.prediction_head.cond_proj.weight",
+                0.05,
+                hidden,
+                hidden);
+            AddFilled(
+                state,
+                "model.prediction_head.t_embedder.mlp.0.weight",
+                0.02,
+                hidden,
+                256);
+            AddFilled(
+                state,
+                "model.prediction_head.t_embedder.mlp.2.weight",
+                0.02,
+                hidden,
+                hidden);
+            for (int layer = 0; layer < configuration.Layers; layer++)
+            {
+                string prefix = $"model.prediction_head.layers.{layer}.";
+                AddFilled(state, prefix + "norm.weight", 1, hidden);
+                AddFilled(
+                    state,
+                    prefix + "adaLN_modulation.1.weight",
+                    0.05,
+                    hidden * 3,
+                    hidden);
+                AddFilled(
+                    state,
+                    prefix + "ffn.gate_proj.weight",
+                    0.05,
+                    ffn,
+                    hidden);
+                AddFilled(
+                    state,
+                    prefix + "ffn.up_proj.weight",
+                    0.05,
+                    ffn,
+                    hidden);
+                AddFilled(
+                    state,
+                    prefix + "ffn.down_proj.weight",
+                    0.05,
+                    hidden,
+                    ffn);
+    }
+            AddFilled(
+                state,
+                "model.prediction_head.final_layer.adaLN_modulation.1.weight",
+                0.05,
+                hidden * 2,
+                hidden);
+            AddFilled(
+                state,
+                "model.prediction_head.final_layer.linear.weight",
+                0.05,
+                latent,
+                hidden);
+        }
     private static void AddEncoderState(
         IDictionary<string, Tensor> state,
         AcousticTokenizerConfiguration configuration,
@@ -652,3 +845,9 @@ internal sealed record VibeVoiceCodecSyntheticResult(
     IReadOnlyList<long> AcousticLatentShape,
     IReadOnlyList<long> AcousticDecodedShape,
     IReadOnlyList<long> SemanticLatentShape);
+
+internal sealed record VibeVoiceDiffusionSyntheticResult(
+    bool Valid,
+    IReadOnlyList<long> OutputShape,
+    IReadOnlyList<int> Timesteps,
+    bool Deterministic);

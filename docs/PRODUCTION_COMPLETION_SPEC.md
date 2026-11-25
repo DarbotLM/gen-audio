@@ -160,6 +160,14 @@ Closure means a default-branch scan reports the relevant record fixed. A passing
 unit test, a clean Windows dependency tree, and absence of a Code Quality count
 are not substitutes for that result.
 
+**Verified outcome:** after [CodeQL scanned the remediation](https://github.com/DarbotLM/gen-audio/actions/runs/45525694761)
+at `56926b1`, GitHub reported all 29 listed CodeQL records fixed and zero open
+on `main`; [repository CI](https://github.com/DarbotLM/gen-audio/actions/runs/45525695829)
+also passed. Together with the 43 fixed Dependabot records, that closes 72 of
+the 73 verified records. The Linux `glib` advisory and both worker-install
+compatibility blockers above remain open. No Python-module retirement is
+claimed for these fixes.
+
 ## D — Desktop honesty (fixtures ≠ podcast)
 
 ### Done

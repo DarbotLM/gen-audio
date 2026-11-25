@@ -1,11 +1,11 @@
 # Isolated CPython 3.12 runtime. Keep this CUDA ABI boundary out of the Python 3.15.2 app env.
 --extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.4.1+cu121
-accelerate==1.6.0
+torch==2.13.0
+accelerate==1.15.0
 numpy==1.26.4
 safetensors==0.4.5
 huggingface-hub==0.24.7
-sentencepiece==0.2.0
+sentencepiece==0.2.1
 sphn==0.1.4
 pyloudnorm==0.1.1
 scipy==1.15.2

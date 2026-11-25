@@ -349,6 +349,15 @@ def _vibevoice_torch_dtype(torch, name: str):
 
 
 def _missing_vibevoice() -> list[str]:
+    if os.environ.get("GEN_AUDIO_VIBEVOICE_SIZE", "1.5B").strip() == "7B":
+        from gen_audio.model_clients import require_worker, worker_url
+
+        if worker_url("vibevoice") is not None:
+            try:
+                require_worker("vibevoice")
+            except ValueError as exc:
+                return [str(exc)]
+            return []
     missing: list[str] = []
     if not _module_present("torch"):
         missing.append("PyTorch is not installed")
@@ -367,8 +376,8 @@ def _missing_vibevoice() -> list[str]:
     device = _vibevoice_device()
     if device.lower().startswith("cuda") and _module_present("torch") and not _cuda_available():
         missing.append(f"GEN_AUDIO_VIBEVOICE_DEVICE is {device} and CUDA is not available")
-    if profile["device_policy"] == "gpu" and not device.lower().startswith("cuda"):
-        missing.append("VibeVoice 7B is GPU-only")
+    if profile["device_policy"] == "hybrid" and not device.lower().startswith("cuda"):
+        missing.append("VibeVoice 7B requires the configured hybrid CUDA worker")
     return missing
 
 
@@ -483,14 +492,14 @@ def _pocket_voice_state(model, voice: str):
 
 
 def vibevoice_profile(size: str | None = None) -> dict:
-    """Render profile for 1.5B (CPU) or 7B (GPU-only). Identity is a model_ref, not one HF id."""
+    """Render profile for 1.5B (CPU) or 7B (GPU + RAM)."""
     chosen = (size or os.environ.get("GEN_AUDIO_VIBEVOICE_SIZE", "1.5B")).strip()
     if chosen == "7B":
         return {
             "id": "7B",
             "local_env": "GEN_AUDIO_VIBEVOICE_7B_MODEL",
             "upstream": "vibevoice/VibeVoice-7B",
-            "device_policy": "gpu",
+            "device_policy": "hybrid",
             "cfg_scale": 1.3,
             "diffusion_steps": 20,
             "max_speakers": 4,
@@ -519,8 +528,14 @@ def vibevoice_call_plan(profile: dict, script: str, wavs: list) -> dict:
     ``set_ddpm_inference_steps`` is called before ``generate``. ``tokenizer`` is
     the processor tokenizer. 7B is refused on CPU before this plan is used.
     """
-    if profile["device_policy"] == "gpu" and not _cuda_available():
-        raise EngineRefusal("vibevoice", ["VibeVoice 7B is GPU-only"])
+    from gen_audio.model_clients import worker_url
+
+    if (
+        profile["device_policy"] == "hybrid"
+        and worker_url("vibevoice") is None
+        and not _cuda_available()
+    ):
+        raise EngineRefusal("vibevoice", ["VibeVoice 7B hybrid worker is unavailable"])
     if len(wavs) > int(profile["max_speakers"]):
         raise EngineRefusal("vibevoice", [f"VibeVoice supports at most {profile['max_speakers']} speakers"])
     return {
@@ -552,13 +567,49 @@ def run_vibevoice_generate(model, processor, inputs: dict, steps: int, cfg_scale
 
 
 def _synth_vibevoice(turns: list[Turn], cast: CastMap, output: Path) -> dict:
-    """Run VibeVoice when local weights load. 1.5B may use CPU. 7B refuses without a GPU."""
+    """Run 1.5B in-process or delegate 7B to its isolated hybrid worker."""
     import torch
 
     profile = vibevoice_profile()
     model_dir = os.environ.get(profile["local_env"], "").strip()
-    if profile["device_policy"] == "gpu" and not _cuda_available():
-        raise EngineRefusal("vibevoice", ["VibeVoice 7B is GPU-only"])
+    from gen_audio.model_clients import generate_worker, worker_url
+
+    if profile["id"] == "7B" and worker_url("vibevoice") is not None:
+        speaker_numbers: dict[str, int] = {}
+        lines = []
+        wavs = []
+        for turn in turns:
+            if turn.speaker_id not in speaker_numbers:
+                speaker_numbers[turn.speaker_id] = len(wavs) + 1
+                wavs.append(_vibevoice_prompt_ref(turn, cast))
+            lines.append(f"Speaker {speaker_numbers[turn.speaker_id]}: {turn.text}")
+        try:
+            receipt = generate_worker(
+                "vibevoice",
+                {
+                    "scriptText": "\n".join(lines),
+                    "voiceRefs": wavs,
+                    "maxNewTokens": max(64, min(1024, sum(len(turn.text) for turn in turns) * 2)),
+                    "maxSeconds": 60,
+                    "cfgScale": profile["cfg_scale"],
+                    "inferenceSteps": profile["diffusion_steps"],
+                    "seed": 0,
+                },
+                local_output=output,
+            )
+        except ValueError as exc:
+            raise EngineRefusal("vibevoice", [str(exc)]) from exc
+        if receipt.get("sample_rate") != 24000 or not receipt.get("samples"):
+            raise EngineRefusal("vibevoice", ["7B worker returned an invalid audio receipt"])
+        return {
+            "engine": "vibevoice",
+            "sample_rate": int(receipt["sample_rate"]),
+            "samples": int(receipt["samples"]),
+            "turns": len(turns),
+            "worker": receipt,
+        }
+    if profile["device_policy"] == "hybrid" and not _cuda_available():
+        raise EngineRefusal("vibevoice", ["VibeVoice 7B hybrid CUDA runtime is unavailable"])
     device = _vibevoice_device()
     try:
         from vibevoice.modular.modeling_vibevoice_inference import (
@@ -624,6 +675,31 @@ def _load_vibevoice_prompt(turn: Turn, cast: CastMap):
         raise EngineRefusal("vibevoice", [f"reference wav for {assignment.voice} was not found"])
     audio, rate = read_wav(candidate)
     return _normalize_audio(audio, rate, 24000)
+
+
+def _vibevoice_prompt_ref(turn: Turn, cast: CastMap) -> str:
+    assignment = resolve_turn(turn, cast)
+    candidate = Path(assignment.voice)
+    if candidate.is_file():
+        return str(candidate.resolve())
+    library = os.environ.get("GENAID_VOICES_DIR", "").strip()
+    if library:
+        try:
+            from gen_audio.genaid_voices import resolve_sample
+
+            return str(resolve_sample(assignment.voice, root=library))
+        except ValueError:
+            pass
+        root = Path(library)
+        stems = (
+            root / "_hf_vibevoice_samples" / "voices" / f"{assignment.voice}.wav",
+            root / "samples" / "vibevoice" / "en" / f"{assignment.voice}.wav",
+            root / "samples" / "en" / f"{assignment.voice}.wav",
+        )
+        for path in stems:
+            if path.is_file():
+                return str(path.resolve())
+    return assignment.voice
 
 
 def _nemo_speech() -> str | None:

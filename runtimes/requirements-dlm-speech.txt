@@ -1,0 +1,2 @@
+# Isolated provider/transport service; the Gen-Audio client remains stdlib-only.
+dlm-speech @ git+https://github.com/DarbotLM/dlm_speech.git@e1416dd7a7d7b68f870ba3d2db04fbf7e6a1c7de

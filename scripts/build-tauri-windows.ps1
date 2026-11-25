@@ -222,6 +222,29 @@ try {
     }
     Write-Step 'acp handshake ok (protocol 1, gen-audio)'
 
+    Write-Step 'build wingen.audio Windows-native execution host'
+    $wingenProject = Join-Path $root 'src\wingen.audio\wingen.audio.csproj'
+    $wingenPublish = Join-Path $root 'target\wingen.audio\publish'
+    if (Test-Path -LiteralPath $wingenPublish) {
+        Remove-Item -LiteralPath $wingenPublish -Recurse -Force -ErrorAction Stop
+    }
+    Invoke-Checked dotnet publish $wingenProject '-c' 'Release' '-r' 'win-x64' '--self-contained' 'true' '-o' $wingenPublish
+    $wingen = Get-Item -LiteralPath (Join-Path $wingenPublish 'wingen.audio.exe')
+    $wingenHash = Get-Sha256 -LiteralPath $wingen.FullName
+    $wingenVersion = & $wingen.FullName version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "wingen.audio version failed with exit ${LASTEXITCODE}: $wingenVersion" }
+    $wingenIdentity = $wingenVersion | Select-Object -Last 1 | ConvertFrom-Json
+    if ($wingenIdentity.ok -ne $true -or $wingenIdentity.product -ne 'wingen.audio') {
+        throw "wingen.audio identity probe failed: $wingenVersion"
+    }
+    $wingenMxc = & $wingen.FullName mxc probe 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "wingen.audio MXC probe failed with exit ${LASTEXITCODE}: $wingenMxc" }
+    $mxcIdentity = $wingenMxc | Select-Object -Last 1 | ConvertFrom-Json
+    if ($mxcIdentity.ok -ne $true -or $mxcIdentity.supported -ne $true) {
+        throw "wingen.audio requires a supported MXC host: $wingenMxc"
+    }
+    Write-Step "wingen.audio $($wingen.FullName) $($wingen.Length) bytes sha256 $wingenHash; MXC $($mxcIdentity.nativeVersion), supported=$($mxcIdentity.supported)"
+
     # Stage the sidecar where tauri externalBin expects it. Never copy a file
     # onto itself (the old script copied target\release\gen-audio-mcp.exe onto
     # the same path and failed).
@@ -243,6 +266,13 @@ try {
         throw "staged sidecar $stagedAcp has sha256 $stagedAcpHash, but cargo's binary has $acpHash"
     }
     Write-Step "staged sidecar $stagedAcp (sha256 $stagedAcpHash, same bytes as cargo's binary)"
+    $stagedWingen = Join-Path $binDir "wingen.audio-$triple.exe"
+    Copy-Item -LiteralPath $wingen.FullName -Destination $stagedWingen -Force
+    $stagedWingenHash = Get-Sha256 -LiteralPath $stagedWingen
+    if ($stagedWingenHash -ne $wingenHash) {
+        throw "staged wingen.audio $stagedWingen has sha256 $stagedWingenHash, but the published binary has $wingenHash"
+    }
+    Write-Step "staged Windows execution host $stagedWingen (sha256 $stagedWingenHash)"
 
     Write-Step 'frontend dependencies (npm ci)'
     Push-Location $desktop
@@ -419,6 +449,7 @@ try {
             ExpectedExeSha256 = $exe.Sha256
             ExpectedMcpSha256 = $sidecarHash
             ExpectedAcpSha256 = $acpHash
+            ExpectedWingenSha256 = $wingenHash
         }
         if ($CertificateThumbprint) { $packArgs.CertificateThumbprint = $CertificateThumbprint }
         & (Join-Path $PSScriptRoot 'pack-windows-msix-nuget.ps1') @packArgs

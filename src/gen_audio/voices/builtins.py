@@ -375,7 +375,7 @@ def validate_g2p_document(payload: dict, *, path: Path | None = None) -> G2pConf
     british = optional_bool(body, "british", label=label)
     transformer = optional_bool(body, "transformer", label=label)
     if transformer:
-        raise VoiceError("misaki transformer=true is rejected on Python 3.14", code="bad_transformer")
+        raise VoiceError("misaki transformer=true is rejected on Python 3.15.2", code="bad_transformer")
     framework_lang_code = optional_str(body, "framework_lang_code", label=label, min_len=1, max_len=1)
     espeak_fallback = optional_bool(body, "espeak_fallback", label=label)
     espeak_language = optional_str(body, "espeak_language", label=label, min_len=2, max_len=12)
@@ -503,17 +503,25 @@ def prepare_misaki(config, library: Path | None = None) -> SynthesisPlan:
 
 
 def prepare_vibevoice(voice, library: Path | None = None) -> SynthesisPlan:
-    """1.5B is executable when the package, weights, and reference wav are present. 7B stays GPU-only."""
+    """Prepare 1.5B in-process or 7B through the isolated hybrid worker."""
     missing: list[str] = []
     size = os.environ.get("GEN_AUDIO_VIBEVOICE_SIZE", "1.5B").strip() or "1.5B"
     if size == "7B":
-        model = os.environ.get("GEN_AUDIO_VIBEVOICE_7B_MODEL", "").strip()
-        if not model:
-            missing.append("GEN_AUDIO_VIBEVOICE_7B_MODEL is unset")
-        elif not Path(model).exists():
-            missing.append("VibeVoice 7B weights are not present at GEN_AUDIO_VIBEVOICE_7B_MODEL")
-        if not _torch_cuda():
-            missing.append("VibeVoice 7B is GPU-only")
+        from gen_audio.model_clients import require_worker, worker_url
+
+        if worker_url("vibevoice") is not None:
+            try:
+                require_worker("vibevoice")
+            except ValueError as exc:
+                missing.append(str(exc))
+        else:
+            model = os.environ.get("GEN_AUDIO_VIBEVOICE_7B_MODEL", "").strip()
+            if not model:
+                missing.append("GEN_AUDIO_VIBEVOICE_7B_MODEL is unset")
+            elif not Path(model).exists():
+                missing.append("VibeVoice 7B weights are not present at GEN_AUDIO_VIBEVOICE_7B_MODEL")
+            if not _torch_cuda():
+                missing.append("VibeVoice 7B hybrid worker or CUDA runtime is unavailable")
     elif size != "1.5B":
         missing.append(f"unknown VibeVoice size {size}")
     else:
@@ -523,9 +531,21 @@ def prepare_vibevoice(voice, library: Path | None = None) -> SynthesisPlan:
             missing.append("GEN_AUDIO_VIBEVOICE_MODEL is unset")
         elif not Path(model).exists():
             missing.append("VibeVoice-1.5B weights are not present at GEN_AUDIO_VIBEVOICE_MODEL")
-    if importlib.util.find_spec("vibevoice") is None:
+    if not (
+        size == "7B"
+        and __import__("gen_audio.model_clients", fromlist=["worker_url"]).worker_url("vibevoice")
+    ) and importlib.util.find_spec("vibevoice") is None:
         missing.append("vibevoice package is not installed")
     files, absent = _existing_assets(voice, library)
+    if absent and library is not None:
+        try:
+            from gen_audio.genaid_voices import configured_catalog
+
+            sample = configured_catalog(library).sample_path(voice.params["file_stem"])
+            files["reference_audio"] = str(sample)
+            absent = [item for item in absent if not item.startswith("asset file is missing:")]
+        except (KeyError, ValueError):
+            pass
     if library is None:
         missing.append("reference wav is unresolved until GENAID_VOICES_DIR or a library path is set")
     missing.extend(absent)
@@ -553,13 +573,20 @@ def prepare_livevoice(voice, library: Path | None = None) -> SynthesisPlan:
 
 
 def prepare_personaplex(voice, library: Path | None = None) -> SynthesisPlan:
-    missing = [
-        "nvidia/personaplex-7b-v1 is gated and its weights are not bundled",
-        "no PersonaPlex runtime is registered in this package",
-    ]
-    files, absent = _existing_assets(voice, library)
-    missing.extend(absent)
-    return _plan(voice, "personaplex", missing, files, executable=False)
+    from gen_audio.model_clients import require_worker, worker_url
+
+    missing: list[str] = []
+    if worker_url("personaplex") is None:
+        missing.append("GEN_AUDIO_PERSONAPLEX_WORKER_URL is unset")
+    else:
+        try:
+            require_worker("personaplex")
+        except ValueError as exc:
+            missing.append(str(exc))
+    # Stock .pt descriptors remain valid catalog metadata, but Gen-Audio's
+    # local runtime deliberately never resolves or unpickles them.
+    files = {}
+    return _plan(voice, "personaplex", missing, files, executable=not missing)
 
 
 def mock_offline_request(plan: SynthesisPlan) -> dict[str, Any]:

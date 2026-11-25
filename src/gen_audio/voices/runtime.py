@@ -182,7 +182,7 @@ def build_misaki(config, *, library: Path | str | None = None):
     line-oriented lexicon land in ``lexicon.golds``.
     """
     if config.transformer:
-        raise VoiceError("misaki transformer=true is rejected on Python 3.14", code="bad_transformer")
+        raise VoiceError("misaki transformer=true is rejected on Python 3.15.2", code="bad_transformer")
     try:
         if config.backend == "misaki-en":
             from misaki import en, espeak

@@ -1,6 +1,6 @@
 # Production completion
 
-Python stays `requires-python = ">=3.14,<3.15"` with the classifier `Programming Language :: Python :: 3.14` only. Length caps, path confinement, checksum pins, `/health` versus `/ready`, and TTS error classes are Gen-Audio code in `gen_audio.guards` (see `docs/genlm-audio/REVIEW-2026-10-06.md`). This file lists what is still open before a Windows install is the product.
+Python is `requires-python = ">=3.15,<3.16"` with the classifier `Programming Language :: Python :: 3.15` only. Length caps, path confinement, checksum pins, `/health` versus `/ready`, and TTS error classes are Gen-Audio code in `gen_audio.guards` (see `docs/genlm-audio/REVIEW-2026-10-06.md`). This file lists what is still open before a Windows install is the product.
 
 ## Blockers
 
@@ -19,7 +19,7 @@ Acceptance:
 
 Acceptance:
 
-- `tests/test_guards.py` (14 tests) passes on Python 3.14.
+- `tests/test_guards.py` (14 tests) passes on Python 3.15.2.
 - Speaker scripts parsed by `gen_audio.cast` and the Rust harness reject oversized segments. Environment variables may tighten the caps and cannot raise the hard ceilings.
 - Kokoro model resolution honors `GENAID_MODEL_BASE`, `GENAID_LOCAL_FILES_ONLY`, and the SHA256 pin.
 - `GET /genaid-audio/health` is liveness. `GET /genaid-audio/ready` is readiness. Gateway health stays HTTP 200 when speech is down; gateway ready is 503. TTS proxy failures are 504, 503, forwarded 4xx, or 502, and the log line has no user-text prefix.
@@ -41,7 +41,7 @@ Hits of the starter-name, backup, fallback, backlog, intended, stub, mock, place
 | `src/gen_audio/artifacts.py` | "temporary" job directory | Low | Keep. Scratch disks are why `GEN_AUDIO_ARTIFACT_DIR` exists. |
 | `docs/REVIEW_BUGBASH.md` | "Residual risk", "placeholder host", "sketch" | Info | Append-only review log. Do not edit prior rounds. |
 | `crates/gen-audio-mcp` serve_health note | "Placeholder host" | Low | Keep. `<node>` is not probed. |
-| VibeVoice / PersonaPlex / genlm-audio / Gradio adapters | "No adapter" on compare-list rows | High | Open. This repo scores WAVs and does not vendor those runtimes. They must use Python `>=3.14,<3.15` if they import `gen_audio`. |
+| VibeVoice / PersonaPlex resident workers | Isolated CUDA ABI runtimes | High | Implemented through loopback 7B workers and PowerShell control. Gen-Audio uses Python 3.15.2 while pinned model processes remain on their published CPython 3.12 ABI. |
 | Real MP3, LUFS, auth on `/genaid-audio`, GPU cancel, chunk-and-stitch | Review P0/P1 unchecked boxes | High | Open. Listed in the review. Not claimed fixed. |
 | Packaged installer executed on this Linux agent | no MSI here | Medium | `scripts/build-tauri-windows.ps1` is the SMAX path. This agent checks the crates and the MCP handshake. |
 
@@ -49,11 +49,53 @@ No `TODO`, `FIXME`, `HACK`, `NYI`, `WIP`, `dummy`, or `fake` markers remain in p
 
 ## Workstreams
 
-1. **Guards.** Done when `pytest tests/test_guards.py` passes on 3.14 and script parsing calls the same ceilings.
+1. **Guards.** Done when `pytest tests/test_guards.py` passes on 3.15.2 and script parsing calls the same ceilings.
 2. **Node probes.** Done when `gen_audio.node_http.dispatch` returns 200 for `/genaid-audio/health` and `/genaid-audio/ready` with the model unloaded, and `gateway_ready(None)` is 503.
 3. **Desktop tray and MCP.** Done when `cargo check -p gen-audio-desktop` succeeds and the Windows script's handshake grep matches `protocolVersion` `2025-03-26`.
 4. **Installers.** Done when SMAX produces NSIS and MSI from `scripts/build-tauri-windows.ps1` and the tray icon is visible after launch.
 5. **Compare-list engines.** Open until an adapter exists. Do not mark VibeVoice, PersonaPlex, or Gradio implemented.
+
+## Wingen Audio native worker cutover
+
+The temporary Python inference process is isolated behind the stable `/v1`
+worker contract. `wingen.audio.exe` is the Windows production host and is built
+self-contained on .NET 11. PowerShell 7 remains the Windows operator and
+recovery plane; DarbotLM/MXC owns native containment; F# owns typed domain
+contracts and placement; C# owns HTTP, process, JSON, audio-artifact, and MXC
+execution. Complete these in order:
+
+1. **Freeze the worker wire contract.** Version the status, preflight, load,
+   unload, and generate receipts; define F# error codes, 64 KiB request and
+   4 MiB response limits, cancellation, output roots, hashes, and worker health.
+2. **Finish MXC residency.** Add persistent `wingen.audio.exe mxc host` lifecycle
+   support for ProcessContainer and GPU-capable WSLC: provision, start, execute,
+   stop, deprovision, bounded stdout, process tree cleanup, and container-state
+   recovery.
+3. **Package native model assets.** Produce immutable VibeVoice and PersonaPlex
+   tokenizer/model/voice manifests with ONNX or TensorRT graph hashes, providers,
+   precision, required GPU/RAM, and migration checks from the current weights.
+4. **Implement the F# model domain.** Put engine selection, generation requests,
+   placement budgets, tokenizer/voice confinement, cancellation, and stable
+   receipts in `WingenAudio.Contracts`.
+5. **Implement the C# inference runtime.** Add ONNX Runtime/TensorRT or DirectML
+   adapters, tokenizer and PCM pipelines, CUDA/CPU/WSLC placement, streaming,
+   bounded buffers, GPU memory accounting, and atomic WAV publication.
+6. **Expose the native `/v1` server.** Run the worker endpoints from
+   ASP.NET Core inside MXC, preserving the existing loopback-only contract and
+   using authenticated coordinator transport for remote nodes.
+7. **Own worker lifecycle from Windows.** Switch `start-speech-7b.ps1` and
+   `cluster.ps1` to Scheduled Task + MXC host supervision, Job Objects, process
+   affinity, port ownership, Event Log, restart budgets, and graceful GPU model
+   unload.
+8. **Gate on real generation.** Run fixed VibeVoice and PersonaPlex prompts through
+   old and new workers; verify WAV rate/channels/duration, deterministic seeds
+   where available, memory limits, startup, cancellation, and failure receipts.
+9. **Cut over installed products.** Ship `wingen.audio.exe` in NSIS, MSI, MSIX,
+   and NuGet; switch `GEN_AUDIO_*_WORKER_URL` defaults to the MXC-backed native
+   worker; keep rollback only behind an explicit compatibility flag.
+10. **Remove the temporary runtime.** After parity and recovery soak, delete the
+    Python `model_workers` package, isolated 7B Python environments, Python
+    dependency branches, and Python process launch paths.
 
 ## D — Desktop honesty (fixtures ≠ podcast)
 
@@ -63,7 +105,7 @@ No `TODO`, `FIXME`, `HACK`, `NYI`, `WIP`, `dummy`, or `fake` markers remain in p
 - Tray: close hides to tray; tray **Quit** stops the sidecar and `app.exit(0)`. `tauri-plugin-single-instance` focuses the existing window on second start (no dual tray). A second start with `--quit` invokes the same `request_quit` path.
 - Library slide: livetiles backed by real synth WAVs on disk (`artifacts/library/`, served via `apps/desktop/public/library/`). WAVs are gitignored; JSON/PNG thumbs and `manifest.json` may ship in-tree. Manifest marks `synthesizedSpeech: true` only for real clips; unavailable engines stay `unavailable` with reasons — no fake speech.
 - Fixture / example viewport content is labeled as fixture theater in the UI (not podcast speech). Browser DFT / WebGL cube sketch is not the Python matplotlib spectrogram path.
-- Guards: `pytest tests/test_guards.py` → 14 passed on Python 3.14.
+- Guards: `pytest tests/test_guards.py` → 14 passed on Python 3.15.2.
 
 ### Open on purpose
 

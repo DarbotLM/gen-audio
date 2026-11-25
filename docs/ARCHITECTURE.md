@@ -1,8 +1,8 @@
 # Architecture
 
-gen-audio is a small Python 3.14 toolkit (`requires-python` is `>=3.14,<3.15`). The installable import name is `gen_audio`. It turns a labeled script into a mono WAV through DarbotLM Kokoro ONNX or Kokoro PyTorch when the corresponding real weights are available, and it can process a WAV you already have without any model.
+gen-audio is a small Python 3.15.2 toolkit (`requires-python` is `>=3.15,<3.16`). The installable import name is `gen_audio`. It turns a labeled script into a mono WAV through DarbotLM Kokoro ONNX or Kokoro PyTorch when the corresponding real weights are available, and it can process a WAV you already have without any model.
 
-The same floor applies to the spectrogram, the genaid-audio URL helpers, podcast script parsing, and any compare-list engine this package scores (VibeVoice, the PersonaPlex CPU stand-in `pocket_tts`, Magpie). genlm-audio, Gradio, and PersonaPlex are not vendored here. A process that imports `gen_audio` uses `>=3.14,<3.15`. Request limits, voice and model path confinement, checksum pins, and `/health` versus `/ready` live in `gen_audio.guards` and are described in `docs/genlm-audio/REVIEW-2026-10-06.md`.
+The same floor applies to the spectrogram, the genaid-audio URL helpers, podcast script parsing, and any compare-list engine this package scores (VibeVoice, the PersonaPlex CPU stand-in `pocket_tts`, Magpie). genlm-audio, Gradio, and PersonaPlex are not vendored here. A process that imports `gen_audio` uses `>=3.15,<3.16`. Request limits, voice and model path confinement, checksum pins, and `/health` versus `/ready` live in `gen_audio.guards` and are described in `docs/genlm-audio/REVIEW-2026-10-06.md`.
 
 [darbotlabs/genaid](https://github.com/darbotlabs/genaid) is a different project (a JavaScript prompting framework). Nothing in that repository is imported here.
 
@@ -14,7 +14,7 @@ The same floor applies to the spectrogram, the genaid-audio URL helpers, podcast
 | --- | --- | --- |
 | `kokoro_onnx` | waveform synth | `KokoroOnnxSynthesizer` uses pinned DarbotLM `kokoro-onnx 0.6.1`: timed, streaming, continuous-window, provider-selected, Misaki-capable ONNX synthesis. |
 | `kokoro_dayour` | waveform synth | DarbotLM `Kokoro 0.9.4`: one shared `KModel`, one `KPipeline` per language, explicit Misaki G2P, CPU/CUDA/MPS selection, and local `.pt`/weighted-blend support. |
-| `misaki` | grapheme-to-phoneme | DarbotLM `Misaki 0.9.4+py314.1` for English, Japanese, Chinese, Korean, Vietnamese, and Kokoro eSpeak languages. It is never a waveform synth. |
+| `misaki` | grapheme-to-phoneme | DarbotLM `Misaki 0.9.4+py315.1` for English, Japanese, Chinese, Korean, Vietnamese, and Kokoro eSpeak languages. It is never a waveform synth. |
 | `vibevoice` | waveform synth | Adapter calls the local VibeVoice processor when `GEN_AUDIO_VIBEVOICE_MODEL` is set. Weights stay on disk. |
 | `magpie` | waveform synth | NVIDIA NeMo Speech CLI with Magpie and NanoCodec. The configured NeMo Python adapter can also run on CUDA. |
 | `pocket_tts` | waveform synth | Kyutai Pocket TTS model with local CPU inference. |

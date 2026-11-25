@@ -312,7 +312,7 @@ Describe 'build and packaging contracts' {
         $text | Should -Match 'Write-Output "BUILD_OK [^"]*log=\$buildLog'
         $start = $text.IndexOf('Start-Transcript')
         $body = $text.Substring($start)
-        $body | Should -Match '\}\s*finally\s*\{\s*Stop-Transcript'
+        $body | Should -Match '\}\s*finally\s*\{[\s\S]*?Stop-Transcript'
         $text.IndexOf('Write-Step "build-tauri-windows.ps1 -Mode') | Should -BeGreaterThan $start
         foreach ($old in @('Assert-Fresh', 'LastWriteTime', '$runStart')) {
             $text | Should -Not -Match ([regex]::Escape($old))

@@ -192,7 +192,8 @@ function Invoke-WingenVibeVoicePreflight {
         $cpuMemoryGiB = if ($Request.execution -and $null -ne $Request.execution.cpu_memory_gib) { [double]$Request.execution.cpu_memory_gib } else { 48.0 }
         $execution = Get-WingenVibeVoiceExecution -Backend $backend -Precision $precision `
             -Attention $attention -Offload $offload -DeviceIndex $deviceIndex `
-            -GpuMemoryGiB $gpuMemoryGiB -CpuMemoryGiB $cpuMemoryGiB -PowerTorchRoot $PowerTorchRoot
+            -GpuMemoryGiB $gpuMemoryGiB -CpuMemoryGiB $cpuMemoryGiB -PowerTorchRoot $PowerTorchRoot `
+            -ModelDir $Request.model_dir
         $os = Get-CimInstance Win32_OperatingSystem
         $availableRam = [int64]$os.FreePhysicalMemory * 1024
         $reserve = 2GB

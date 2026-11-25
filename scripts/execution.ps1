@@ -45,6 +45,38 @@ function Import-WingenPowerTorch {
     $source
 }
 
+function Get-WingenVibeVoiceNativeGraph {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$ModelDir)
+    $repo = Split-Path -Parent $PSScriptRoot
+    $candidates = @(
+        $env:WINGEN_AUDIO_EXE,
+        (Join-Path $repo 'src\wingen.audio\bin\Release\net11.0\win-x64\wingen.audio.exe'),
+        (Join-Path $repo 'target\wingen.audio\publish\wingen.audio.exe'),
+        (Join-Path $repo 'target\wingen.audio\publish-f5e\wingen.audio.exe')
+    ) | Where-Object { $_ }
+    $native = @($candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1)
+    if ($native.Count -eq 0) {
+        throw 'wingen.audio.exe is not built; PowerShell preflight cannot validate the native VibeVoice graph.'
+    }
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& $native[0] vibevoice capability --model-dir $ModelDir 2>&1 | ForEach-Object { "$_" })
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    $json = @($output | Where-Object { $_ -match '^\s*\{' }) | Select-Object -Last 1
+    if (-not $json) { throw 'wingen.audio.exe returned no VibeVoice capability JSON.' }
+    $receipt = $json | ConvertFrom-Json -Depth 64
+    [pscustomobject]@{
+        exit_code = $exitCode
+        receipt = $receipt
+        path = $native[0]
+    }
+}
+
 function Get-WingenVibeVoiceExecution {
     [CmdletBinding()]
     param(
@@ -59,7 +91,8 @@ function Get-WingenVibeVoiceExecution {
         [ValidateRange(0, 15)][int]$DeviceIndex = 0,
         [ValidateRange(0.5, 7.25)][double]$GpuMemoryGiB = 5.75,
         [ValidateRange(0.5, 60.0)][double]$CpuMemoryGiB = 48.0,
-        [string]$PowerTorchRoot
+        [string]$PowerTorchRoot,
+        [string]$ModelDir
     )
     $source = Import-WingenPowerTorch -Root $PowerTorchRoot
     $info = Get-PowerTorchInfo
@@ -88,6 +121,12 @@ function Get-WingenVibeVoiceExecution {
         if ($feature.Value) { [void]$supported.Add($feature.Key) }
     }
     $missing = @($required | Where-Object { -not $supported.Contains($_) })
+    $nativeGraph = if ($ModelDir) { Get-WingenVibeVoiceNativeGraph -ModelDir $ModelDir } else { $null }
+    $graphMissing = if ($nativeGraph) {
+        @($nativeGraph.receipt.missing | ForEach-Object { $_.name })
+    } else {
+        @()
+    }
     [pscustomobject]@{
         schema_version = '1.0'
         runtime = 'powertorch'
@@ -101,8 +140,9 @@ function Get-WingenVibeVoiceExecution {
         gpu_memory_bytes = [long]($GpuMemoryGiB * 1GB)
         cpu_memory_bytes = [long]($CpuMemoryGiB * 1GB)
         capability = $devices[$selected]
-        ready = $missing.Count -eq 0
-        missing_capabilities = $missing
+        ready = $missing.Count -eq 0 -and $graphMissing.Count -eq 0
+        missing_capabilities = @($missing + $graphMissing | Sort-Object -Unique)
+        native_graph = $nativeGraph
     }
 }
 

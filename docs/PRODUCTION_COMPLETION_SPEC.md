@@ -41,7 +41,7 @@ Hits of the starter-name, backup, fallback, backlog, intended, stub, mock, place
 | `src/gen_audio/artifacts.py` | "temporary" job directory | Low | Keep. Scratch disks are why `GEN_AUDIO_ARTIFACT_DIR` exists. |
 | `docs/REVIEW_BUGBASH.md` | "Residual risk", "placeholder host", "sketch" | Info | Append-only review log. Do not edit prior rounds. |
 | `crates/gen-audio-mcp` serve_health note | "Placeholder host" | Low | Keep. `<node>` is not probed. |
-| VibeVoice / PersonaPlex resident workers | Isolated CUDA ABI runtimes | High | Implemented through loopback 7B workers and PowerShell control. Gen-Audio uses Python 3.15.2 while pinned model processes remain on their published CPython 3.12 ABI. |
+| VibeVoice / PersonaPlex resident workers | Isolated upstream ABI runtimes during cutover | High | Exposed through loopback 7B workers, `plugins.ps1`, PowerShell lifecycle, and `wingen.audio.exe`. CPU, DirectML, CUDA, or hybrid placement is selected explicitly; the current Python compute backend is retained only until the pinned PowerTorch graph reaches parity. |
 | Real MP3, LUFS, auth on `/genaid-audio`, GPU cancel, chunk-and-stitch | Review P0/P1 unchecked boxes | High | Open. Listed in the review. Not claimed fixed. |
 | Packaged installer executed on this Linux agent | no MSI here | Medium | `scripts/build-tauri-windows.ps1` is the SMAX path. This agent checks the crates and the MCP handshake. |
 

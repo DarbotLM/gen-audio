@@ -467,4 +467,4 @@ files are on disk.
 MIT. See [LICENSE](LICENSE).
 
 
-> Python ABI note: Gen-Audio control/orchestration requires CPython 3.15.2. VibeVoice and PersonaPlex resident GPU processes currently remain isolated on their upstream CPython 3.12 + CUDA runtimes because published PyTorch/Sphinx binaries do not yet provide cp315. Kokoro-ONNX remains a separately isolated CPython 3.15.2 worker until ONNX Runtime publishes cp315 wheels.
+> Runtime cutover note: `plugins.ps1` and `wingen.audio.exe` own the Windows 7B control plane. VibeVoice and PersonaPlex can use explicit CPU, DirectML, CUDA, or hybrid placement; their upstream compute backend remains isolated only until the pinned PowerTorch graph reaches verified parity. Kokoro-ONNX remains separately isolated until its native runtime migration completes.

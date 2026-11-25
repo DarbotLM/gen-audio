@@ -36,7 +36,7 @@ param(
     [string[]]$Step = @('All'),
     [string]$RepoRoot,
     [string]$CheckoutPath,
-    [string]$RepoUrl = 'https://github.com/darbotlabs/gen-audio.git',
+    [string]$RepoUrl = 'https://github.com/DarbotLM/gen-audio.git',
     [string]$RepoRef = 'main',
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$NodeVersion = '26.13.1',

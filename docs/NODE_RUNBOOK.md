@@ -8,7 +8,7 @@ checkout and will not overwrite an existing dirty tree.
 ```powershell
 $toolbox = Join-Path $env:TEMP 'gen-audio-toolbox.ps1'
 Invoke-WebRequest `
-  -Uri 'https://raw.githubusercontent.com/darbotlabs/gen-audio/main/scripts/toolbox.ps1' `
+  -Uri 'https://raw.githubusercontent.com/DarbotLM/gen-audio/main/scripts/toolbox.ps1' `
   -OutFile $toolbox
 pwsh -NoProfile -File $toolbox -Step Node -RepoRoot 'G:\gen-audio'
 ```

@@ -1,5 +1,8 @@
 # gen-audio
 
+The canonical public repository is
+[`DarbotLM/gen-audio`](https://github.com/DarbotLM/gen-audio).
+
 Darbot Gen-Audio is a desktop app plus a Python SDK for multi-speaker podcast tooling: a card viewport, fixture spectrogram and inverse-HDR cube views, a stateless MCP server, an Agent Client Protocol agent, a trace-writing harness, and connectors for Copilot, Claude, GPT, and Gemini.
 
 [genaid](https://github.com/darbotlabs/genaid) is a separate JavaScript prompting framework. This repository does not vendor that code.
@@ -240,7 +243,7 @@ For a complete Windows node, use the one-command bootstrap from the
 ```powershell
 $toolbox = Join-Path $env:TEMP 'gen-audio-toolbox.ps1'
 Invoke-WebRequest `
-  -Uri 'https://raw.githubusercontent.com/darbotlabs/gen-audio/main/scripts/toolbox.ps1' `
+  -Uri 'https://raw.githubusercontent.com/DarbotLM/gen-audio/main/scripts/toolbox.ps1' `
   -OutFile $toolbox
 pwsh -NoProfile -File $toolbox -Step Node -RepoRoot 'G:\gen-audio'
 ```

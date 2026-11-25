@@ -18,9 +18,9 @@ executables, checksums, and source provenance. The release does not bundle
 model weights or generated audio.
 
 The optional speech forks are published separately under the pinned
-`py314-2026.11.22` tag in
-[`DarbotLM/misaki`](https://github.com/DarbotLM/misaki/releases/tag/py314-2026.11.22),
-[`DarbotLM/kokoro`](https://github.com/DarbotLM/kokoro/releases/tag/py314-2026.11.22),
+`py315-2026.11.24` tag for Misaki/Kokoro and the isolated `py314-2026.11.22` tag for Kokoro-ONNX in
+[`DarbotLM/misaki`](https://github.com/DarbotLM/misaki/releases/tag/py315-2026.11.24),
+[`DarbotLM/kokoro`](https://github.com/DarbotLM/kokoro/releases/tag/py315-2026.11.24),
 and
 [`DarbotLM/kokoro-onnx`](https://github.com/DarbotLM/kokoro-onnx/releases/tag/py314-2026.11.22).
 Those repositories are private, so installers use authenticated GitHub CLI
@@ -31,9 +31,9 @@ procedure, known limitations, and complete release notes.
 
 ## Synthesis engines
 
-The Python 3.14 Kokoro stack is pinned to the DarbotLM forks and their
-`py314-2026.11.22` release wheels:
-[misaki](https://github.com/DarbotLM/misaki) `0.9.4+py314.1`,
+The Python 3.15.2 Kokoro stack is pinned to the DarbotLM forks and their
+`py315-2026.11.24` release wheels:
+[misaki](https://github.com/DarbotLM/misaki) `0.9.4+py315.1`,
 [kokoro](https://github.com/DarbotLM/kokoro) `0.9.4`, and
 [kokoro-onnx](https://github.com/DarbotLM/kokoro-onnx) `0.6.1`.
 They stay optional and import only when an engine is requested.
@@ -195,7 +195,7 @@ AgentYankers episodes are a format in that SDK. `gen_audio.agentyankers` mixes a
 | Engine compare on WAVs you already have | Implemented as measurement only; it does not rank engines |
 | VibeVoice, Magpie, Pocket TTS, DarbotLM Kokoro | VibeVoice and both Kokoro backends have adapters that run when real weights are configured. Magpie and Pocket stay separate optional runtimes |
 | AgentYankers episode format | Implemented. Dry-run tones, or VibeVoice commentary when weights are configured. Laugh, stinger, bed, spectrogram, and cube revision |
-| Misaki 0.9.4+py314.1 | Implemented as English/Japanese/Chinese/Korean/Vietnamese and eSpeak G2P. It is never presented as a waveform engine |
+| Misaki 0.9.4+py315.1 | Implemented as English/Japanese/Chinese/Korean/Vietnamese and eSpeak G2P. It is never presented as a waveform engine |
 | Node HTTP process | Not started by import. URL helpers plus `python -m gen_audio.node_http` |
 | Tauri desktop card viewport | Implemented. Agent is a persona and Voice is a TTS model. Library tiles play a WAV when the file loads. The spectrogram panel follows that profile. The pipeline cube card stays a fixture; the spatial slide draws library cube JSON when a clip has one |
 | Stateless MCP (`gen-audio-mcp`) | Implemented (stdio and loopback HTTP) |
@@ -228,11 +228,11 @@ python -m gen_audio.cli.agent_yankers plan \
 
 ## Install
 
-Python 3.14 is required (`requires-python = ">=3.14,<3.15"`). Install it from [python.org](https://www.python.org/downloads/) or with uv:
+Python 3.15.2 is required (`requires-python = ">=3.15,<3.16"`). Install it from [python.org](https://www.python.org/downloads/) or with uv:
 
 ```bash
-uv python install 3.14
-uv venv --python 3.14 .venv
+uv python install 3.15.2
+uv venv --python 3.15.2 .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
@@ -277,7 +277,7 @@ model asset independently. Do not commit model files here. `.gitignore` ignores
 
 The `vibevoice` extra is the locked VibeVoice-1.5B inference runtime (torch
 2.14.1+cpu from the PyTorch CPU index, Transformers `>=5.17,<6`, Accelerate
-1.15.0, Diffusers 0.39.0, librosa). Native packages resolve to CPython 3.14
+1.15.0, Diffusers 0.39.0, librosa). Native packages resolve to CPython 3.15.2
 wheels for Linux x86_64 and Windows AMD64; pure-Python Misaki dependencies may
 use hash-locked source archives:
 
@@ -404,7 +404,7 @@ Health: `http://<node>:8002/genaid-audio/health`
 
 ## Scripts
 
-Windows tooling has seven canonical entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend an existing entry point with a parameter instead of adding an arbitrary script: `scripts/test.ps1` fails on scripts outside its explicit allowlist, including untracked and gitignored files such as anything under `artifacts/`.
+Windows tooling uses a small set of canonical entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend an existing entry point with a parameter instead of adding an arbitrary script: `scripts/test.ps1` fails on scripts outside its explicit allowlist, including untracked and gitignored files such as anything under `artifacts/`.
 
 | Entry point | What it does |
 |---|---|
@@ -412,7 +412,9 @@ Windows tooling has seven canonical entry points. Each one runs under Windows Po
 | `scripts\run.ps1 -Service Mcp\|Node\|Desktop\|Preview [-Port n] [-Check]` | Launches against checkout-local `models/`, `.venv/` and `artifacts/runtime/`. Native desktop children inherit the same configuration. `-Check` prints the launch plan without side effects. |
 | `scripts\build-tauri-windows.ps1 [-Mode Full\|NoBundle] [-CertificateThumbprint thumb]` | The only build path. Imports the MSVC environment (`Import-VsDevEnv`), checks every locked library WAV, builds and handshakes both `gen-audio-mcp` and `gen-audio-acp`, hash-checks their `externalBin` staging, runs `npm ci`, and invokes the locally installed Tauri CLI. `Full` (default) builds and verifies NSIS/MSI payloads first, then creates MSIX and NuGet packages from those exact proven hashes. `NoBundle` runs `tauri build --no-bundle`, which still embeds `frontendDist`. Packages default to unsigned; an operator may opt into signing with an existing code-signing certificate. The build judges `dist`, `gen-audio.exe`, installer payloads and the staged sidecars by content, never mtime, and prints `BUILD_OK` only after every output and provenance gate passes. Every run, failed ones included, saves its transcript to `target/logs/build-<sha>-<timestamp>.log`. |
 | `scripts\pack-windows-msix-nuget.ps1` | Allowlisted packaging helper called by `build-tauri-windows.ps1 -Mode Full` after NSIS/MSI verification. It creates `bundle\msix` and `bundle\nuget` from verified `gen-audio.exe`, MCP and ACP release binaries, rechecks archive payload hashes, and signs both only when `-CertificateThumbprint` names an existing certificate with a private key. |
-| `scripts\test.ps1 [-Tag name] [-Skip Pssa,Sprawl,Regen,Cargo,Npm,Python] [-SprawlExclude path] [-FromLock \| -WithWav]` | An EOL preflight first (`git ls-files --eol`: a tracked file with `eol=lf` in `.gitattributes` but CRLF in the working copy fails the run, is listed, and the fix is printed; nothing is rewritten), then PSScriptAnalyzer 1.24.0 with `PSScriptAnalyzerSettings.psd1` (any finding fails), the sprawl gate, a regen check (reruns the `build_assets` and `asset_vectors` examples and `cube_revision.py manifest`, then `git diff --exit-code` over `assets.json`, `manifest.json`, `assets.dev.json`, `media.lock.json`, `fixtures_v1.json`, `v1.json` and `viewport.{example,release}.json`; a missing gitignored library WAV fails the step, and `-FromLock` (CI) takes the WAV facts from `schemas/asset-object/media.lock.json`; PNGs are checked by pixels in pytest because zlib-ng makes their bytes vary), `cargo test --workspace`, `npm test` and `tsc --noEmit` in `apps/desktop`, and `pytest`. `-WithWav` is the merge check that the PR template requires. It first proves the staged WAVs are the `media.lock.json` bytes (Wavs step), then runs pytest with `GEN_AUDIO_REQUIRE_WAVS=1`, so a WAV test that would skip fails instead: the byte-for-byte cube regeneration, inv_hdr and strip tests must run. Prints a `TEST_SUMMARY` line. Logs go to `artifacts/test-logs/`. |
+| `wingen.audio.exe` | Self-contained .NET 11 Windows-native execution host. C# owns worker HTTP, JSON limits, atomic artifact promotion, and MXC execution; F# owns worker contracts and placement scoring. `worker` drives the `/v1` model-worker API, while `mxc probe` and `mxc run` use DarbotLM/MXC ProcessContainer or WSLC directly. |
+| `scripts\cluster.ps1` / `scripts\model_clients.ps1` | PowerShell 7 production control plane. Cluster control adds CIM, GPU, volume, worker, path, and native-host inventory with SSH and fallback. Model clients prefer `wingen.audio.exe` when available and retain PowerShell HTTP as a resilient extension path. |
+| `scripts\test.ps1 [-Tag name] [-Skip Pssa,Sprawl,Pester,Regen,Cargo,Npm,Python] [-SprawlExclude path] [-FromLock \| -WithWav]` | Runs an EOL preflight, PSScriptAnalyzer 1.24.0, the script-sprawl gate, native Pester 5.7 contracts under `tests/powershell`, generated-output verification, `cargo test --workspace`, the desktop TypeScript/release gates, and pytest only for production behavior that remains in Python. Pester tests use PowerShell's `TestDrive` and clean up automatically. The pytest step receives a unique `--basetemp`, disables its repository cache, and removes that directory in `finally` on both pass and failure. `-FromLock` uses locked WAV facts in CI; `-WithWav` proves staged WAV bytes and sets `GEN_AUDIO_REQUIRE_WAVS=1`. Logs go to `artifacts/test-logs/`. |
 | `scripts\mcp-call.ps1 -Tool <name> [-ArgsJson <json>] [-Port <n>]` | One MCP `tools/call` over HTTP. Finds the server from `-Port`, `GEN_AUDIO_MCP_ADDR`, `127.0.0.1:8765`, then the loopback ports a `gen-audio` process listens on, and checks `initialize` says `gen-audio`. Example: `scripts\mcp-call.ps1 -Tool ui_navigate -ArgsJson '{"slide":"slide:library"}'`. |
 | `scripts\ui-shot.ps1 -Out <png>` | Captures the Gen-Audio window with Win32 `PrintWindow`. No input injection and no screen-scrape fallback. Fails on a blank capture and prints the PNG's sha256. |
 
@@ -450,13 +452,19 @@ docs/SERVE_APIM.md
 
 ## Tests
 
-```bash
-pip install -e ".[dev]"
-pytest
+```powershell
+pwsh -NoProfile -File .\scripts\test.ps1
 ```
 
-The tests synthesize tones in memory. They do not load kokoro-onnx and they do not need model files. A real kokoro render is a manual step once the ONNX files are on disk.
+PowerShell, build-script, runner, and native runtime orchestration contracts run
+in the Pester modules under `tests/powershell`. Pytest covers only Python
+production behavior with an ephemeral temporary directory; it does not
+reimplement PowerShell process tests. A real kokoro render is a manual step once
+the ONNX files are on disk.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+
+> Python ABI note: Gen-Audio control/orchestration requires CPython 3.15.2. VibeVoice and PersonaPlex resident GPU processes currently remain isolated on their upstream CPython 3.12 + CUDA runtimes because published PyTorch/Sphinx binaries do not yet provide cp315. Kokoro-ONNX remains a separately isolated CPython 3.15.2 worker until ONNX Runtime publishes cp315 wheels.

@@ -225,7 +225,7 @@ export const VOICE_MODELS: VoiceModel[] = [
     waveform: true,
     synthAdapter: true,
     unavailable: false,
-    note: "Python 3.14 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",
+    note: "Python 3.15.2 Kokoro 0.9.4 path with shared KModel, Misaki G2P, and local or opt-in HF weights.",
   },
   {
     id: "misaki",

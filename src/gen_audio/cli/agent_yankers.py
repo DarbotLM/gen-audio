@@ -14,7 +14,7 @@ from gen_audio.shows.agent_yankers.manifest import assemble_episode, load_episod
 from gen_audio.shows.agent_yankers.models import load_highlights, load_marks, load_premise, load_voiceover
 from gen_audio.shows.agent_yankers.schema import dump_json, load_schema, read_json, validate_instance
 from gen_audio.shows.agent_yankers.session import StubLiveKitTransport
-from gen_audio.shows.agent_yankers.voiceover import StubVibeVoiceShowAudio
+from gen_audio.shows.agent_yankers.voiceover import VibeVoiceShowAudio
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -133,7 +133,7 @@ def _probe(_args) -> int:
         dump_json(
             {
                 "livekit": StubLiveKitTransport().probe().as_dict(),
-                "vibevoice": StubVibeVoiceShowAudio().probe().as_dict(),
+                "vibevoice": VibeVoiceShowAudio().probe().as_dict(),
             }
         )
     )

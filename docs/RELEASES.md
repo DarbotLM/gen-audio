@@ -28,7 +28,7 @@ asset/cube validation stack.
   LiveVoice, Magpie, and Pocket TTS adapters, with explicit refusal paths when
   a runtime or model is unavailable.
 - Optional DarbotLM Kokoro 0.9.4, kokoro-onnx 0.6.1, and Misaki
-  0.9.4+py314.1 Python 3.14 wheels, including multi-language G2P, timed and
+  0.9.4+py315.1 Python 3.15.2 wheels, including multi-language G2P, timed and
   continuous ONNX output, streaming, provider selection, local checkpoints,
   and weighted voice blends.
 - A Tauri desktop app with a release-only card viewport, voice/persona
@@ -61,7 +61,7 @@ The `v0.1.0` GitHub release contains:
 
 | Asset | Use |
 |---|---|
-| `gen_audio-0.1.0-py3-none-any.whl` | Installable Python 3.14 package. |
+| `gen_audio-0.1.0-py3-none-any.whl` | Installable Python 3.15.2 package. |
 | `gen_audio-0.1.0.tar.gz` | Python source distribution. |
 | `Gen-Audio_0.1.0_x64-setup.exe` | Windows NSIS installer. |
 | `Gen-Audio_0.1.0_x64_en-US.msi` | Windows MSI installer. |
@@ -84,16 +84,16 @@ named code-signing certificate already present in a Windows certificate store.
 
 ### DarbotLM speech assets
 
-The paired speech-fork release is pinned at
-`py314-2026.11.22`:
+Misaki and Kokoro are pinned at `py315-2026.11.24`; Kokoro-ONNX remains on the
+isolated ABI release `py314-2026.11.22` until ONNX Runtime publishes cp315 wheels.
 
 | Repository | Version | Required release assets |
 |---|---:|---|
-| `DarbotLM/misaki` | `0.9.4+py314.1` | wheel, sdist, `provenance.json`, `SHA256SUMS.txt` |
-| `DarbotLM/kokoro` | `0.9.4` | Python wheel/sdist, npm package, production web ZIP, provenance/checksums |
-| `DarbotLM/kokoro-onnx` | `0.6.1` | wheel, sdist, `provenance.json`, `SHA256SUMS.txt` |
+| `DarbotLM/misaki` (`py315`) | `0.9.4+py315.1` | wheel, sdist, `SHA256SUMS.txt` |
+| `DarbotLM/kokoro` (`py315`) | `0.9.4` | Python wheel/sdist, `SHA256SUMS.txt` |
+| `DarbotLM/kokoro-onnx` (`py314`) | `0.6.1` | isolated wheel/sdist, `provenance.json`, `SHA256SUMS.txt` |
 
-All three repositories are private. A user installing the optional Kokoro
+These repositories are private. A user installing the optional Kokoro
 extras must authenticate with `gh auth login` before running the supported
 toolbox installer. Do not copy a token or a wheel into this repository. Public
 `gen-audio` CI cannot anonymously fetch these direct URLs unless the hosting

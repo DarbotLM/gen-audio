@@ -62,9 +62,9 @@ ENGINES: dict[str, EngineSpec] = {
         kind="g2p",
         status="library",
         summary=(
-            "DarbotLM Misaki 0.9.4+py314.1 grapheme-to-phoneme for English, "
+            "DarbotLM Misaki 0.9.4+py315.1 grapheme-to-phoneme for English, "
             "Japanese, Chinese, Korean, and Vietnamese plus eSpeak languages. "
-            "Transformer G2P stays disabled on Python 3.14; no waveform is emitted."
+            "Transformer G2P stays disabled on Python 3.15.2; no waveform is emitted."
         ),
     ),
     "vibevoice": EngineSpec(
@@ -73,8 +73,17 @@ ENGINES: dict[str, EngineSpec] = {
         status="implemented",
         summary=(
             "VibeVoice 1.5B adapter. Calls the processor with voice_samples and "
-            "generate with cfg_scale, DDPM steps, and the tokenizer. 7B is "
-            "GPU-only. Weights are not bundled."
+            "generate with cfg_scale, DDPM steps, and the tokenizer. 7B uses an "
+            "isolated CUDA + host-RAM worker. Weights are not bundled."
+        ),
+    ),
+    "personaplex": EngineSpec(
+        id="personaplex",
+        kind="speech_to_speech",
+        status="implemented",
+        summary=(
+            "PersonaPlex 7B through a resident hybrid Moshi/Mimi worker and DLM "
+            "Speech. Requires mono 24 kHz PCM16 input and a raw WAV voice reference."
         ),
     ),
     "magpie": EngineSpec(

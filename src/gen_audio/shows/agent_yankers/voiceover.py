@@ -1,10 +1,4 @@
-"""VibeVoice host lines and the show's laughter and stinger beds.
-
-Host cues would be spoken by VibeVoice. This package does not call that
-runtime, so the stub refuses and writes no file. Laughter and stingers are
-show beds: when ``GEN_AUDIO_AGENT_YANKERS_SFX_DIR`` contains ``<sfx_id>.wav``
-the stub copies that file. It does not synthesize a laugh or a stinger.
-"""
+"""VibeVoice host lines and the show's laughter and stinger beds."""
 
 from __future__ import annotations
 
@@ -52,23 +46,21 @@ class ShowAudio(Protocol):
         """Write ``output`` or raise ``IntegrationUnavailable`` without creating it."""
 
 
-class StubVibeVoiceShowAudio:
-    """Host lines stay unwired. SFX beds are copied only when the file is already there."""
+class VibeVoiceShowAudio:
+    """VibeVoice-backed host renderer with copied, pre-existing SFX beds."""
 
     integration = "vibevoice"
 
     def probe(self) -> TransportProbe:
         missing = _host_missing()
         sfx = os.environ.get(SFX_DIR_ENV, "").strip()
-        if not sfx:
-            missing.append(f"{SFX_DIR_ENV} is unset")
-        elif not Path(sfx).is_dir():
+        if sfx and not Path(sfx).is_dir():
             missing.append(f"{SFX_DIR_ENV} is not a directory")
         return TransportProbe(
             integration=self.integration,
-            runnable=False,
+            runnable=not missing,
             missing=tuple(missing),
-            credentials_present=bool(os.environ.get(VIBEVOICE_MODEL_ENV, "").strip()),
+            credentials_present=True,
         )
 
     def render(self, cue: Cue, output: Path) -> RenderResult:
@@ -81,21 +73,50 @@ class StubVibeVoiceShowAudio:
                 self.integration,
                 [f"refusing to overwrite {output.name}"],
             )
+        if cue.role == "host":
+            if not cue.text:
+                raise IntegrationUnavailable(self.integration, ["host cue has no text"])
+            missing = _host_missing()
+            if missing:
+                raise IntegrationUnavailable(self.integration, missing)
+            from gen_audio.adapters import EngineRefusal, synthesize
+            from gen_audio.cast import CastMap, Turn, VoiceAssignment
+
+            voice = os.environ.get("GEN_AUDIO_AGENT_YANKERS_HOST_VOICE", "en-Carter_man").strip()
+            assignment = VoiceAssignment(
+                "1",
+                "Host",
+                voice,
+                "en-us",
+                1.0,
+                framework="vibevoice",
+                voice_id=f"vibevoice.{voice}",
+            )
+            cast = CastMap("vibevoice", "en-us", 1.0, {"1": assignment})
+            try:
+                synthesize("vibevoice", [Turn("1", cue.text, None, 1)], cast, output)
+            except EngineRefusal as exc:
+                raise IntegrationUnavailable(self.integration, exc.missing) from exc
+            return RenderResult(
+                cue_id=cue.id,
+                role=cue.role,
+                source="vibevoice",
+                status="rendered",
+                output=output.name,
+                synthesized_speech=True,
+            )
         raise IntegrationUnavailable(self.integration, _host_missing() + _sfx_missing(cue))
 
 
 def _host_missing() -> list[str]:
-    missing: list[str] = []
-    if not _module_present("torch"):
-        missing.append("PyTorch is not installed")
-    if not _module_present("vibevoice"):
-        missing.append("vibevoice package is not installed")
-    model = os.environ.get(VIBEVOICE_MODEL_ENV, "").strip()
-    if not model:
-        missing.append(f"{VIBEVOICE_MODEL_ENV} is unset (expected a local VibeVoice-1.5B directory)")
-    elif not Path(model).is_dir():
-        missing.append(f"VibeVoice-1.5B weights are not a directory at {VIBEVOICE_MODEL_ENV}")
-    missing.append("Agent Yankers host lines are not wired to a VibeVoice render")
+    from gen_audio.adapters import probe
+
+    found = probe("vibevoice")
+    if found.available:
+        return []
+    missing = list(found.missing)
+    if not os.environ.get("GEN_AUDIO_VIBEVOICE_WORKER_URL", "").strip():
+        missing.append("host voiceover is not wired to a VibeVoice render")
     return missing
 
 
@@ -140,3 +161,6 @@ def _module_present(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ModuleNotFoundError, ValueError):
         return False
+
+
+StubVibeVoiceShowAudio = VibeVoiceShowAudio

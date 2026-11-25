@@ -18,7 +18,10 @@ from gen_audio.shows.agent_yankers.models import (
 )
 from gen_audio.shows.agent_yankers.runner import CallRunner
 from gen_audio.shows.agent_yankers.session import StubLiveKitTransport, build_session
-from gen_audio.shows.agent_yankers.voiceover import StubVibeVoiceShowAudio
+from gen_audio.shows.agent_yankers.voiceover import (
+    StubVibeVoiceShowAudio,
+    VibeVoiceShowAudio,
+)
 
 __all__ = [
     "AgentYankersError",
@@ -28,6 +31,7 @@ __all__ = [
     "SchemaError",
     "StubLiveKitTransport",
     "StubVibeVoiceShowAudio",
+    "VibeVoiceShowAudio",
     "assemble_episode",
     "build_session",
     "check_episode",

@@ -7,11 +7,21 @@ BeforeAll {
         param(
             [string]$File,
             [string[]]$Arguments,
-            [string]$WorkingDirectory
+            [string]$WorkingDirectory,
+            [hashtable]$Environment = @{}
         )
         Push-Location $WorkingDirectory
         $previousErrorAction = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
+        $saved = @{}
+        foreach ($name in $Environment.Keys) {
+            $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+            if ($null -eq $Environment[$name]) {
+                Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+            } else {
+                [Environment]::SetEnvironmentVariable($name, [string]$Environment[$name], 'Process')
+            }
+        }
         try {
             $output = @(& $File @Arguments 2>&1 | ForEach-Object { "$_" })
             return [pscustomobject]@{
@@ -19,6 +29,13 @@ BeforeAll {
                 Output = ($output -join [Environment]::NewLine)
             }
         } finally {
+            foreach ($name in $saved.Keys) {
+                if ($null -eq $saved[$name]) {
+                    Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+                } else {
+                    [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
+                }
+            }
             $ErrorActionPreference = $previousErrorAction
             Pop-Location
         }
@@ -316,5 +333,34 @@ Describe 'scripts/test.ps1 native-first documentation' {
         $fromLock = $help.Substring($help.IndexOf("`n  -FromLock"), $help.IndexOf("`n  -WithWav") - $help.IndexOf("`n  -FromLock"))
         $fromLock | Should -Match 'cubes'
         $fromLock | Should -Match 'hand-edited cube'
+    }
+
+    It 'lets WithWav turn only missing-WAV skips into failures' {
+        $python = @(Get-Command python3,python -ErrorAction SilentlyContinue | Select-Object -First 1)[0]
+        if (-not $python) { Set-ItResult -Skipped -Because 'Python is required to validate the remaining pytest WAV policy'; return }
+        $fixture = Join-Path $TestDrive 'pytest-policy'
+        New-Item -ItemType Directory -Path $fixture | Out-Null
+        Copy-Item -LiteralPath (Join-Path $script:RepoRoot 'tests\conftest.py') -Destination $fixture
+        @'
+import pytest
+def test_needs_wav():
+    pytest.skip("x.wav is gitignored and not staged here")
+def test_other_skip():
+    pytest.skip("needs PowerShell")
+'@ | Set-Content -LiteralPath (Join-Path $fixture 'test_probe.py') -Encoding UTF8
+        $arguments = @('-m', 'pytest', '-q', '-p', 'no:cacheprovider', '-o', 'addopts=')
+        $plain = Invoke-Captured -File $python.Source -Arguments ($arguments + @(
+            '--basetemp', (Join-Path $fixture 'plain-temp'), $fixture
+        )) -WorkingDirectory $fixture -Environment @{ GEN_AUDIO_REQUIRE_WAVS = $null }
+        $plain.ExitCode | Should -Be 0 -Because $plain.Output
+        $plain.Output | Should -Match '2 skipped'
+
+        $strict = Invoke-Captured -File $python.Source -Arguments ($arguments + @(
+            '--basetemp', (Join-Path $fixture 'strict-temp'), $fixture
+        )) -WorkingDirectory $fixture -Environment @{ GEN_AUDIO_REQUIRE_WAVS = '1' }
+        $strict.ExitCode | Should -Not -Be 0
+        $strict.Output | Should -Match '1 failed'
+        $strict.Output | Should -Match '1 skipped'
+        $strict.Output | Should -Match 'forbids this skip: x\.wav'
     }
 }

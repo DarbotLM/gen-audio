@@ -288,6 +288,53 @@ Describe 'build and packaging contracts' {
             Should -Match 'registry=https://registry\.npmjs\.org/'
     }
 
+    It 'keeps every release version and runtime announcement synchronized' {
+        $expectedMatch = [regex]::Match(
+            (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'Cargo.toml') -Raw),
+            '(?ms)^\[workspace\.package\]\s*$.*?^version\s*=\s*"([^"]+)"'
+        )
+        $expectedMatch.Success | Should -BeTrue
+        $expected = $expectedMatch.Groups[1].Value
+
+        $versions = @{
+            'pyproject.toml' = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'pyproject.toml') -Raw)
+            'src/gen_audio/__init__.py' = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\gen_audio\__init__.py') -Raw)
+            'uv.lock' = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'uv.lock') -Raw)
+        }
+        $package = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'apps\desktop\package.json') -Raw | ConvertFrom-Json
+        $packageLockJson = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'apps\desktop\package-lock.json') -Raw
+        $packageLock = if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $packageLockJson | ConvertFrom-Json -AsHashtable
+        } else {
+            Add-Type -AssemblyName System.Web.Extensions
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $serializer.MaxJsonLength = 20MB
+            $serializer.DeserializeObject($packageLockJson)
+        }
+        $tauri = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'apps\desktop\src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json
+        $versions['pyproject.toml'] | Should -Match "(?m)^version\s*=\s*`"$([regex]::Escape($expected))`""
+        $versions['src/gen_audio/__init__.py'] | Should -Match "__version__\s*=\s*`"$([regex]::Escape($expected))`""
+        $uvPackage = [regex]::Match(
+            $versions['uv.lock'],
+            '(?ms)^name = "gen-audio"\s*$.*?^version = "([^"]+)"'
+        )
+        $uvPackage.Success | Should -BeTrue
+        $uvPackage.Groups[1].Value | Should -Be $expected
+        $package.version | Should -Be $expected
+        $packageLock['version'] | Should -Be $expected
+        $packageLock['packages'][''].version | Should -Be $expected
+        $tauri.version | Should -Be $expected
+
+        foreach ($contract in @(
+            @{ Path = 'crates\gen-audio-mcp\src\lib.rs'; Key = 'serverInfo' },
+            @{ Path = 'crates\gen-audio-acp\src\lib.rs'; Key = 'agentInfo' }
+        )) {
+            $lines = Get-Content -LiteralPath (Join-Path $script:RepoRoot $contract.Path)
+            $line = $lines | Where-Object { $_ -match "`"$($contract.Key)`"" } | Select-Object -First 1
+            $line | Should -Match 'env!\("CARGO_PKG_VERSION"\)'
+        }
+    }
+
     It 'stores build transcripts and closes them in finally' {
         $text = Get-Content -LiteralPath $script:BuildScript -Raw
         $text | Should -Match 'Write-Output "BUILD_OK [^"]*log=\$buildLog'

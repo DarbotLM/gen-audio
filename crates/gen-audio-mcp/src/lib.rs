@@ -17,6 +17,7 @@ use gen_audio_core::serve::{self, health_url, node_base_url, ready_url};
 use serde_json::{json, Value};
 
 mod authoring;
+mod model_worker;
 
 #[derive(Clone, Debug)]
 pub struct ToolError {
@@ -114,6 +115,11 @@ pub fn smoke() -> Result<String, String> {
         "cube_revision",
         "serve_health",
         "connector_health",
+        "model_status",
+        "model_preflight",
+        "model_load",
+        "model_unload",
+        "model_generate",
         "fixture_tone",
         "list_connectors",
         "ui_navigate",
@@ -253,6 +259,11 @@ fn tool_defs() -> Vec<Value> {
         tool("connector_health", "Health for one connector id or the full roster of seven."),
         tool("list_connectors", "List connector ids and modes."),
         tool("list_engines", "List compare-list engines and whether this repo can synthesize with them."),
+        tool("model_status", "Read one resident VibeVoice/PersonaPlex 7B hybrid worker status."),
+        tool("model_preflight", "Check one 7B worker's exact checkpoint, CUDA, RAM, and runtime readiness."),
+        tool("model_load", "Load one isolated 7B model and keep it resident for subsequent generations."),
+        tool("model_unload", "Unload the currently resident VibeVoice or PersonaPlex 7B model."),
+        tool("model_generate", "Generate 24 kHz speech with the resident VibeVoice 7B or PersonaPlex 7B worker."),
         tool("fixture_tone", "Write a labeled sine WAV. Not speech and not a podcast."),
         tool("benchmark_reference", "Return 2026-10-06 compare figures. measuredHere is false."),
         tool("harness_plan", "Parse the sample script and return a harness-style plan. Does not synthesize."),
@@ -334,6 +345,27 @@ fn tool(name: &str, description: &str) -> Value {
         "spectrogram" => (
             json!({"before": {"type": "string"}, "after": {"type": "string"}}),
             json!(["before"]),
+        ),
+        "model_status" | "model_preflight" | "model_load" | "model_unload" => (
+            json!({"engine": {"type": "string", "enum": ["vibevoice", "personaplex"]}}),
+            json!(["engine"]),
+        ),
+        "model_generate" => (
+            json!({
+                "engine": {"type": "string", "enum": ["vibevoice", "personaplex"]},
+                "scriptText": {"type": "string", "maxLength": 8192},
+                "inputAudio": {"type": "string"},
+                "persona": {"type": "string", "maxLength": 8192},
+                "voiceRefs": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
+                "output": {"type": "string", "description": "Absolute or relative path under the configured durable output root."},
+                "maxNewTokens": {"type": "integer", "minimum": 1, "maximum": 1024},
+                "maxSeconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 60},
+                "timeoutSeconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 1800},
+                "seed": {"type": "integer", "minimum": 0},
+                "cfgScale": {"type": "number", "minimum": 0, "maximum": 4},
+                "inferenceSteps": {"type": "integer", "minimum": 1, "maximum": 50}
+            }),
+            json!(["engine"]),
         ),
         "serve_health" => (
             json!({"host": {"type": "string"}, "port": {"type": "integer"}, "probe": {"type": "boolean"}}),
@@ -444,6 +476,15 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
         "serve_health" => serve_health(&args)?,
         "connector_health" => connector_health(&args)?,
         "list_connectors" => json!({"connectors": health_all()}),
+        "model_status" => model_worker::call("status", &args).map_err(|error| (-32602, error))?,
+        "model_preflight" => {
+            model_worker::call("preflight", &args).map_err(|error| (-32602, error))?
+        }
+        "model_load" => model_worker::call("load", &args).map_err(|error| (-32602, error))?,
+        "model_unload" => model_worker::call("unload", &args).map_err(|error| (-32602, error))?,
+        "model_generate" => {
+            model_worker::call("generate", &args).map_err(|error| (-32602, error))?
+        }
         "list_engines" => {
             json!({"liveSynth": false, "weightsBundled": false, "engines": engines::engines()})
         }
@@ -512,6 +553,21 @@ fn allowed_arguments(name: &str) -> &'static [&'static str] {
         "spectrogram" => &["before", "after"],
         "cube_revision" => &["input", "output", "maxSteps"],
         "serve_health" => &["host", "port", "probe"],
+        "model_status" | "model_preflight" | "model_load" | "model_unload" => &["engine"],
+        "model_generate" => &[
+            "engine",
+            "scriptText",
+            "inputAudio",
+            "persona",
+            "voiceRefs",
+            "output",
+            "maxNewTokens",
+            "maxSeconds",
+            "timeoutSeconds",
+            "seed",
+            "cfgScale",
+            "inferenceSteps",
+        ],
         "connector_health" => &["id"],
         "list_connectors"
         | "list_engines"

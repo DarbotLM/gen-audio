@@ -81,7 +81,7 @@ module never invokes the speech bridge or a local model worker.
 `script_analyze`, `draft_plan`, `draft_generate`, `synth`, `improve`,
 `spectrogram`, `cube_revision`, `serve_health`, `connector_health`,
 `list_connectors`, `list_engines`, `fixture_tone`, `benchmark_reference`,
-`harness_plan`.
+`harness_plan`, `model_status`, `model_preflight`, `model_load`, `model_unload`, `model_generate`.
 
 `serve_health` builds `http://<host>:8002/genaid-audio/health`. An unprobed row sets `healthy` and `probed` to false and does not set `ok`, so `isError` stays false without claiming the node is up. A probe sets `healthy` only when the JSON body has `"service": "genaid-audio"`. `GET /health` on the MCP port is the MCP process, not the node speech route. That body says `"service": "gen-audio-mcp"`. `initialize` accepts protocol versions `2024-11-05` and `2025-03-26` and stores no session. The harness `cast_resolved` event reads `voices/cast_map.example.json` and sets `synthesized` to false. ACP `session/new` requires `cwd` and does not open that directory. Its typed session-store interface explicitly advertises process-lifetime in-memory semantics in the default binary; durable stores can be injected without changing protocol handling. Intent plugins are registry-validated, and unrecognized prompts return an unsupported-intent error instead of falling back to a fake list action.
 

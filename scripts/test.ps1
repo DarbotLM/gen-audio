@@ -35,7 +35,7 @@ Steps, in order (skip any with -Skip):
           locked bytes.
   Cargo   cargo test --workspace (Windows; elsewhere the Tauri crate is excluded,
           the same as the Linux CI job, because it needs the GTK/WebKit libs).
-  Npm     apps/desktop: npm test, tsc --noEmit, npm run build, then
+  Npm     apps/desktop: npm test, npm run build (includes tsc --noEmit), then
           the native PowerShell dist release gate under scripts/lib.
           Windows CI skips Npm, so this is what makes the local script able
           to catch a dist-gate failure CI would catch.
@@ -468,8 +468,6 @@ Invoke-Step 'Npm' {
         }
         $code = Invoke-Logged -Log $log -File 'npm' -Arguments @('test')
         if ($code -ne 0) { throw "npm test exit $code" }
-        $code = Invoke-Logged -Log $log -File 'npx' -Arguments @('--no-install', 'tsc', '--noEmit', '-p', '.')
-        if ($code -ne 0) { throw "tsc --noEmit exit $code" }
         $code = Invoke-Logged -Log $log -File 'npm' -Arguments @('run', 'build')
         if ($code -ne 0) { throw "npm run build exit $code" }
     } finally {
@@ -481,7 +479,7 @@ Invoke-Step 'Npm' {
         $releaseHits | Add-LogLine -Log $log | Out-Host
         throw "release gate findings=$($releaseHits.Count)"
     }
-    'npm test + tsc --noEmit + native PowerShell dist release gate ok'
+    'npm test + npm run build + native PowerShell dist release gate ok'
 }
 
 $failed = @($results | Where-Object { $_.Result -eq 'FAIL' })

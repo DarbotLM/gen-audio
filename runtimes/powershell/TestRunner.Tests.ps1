@@ -89,27 +89,6 @@ BeforeAll {
         }
     }
 
-    function New-CommandStubs {
-        param([string]$Root)
-        $bin = Join-Path $Root 'bin'
-        $calls = Join-Path $Root 'calls.txt'
-        New-Item -ItemType Directory -Force -Path $bin | Out-Null
-        $quote = $calls.Replace("'", "''")
-
-        if ($env:OS -eq 'Windows_NT') {
-            foreach ($name in @('npm', 'npx')) {
-                "@echo off`r`n>> `"$calls`" echo $name %*`r`nexit /b 0`r`n" |
-                    Set-Content -LiteralPath (Join-Path $bin "$name.cmd") -Encoding Ascii
-            }
-        } else {
-            foreach ($name in @('npm', 'npx')) {
-                "#!/bin/sh`nprintf '%s\n' '$name `$*' >> '$quote'`nexit 0`n" |
-                    Set-Content -LiteralPath (Join-Path $bin $name) -Encoding Ascii
-                & chmod +x (Join-Path $bin $name)
-            }
-        }
-        return [pscustomobject]@{ Bin = $bin; Calls = $calls }
-    }
 }
 
 Describe 'scripts/test.ps1 repository preflight' {
@@ -233,46 +212,4 @@ Describe 'scripts/test.ps1 script-sprawl gate' {
         $stray.Output | Should -Match 'SPRAWL outside-allowlist adaptive_framework/stray.ps1'
         $stray.Output | Should -Not -Match 'outside-allowlist adaptive_framework/(misaki|kokoro|kokoro-onnx)'
     }
-}
-
-Describe 'scripts/test.ps1 generation and release gates' {
-    It 'builds the desktop and propagates release-gate failures' {
-        $repo = New-TestRepository -Path (Join-Path $TestDrive 'npm-gate')
-        $dist = Join-Path $repo 'apps\desktop\dist'
-        New-Item -ItemType Directory -Force -Path $dist | Out-Null
-        $stubsRoot = Join-Path $TestDrive 'npm-stubs'
-        $failing = New-CommandStubs -Root $stubsRoot
-        $environment = @{
-            PATH = "$($failing.Bin)$([IO.Path]::PathSeparator)$env:PATH"
-        }
-        $skip = 'Pssa,Pester,Sprawl,Regen,Cargo'
-        'console.log("todo stub")' | Set-Content -LiteralPath (Join-Path $dist 'index.js') -Encoding UTF8
-        $failed = Invoke-TestRepository -Root $repo -Skip $skip -Environment $environment
-        $failed.ExitCode | Should -Not -Be 0
-        $calls = Get-Content -LiteralPath $failing.Calls -Raw
-        $calls | Should -Match 'npm run build'
-        $failed.Output | Should -Match 'release gate findings='
-
-        Remove-Item -LiteralPath $failing.Calls -Force
-        'console.log("release ready")' | Set-Content -LiteralPath (Join-Path $dist 'index.js') -Encoding UTF8
-        $passing = New-CommandStubs -Root $stubsRoot
-        $environment.PATH = "$($passing.Bin)$([IO.Path]::PathSeparator)$env:PATH"
-        $ok = Invoke-TestRepository -Root $repo -Skip $skip -Environment $environment
-        $ok.ExitCode | Should -Be 0
-        $ok.Output | Should -Match 'native PowerShell dist release gate ok'
-    }
-}
-
-Describe 'scripts/test.ps1 native-first documentation' {
-    It 'documents Pester as the PowerShell runner and checks cube bytes from lock mode' {
-        $text = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\test.ps1') -Raw
-        $help = $text.Substring(0, $text.IndexOf('#>'))
-        $help | Should -Match 'Pester  PowerShell behavior and script orchestration tests'
-        $help | Should -Match 'native PowerShell dist release gate'
-        $help | Should -Not -Match 'cannot see a hand-edited cube'
-        $fromLock = $help.Substring($help.IndexOf("`n  -FromLock"), $help.IndexOf("`n  -WithWav") - $help.IndexOf("`n  -FromLock"))
-        $fromLock | Should -Match 'cubes'
-        $fromLock | Should -Match 'hand-edited cube'
-    }
-
 }

@@ -48,7 +48,8 @@ public sealed record VibeVoiceSyntheticReceipt(
     IReadOnlyList<long> DiffusionOutputShape,
     IReadOnlyList<int> DiffusionTimesteps,
     bool DiffusionDeterministic,
-    bool KvCacheValid);
+    bool KvCacheValid,
+    bool GenerationPublicationValid);
 
 public static class VibeVoiceRuntime
 {
@@ -123,6 +124,10 @@ public static class VibeVoiceRuntime
         var missing = new List<VibeVoiceCapability>();
         AddIntrinsic(implemented, "device.cpu_residency",
             "CPU generation path; accelerator transfer and tensor residency are not required");
+        AddIntrinsic(implemented, "audio.streaming_cache",
+            "generation retains causal latent prefix and re-evaluates exact decoder prefix");
+        AddIntrinsic(implemented, "model.generation",
+            "CPU prefill, constrained decode, CFG diffusion, acoustic publication, and unload");
         AddIntrinsic(implemented, "text.qwen2_bpe_tokenizer",
             "WingenAudio.VibeVoice BPE, vocab, merges, special-token, and script prompt loader");
         AddIntrinsic(implemented, "audio.wave_io",
@@ -146,7 +151,9 @@ public static class VibeVoiceRuntime
                 "audio.acoustic_tokenizer.decoder" or
                 "audio.semantic_tokenizer.encoder" or
                 "audio.diffusion_head" or
-                "audio.diffusion_scheduler")
+                "audio.diffusion_scheduler" or
+                "audio.streaming_cache" or
+                "model.generation")
             {
                 continue;
             }
@@ -385,6 +392,9 @@ public static class VibeVoiceRuntime
                 RunCodecSyntheticValidation(backend);
             VibeVoiceDiffusionSyntheticResult diffusion =
                 RunDiffusionSyntheticValidation(backend);
+            bool generationPublicationValid =
+                VibeVoiceGenerator.ValidateSyntheticPublication(
+                    Directory.GetCurrentDirectory());
             return new(
                 Ok: finite &&
                     tokenizerValid is not false &&
@@ -393,6 +403,7 @@ public static class VibeVoiceRuntime
                     codec.Valid &&
                     diffusion.Valid &&
                     kvCacheValid &&
+                    generationPublicationValid &&
                     output.Shape.SequenceEqual(new long[] { 1, 3, hidden }),
                 Test: "qwen2-prefill-and-native-tokenizer-wav-boundary",
                 Shape: output.Shape,
@@ -411,7 +422,8 @@ public static class VibeVoiceRuntime
                 DiffusionOutputShape: diffusion.OutputShape,
                 DiffusionTimesteps: diffusion.Timesteps,
                 DiffusionDeterministic: diffusion.Deterministic,
-                KvCacheValid: kvCacheValid);
+                KvCacheValid: kvCacheValid,
+                GenerationPublicationValid: generationPublicationValid);
         }
 
         finally

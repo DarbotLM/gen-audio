@@ -173,10 +173,14 @@ public sealed class Qwen2BpeTokenizer
     public VibeVoicePrompt TokenizeScript(string script, IReadOnlyList<float[]> references24Khz)
     {
         VibeVoiceSpeakerScript parsed = VibeVoiceSpeakerScript.Parse(script);
-        if (references24Khz.Count != parsed.Speakers.Count)
+        int speakerCount = parsed.Speakers
+            .Select(line => line.Speaker)
+            .Distinct()
+            .Count();
+        if (references24Khz.Count != speakerCount)
         {
             throw new ArgumentException(
-                $"Reference count {references24Khz.Count} must match speaker count {parsed.Speakers.Count}.");
+                $"Reference count {references24Khz.Count} must match speaker count {speakerCount}.");
         }
 
         var ids = new List<int>();

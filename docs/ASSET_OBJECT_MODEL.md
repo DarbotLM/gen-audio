@@ -150,13 +150,13 @@ branch; the inferred branch remains for cube JSON without `downsample_sf_st`
 (the older library cubes took it before E4). The
 two-step order is normative: `157.134 s × 24000 = 3771215.9999999995`,
 `/ 96 = 39283.49999999999` → **39283** (vector `bin_frames_inferred`, asserted by
-cargo, npm and pytest). Exact rational arithmetic (or frames: 3,771,216 / 96 =
+cargo and npm). Exact rational arithmetic (or frames: 3,771,216 / 96 =
 39283.5) gives 39284. (Before E4 this pinned `lib-cube-explainer`'s cube uid,
 `ga:cube_ihdr:bcuw4m76pyqanslfiugnvlxnda`; that cube is now rev 3.)
 
 "The double product" in the other rows is one IEEE-754 binary64 multiply, so
 Rust, TS and Python get bit-identical inputs to the rounding step. Examples (all in
-`v1.json` → `rounding`, asserted by cargo test, npm test and pytest):
+`v1.json` → `rounding`, asserted by cargo test and npm test):
 24008 frames @ 16 kHz = 1500.5 ms exactly → **1501** (the tie); 33447 @ 24 kHz
 = 1393.625 → 1394; 12 @ 24 kHz = 0.5 → 1; 11 @ 24 kHz → 0. The mint vectors
 `clip_tie_half_ms_16k` and `clip_non_whole_ms_24k` carry `derived_from`
@@ -193,7 +193,7 @@ commit:
   through the cube JSON bytes.
 - No commit SHA is written into the cube JSON or `fields`. A rebase, squash or
   cherry-pick keeps every cube uid; editing the generator changes them after a
-  regen. `tests/test_cube_layers.py` and `build_assets` fail with "regenerate
+  regen. The Rust `build_assets` gate fails with "regenerate
   cubes" when the generator no longer hashes to the recorded value.
 - The commit is information only. `cube_revision.py manifest
   --record-generator-commit`, run after the regen is committed, writes the
@@ -211,7 +211,7 @@ commit:
   compare cubes' uids; editing cube_layers moves only the Library cubes'.
   Shared math (`preview_points`, `layers_to_points`, `layer_score`, the PNG)
   is imported from cube_layers, never copied: a copy would fork it silently
-  (`tests/test_cube_pipeline_r2.py` fails on one).
+  (the Rust asset contract fails on one).
 
 **Media roles (B2).** Each role appears **at most once** per envelope
 (`duplicate_media_role`; schema `contains` + `maxContains: 1` per role; also

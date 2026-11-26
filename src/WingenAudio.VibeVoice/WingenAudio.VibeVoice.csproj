@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PowerTorchProjectRoot Condition="'$(PowerTorchProjectRoot)' == '' and '$(WINGEN_POWERTORCH_ROOT)' != ''">$(WINGEN_POWERTORCH_ROOT)</PowerTorchProjectRoot>
+    <PowerTorchProjectRoot Condition="'$(PowerTorchProjectRoot)' == '' and Exists('G:\PowerTorch\PowerTorch.slnx')">G:\PowerTorch</PowerTorchProjectRoot>
+    <PowerTorchProjectRoot Condition="'$(PowerTorchProjectRoot)' == '' and Exists('D:\PowerTorch\PowerTorch.slnx')">D:\PowerTorch</PowerTorchProjectRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\WingenAudio.Contracts\WingenAudio.Contracts.fsproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Abstractions\PowerTorch.Abstractions.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Core\PowerTorch.Core.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Cpu\PowerTorch.Cpu.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.DirectML\PowerTorch.DirectML.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Serialization\PowerTorch.Serialization.csproj" />
+  </ItemGroup>
+  <Target Name="RequirePowerTorch" BeforeTargets="PrepareForBuild" Condition="'$(PowerTorchProjectRoot)' == '' or !Exists('$(PowerTorchProjectRoot)\PowerTorch.slnx')">
+    <Error Text="DarbotLM PowerTorch checkout not found. Set /p:PowerTorchProjectRoot=path or use G:\PowerTorch / D:\PowerTorch." />
+  </Target>
+</Project>

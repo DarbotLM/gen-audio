@@ -33,7 +33,7 @@
       "params_schema": "frameworks/vibevoice.v1.schema.json",
       "wired": true,
       "output_sample_rate": 24000,
-      "summary": "VibeVoice long-form TTS. 1.5B runs in-process on CPU; 7B runs in an isolated FP16 GPU + BF16 host-RAM hybrid worker with raw GENAID voice WAV references.",
+      "summary": "VibeVoice long-form TTS. 1.5B and 7B support explicit CPU, DirectML, CUDA, or hybrid execution policy with bounded memory placement and raw GENAID voice WAV references.",
       "models": [
         {
           "id": "1.5B",

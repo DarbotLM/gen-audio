@@ -7,6 +7,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);NETSDK1236</NoWarn>
     <PublishAot>false</PublishAot>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -14,13 +15,33 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <MxcSdkProject Condition="'$(MxcSdkProject)' == ''">$(MSBuildThisFileDirectory)..\..\..\mxc\sdk\dotnet\Microsoft.Mxc.Sdk\Microsoft.Mxc.Sdk.csproj</MxcSdkProject>
+    <PowerTorchProjectRoot Condition="'$(PowerTorchProjectRoot)' == '' and '$(WINGEN_POWERTORCH_ROOT)' != ''">$(WINGEN_POWERTORCH_ROOT)</PowerTorchProjectRoot>
+    <PowerTorchProjectRoot Condition="'$(PowerTorchProjectRoot)' == '' and Exists('G:\PowerTorch\PowerTorch.slnx')">G:\PowerTorch</PowerTorchProjectRoot>
+    <PowerTorchProjectRoot Condition="'$(PowerTorchProjectRoot)' == '' and Exists('D:\PowerTorch\PowerTorch.slnx')">D:\PowerTorch</PowerTorchProjectRoot>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\WingenAudio.Contracts\WingenAudio.Contracts.fsproj" />
+    <ProjectReference Include="..\WingenAudio.VibeVoice\WingenAudio.VibeVoice.csproj" />
     <ProjectReference Include="$(MxcSdkProject)" Condition="Exists('$(MxcSdkProject)')" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Abstractions\PowerTorch.Abstractions.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Core\PowerTorch.Core.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Cpu\PowerTorch.Cpu.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Cuda\PowerTorch.Cuda.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.DirectML\PowerTorch.DirectML.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Nn\PowerTorch.Nn.csproj" />
+    <ProjectReference Include="$(PowerTorchProjectRoot)\src\PowerTorch.Serialization\PowerTorch.Serialization.csproj" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(PowerTorchProjectRoot)\artifacts\native\Release\PowerTorch.DirectML.Native.dll')">
+    <None Include="$(PowerTorchProjectRoot)\artifacts\native\Release\PowerTorch.DirectML.Native.dll"
+          Link="PowerTorch.DirectML.Native.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="RequireMxcSdk" BeforeTargets="PrepareForBuild" Condition="!Exists('$(MxcSdkProject)')">
     <Error Text="Microsoft.Mxc.Sdk project not found at $(MxcSdkProject). Check out darbotlm/mxc beside gen-audio or pass /p:MxcSdkProject=path." />
+  </Target>
+  <Target Name="RequirePowerTorch" BeforeTargets="PrepareForBuild" Condition="'$(PowerTorchProjectRoot)' == '' or !Exists('$(PowerTorchProjectRoot)\PowerTorch.slnx')">
+    <Error Text="DarbotLM PowerTorch checkout not found. Set /p:PowerTorchProjectRoot=path or use G:\PowerTorch / D:\PowerTorch." />
   </Target>
 </Project>

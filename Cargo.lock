@@ -1367,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "gen-audio-acp"
-version = "0.2.0"
+version = "0.7.0"
 dependencies = [
  "gen-audio-connectors",
  "gen-audio-core",
@@ -1378,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "gen-audio-connectors"
-version = "0.2.0"
+version = "0.7.0"
 dependencies = [
  "gen-audio-core",
  "serde",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "gen-audio-core"
-version = "0.2.0"
+version = "0.7.0"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1399,7 +1399,7 @@ dependencies = [
 
 [[package]]
 name = "gen-audio-desktop"
-version = "0.2.0"
+version = "0.7.0"
 dependencies = [
  "gen-audio-connectors",
  "gen-audio-core",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "gen-audio-harness"
-version = "0.2.0"
+version = "0.7.0"
 dependencies = [
  "gen-audio-connectors",
  "gen-audio-core",
@@ -1424,7 +1424,7 @@ dependencies = [
 
 [[package]]
 name = "gen-audio-mcp"
-version = "0.2.0"
+version = "0.7.0"
 dependencies = [
  "gen-audio-connectors",
  "gen-audio-core",

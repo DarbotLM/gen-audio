@@ -404,21 +404,24 @@ Health: `http://<node>:8002/genaid-audio/health`
 
 ## Scripts
 
-Windows tooling uses a small set of canonical entry points. Each one runs under Windows PowerShell 5.1 and PowerShell 7, checks every native exit code, and exits non-zero on failure. Extend an existing entry point with a parameter instead of adding an arbitrary script: `scripts/test.ps1` fails on scripts outside its explicit allowlist, including untracked and gitignored files such as anything under `artifacts/`.
+Windows tooling uses a small set of canonical entry points. Compatibility scripts run under Windows PowerShell 5.1 and PowerShell 7; GPU/native worker and cube entry points use PowerShell 7. Each entry point checks every native exit code and exits non-zero on failure. Extend an existing entry point with a parameter instead of adding an arbitrary script: `scripts/test.ps1` fails on scripts outside its explicit allowlist, including untracked and gitignored files such as anything under `artifacts/`.
 
 | Entry point | What it does |
 |---|---|
 | `scripts\toolbox.ps1 -Step Node -RepoRoot <path>` | Fresh-node bootstrap: clone or preserve the checkout, install the complete framework and model files, build, test, persist local configuration, launch Node/MCP/preview, and verify health. |
 | `scripts\run.ps1 -Service Mcp\|Node\|Desktop\|Preview [-Port n] [-Check]` | Launches against checkout-local `models/`, `.venv/` and `artifacts/runtime/`. Native desktop children inherit the same configuration. `-Check` prints the launch plan without side effects. |
 | `scripts\build-tauri-windows.ps1 [-Mode Full\|NoBundle] [-CertificateThumbprint thumb]` | The only build path. Imports the MSVC environment (`Import-VsDevEnv`), checks every locked library WAV, builds and handshakes both `gen-audio-mcp` and `gen-audio-acp`, hash-checks their `externalBin` staging, runs `npm ci`, and invokes the locally installed Tauri CLI. `Full` (default) builds and verifies NSIS/MSI payloads first, then creates MSIX and NuGet packages from those exact proven hashes. `NoBundle` runs `tauri build --no-bundle`, which still embeds `frontendDist`. Packages default to unsigned; an operator may opt into signing with an existing code-signing certificate. The build judges `dist`, `gen-audio.exe`, installer payloads and the staged sidecars by content, never mtime, and prints `BUILD_OK` only after every output and provenance gate passes. Every run, failed ones included, saves its transcript to `target/logs/build-<sha>-<timestamp>.log`. |
+| `scripts\cube_layers.ps1 WAV OUT_JSON -Stem name -Engine engine [-Label text] [-Png OUT_PNG]` | PowerShell 7 operator entry point for Library rev-3 cube generation. `.NET 11`/F# owns WAV parsing, STFT, the four layers, preview selection, JSON, and native PNG output inside `wingen.audio.exe`; Python is not launched. |
 | `scripts\pack-windows-msix-nuget.ps1` | Allowlisted packaging helper called by `build-tauri-windows.ps1 -Mode Full` after NSIS/MSI verification. It creates `bundle\msix` and `bundle\nuget` from verified `gen-audio.exe`, MCP and ACP release binaries, rechecks archive payload hashes, and signs both only when `-CertificateThumbprint` names an existing certificate with a private key. |
-| `wingen.audio.exe` | Self-contained .NET 11 Windows-native execution host. C# owns worker HTTP, JSON limits, atomic artifact promotion, and MXC execution; F# owns worker contracts and placement scoring. `worker` drives the `/v1` model-worker API, while `mxc probe` and `mxc run` use DarbotLM/MXC ProcessContainer or WSLC directly. |
+| `wingen.audio.exe` | Self-contained .NET 11 Windows-native execution host. C# owns worker HTTP, JSON limits, atomic artifact promotion, PowerTorch runtime access, and MXC execution; F# owns worker contracts and placement scoring. `worker` drives the `/v1` model-worker API, `mxc` uses DarbotLM/MXC ProcessContainer or WSLC, and `powertorch probe` reports the pinned native tensor/runtime capabilities. |
 | `scripts\cluster.ps1` / `scripts\model_clients.ps1` | PowerShell 7 production control plane. Cluster control adds CIM, GPU, volume, worker, path, and native-host inventory with SSH and fallback. Model clients prefer `wingen.audio.exe` when available and retain PowerShell HTTP as a resilient extension path. |
-| `scripts\test.ps1 [-Tag name] [-Skip Pssa,Sprawl,Pester,Regen,Cargo,Npm,Python] [-SprawlExclude path] [-FromLock \| -WithWav]` | Runs an EOL preflight, PSScriptAnalyzer 1.24.0, the script-sprawl gate, native Pester 5.7 contracts under `tests/powershell`, generated-output verification, `cargo test --workspace`, the desktop TypeScript/release gates, and pytest only for production behavior that remains in Python. Pester tests use PowerShell's `TestDrive` and clean up automatically. The pytest step receives a unique `--basetemp`, disables its repository cache, and removes that directory in `finally` on both pass and failure. `-FromLock` uses locked WAV facts in CI; `-WithWav` proves staged WAV bytes and sets `GEN_AUDIO_REQUIRE_WAVS=1`. Logs go to `artifacts/test-logs/`. |
+| `scripts\plugins.ps1` | Native adapter registry and remoting boundary. VibeVoice 7B and PersonaPlex dispatch through `wingen.audio.exe`, with Windows `~\.ssh`, logged-in WSL SSH state, or PowerShell Remoting. `adapters.py` remains only as a compatibility bridge for not-yet-migrated engines. |
+| `scripts\contracts.ps1`, `scripts\execution.ps1`, `scripts\preflight.ps1`, `scripts\vibevoice.ps1` | PowerShell-native VibeVoice contract, placement, safetensors/tokenizer/WAV preflight, and generation orchestration. The entry point imports the pinned DarbotLM/PowerTorch binary module and fails closed with named capability gaps until every required 7B operator is implemented; it never launches Python. |
+| `scripts\test.ps1 [-Tag name] [-Skip Pssa,Sprawl,Pester,Regen,Cargo,Npm] [-SprawlExclude path] [-FromLock \| -WithWav]` | Runs an EOL preflight, PSScriptAnalyzer 1.24.0, the script-sprawl gate, native Pester 5.7 contracts under `runtimes/powershell`, generated-output verification, `cargo test --workspace`, the desktop TypeScript gates, and a native PowerShell dist release gate. Pester tests use PowerShell's `TestDrive` and clean up automatically. `-FromLock` uses locked WAV facts in CI; `-WithWav` proves staged WAV bytes. Logs go to `artifacts/test-logs/`. |
 | `scripts\mcp-call.ps1 -Tool <name> [-ArgsJson <json>] [-Port <n>]` | One MCP `tools/call` over HTTP. Finds the server from `-Port`, `GEN_AUDIO_MCP_ADDR`, `127.0.0.1:8765`, then the loopback ports a `gen-audio` process listens on, and checks `initialize` says `gen-audio`. Example: `scripts\mcp-call.ps1 -Tool ui_navigate -ArgsJson '{"slide":"slide:library"}'`. |
 | `scripts\ui-shot.ps1 -Out <png>` | Captures the Gen-Audio window with Win32 `PrintWindow`. No input injection and no screen-scrape fallback. Fails on a blank capture and prints the PNG's sha256. |
 
-`scripts/lib/devenv.ps1` holds the shared helpers (`Import-VsDevEnv`, `Invoke-Checked`) and is the only file that may source `vcvars64.bat`. The `scripts/*.py` files are thin CLI shims into `gen_audio.cli`. The Library cube JSON comes from `python scripts/cube_revision.py layers WAV OUT_JSON --stem STEM --engine ENGINE --label LABEL --png PNG` (every cube is rev 3, `layer_method` `library_r3`; the JSON records the WAV sha256 and the generator commit), and `python scripts/cube_revision.py manifest` rewrites the manifest's cube mirror from it. The Library manifest has one home, `apps/desktop/public/library/manifest.json`. Vite copies it into `dist` at build time.
+`scripts/lib/devenv.ps1` holds the shared helpers (`Import-VsDevEnv`, `Invoke-Checked`) and is the only file that may source `vcvars64.bat`. The remaining `scripts/*.py` files are compatibility shims into `gen_audio.cli`. Library rev-3 cube JSON/PNG comes from `scripts\cube_layers.ps1 WAV OUT_JSON -Stem STEM -Engine ENGINE [-Label LABEL] [-Png PNG]`; the F# generator records its own normalized source hash. The existing Python manifest command still synchronizes legacy cube blocks while the rest of manifest ownership moves native. The Library manifest has one home, `apps/desktop/public/library/manifest.json`. Vite copies it into `dist` at build time.
 
 ## Layout
 
@@ -434,7 +437,7 @@ src/gen_audio/          installable package
   node_http.py          loopback genaid-audio health, ready, and AgentYankers routes
   agentyankers/         AgentYankers rundown mix, consent, and VibeVoice commentary
   cube_revision.py      serial inv-HDR / BW95 / clip_frac sketch
-  cube_layers.py        four-layer Library cube; inv_hdr is rms/peak, layer_score the composite (cube_revision.py layers)
+  cube_layers.py        compatibility reference for the native F# Library rev-3 generator
   compare.py            measure existing WAVs
   engines.py            compare-list registry
   serve.py              per-node URL and health-body helpers
@@ -457,14 +460,14 @@ pwsh -NoProfile -File .\scripts\test.ps1
 ```
 
 PowerShell, build-script, runner, and native runtime orchestration contracts run
-in the Pester modules under `tests/powershell`. Pytest covers only Python
-production behavior with an ephemeral temporary directory; it does not
-reimplement PowerShell process tests. A real kokoro render is a manual step once
-the ONNX files are on disk.
+in the Pester modules under `runtimes/powershell`. Rust and TypeScript own
+product contract coverage; the Python runtime remains only behind production
+audio/model entry points. A real kokoro render is a manual step once the ONNX
+files are on disk.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
 
-> Python ABI note: Gen-Audio control/orchestration requires CPython 3.15.2. VibeVoice and PersonaPlex resident GPU processes currently remain isolated on their upstream CPython 3.12 + CUDA runtimes because published PyTorch/Sphinx binaries do not yet provide cp315. Kokoro-ONNX remains a separately isolated CPython 3.15.2 worker until ONNX Runtime publishes cp315 wheels.
+> Runtime cutover note: `plugins.ps1` and `wingen.audio.exe` own the Windows 7B control plane. VibeVoice and PersonaPlex can use explicit CPU, DirectML, CUDA, or hybrid placement; their upstream compute backend remains isolated only until the pinned PowerTorch graph reaches verified parity. Kokoro-ONNX remains separately isolated until its native runtime migration completes.

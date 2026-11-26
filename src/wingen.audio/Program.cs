@@ -11,6 +11,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using PowerTorch;
+using PowerTorch.Cpu;
+using PowerTorch.DirectML;
+using WingenAudio.VibeVoice;
 using WingenAudio.Contracts;
 
 return await WingenAudioHost.RunAsync(args);
@@ -40,7 +44,10 @@ internal static class WingenAudioHost
             return args[0] switch
             {
                 "version" => WriteVersion(),
+                "cube-layers" => RunCubeLayers(args[1..]),
                 "mxc" => await RunMxcAsync(args[1..]),
+                "powertorch" => RunPowerTorch(args[1..]),
+                "vibevoice" => RunVibeVoice(args[1..]),
                 "worker" => await RunWorkerAsync(args[1..]),
                 "worker-server" => await RunWorkerServerAsync(args[1..]),
                 "score" => RunScore(args[1..]),
@@ -69,6 +76,31 @@ internal static class WingenAudioHost
             runtime = Environment.Version.ToString(),
             platform = Environment.OSVersion.VersionString,
             mxc = MxcPlatform.NativeVersion,
+        }, JsonOptions));
+        return 0;
+    }
+
+    private static int RunCubeLayers(string[] args)
+    {
+        var options = ParseOptions(args);
+        var result = CubeLayers.Generate(
+            Require(options, "input"),
+            Require(options, "output"),
+            options.GetValueOrDefault("png") ?? string.Empty,
+            Require(options, "stem"),
+            Require(options, "engine"),
+            options.GetValueOrDefault("label") ?? string.Empty,
+            options.GetValueOrDefault("repo-root") ?? Directory.GetCurrentDirectory());
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            ok = true,
+            output = result.OutputPath,
+            png = result.PngPath?.Value,
+            result.SourceSha256,
+            pointCount = result.PointCount,
+            cubeShape = new[] { result.CubeShape.Item1, result.CubeShape.Item2 },
+            durationSeconds = result.DurationSeconds,
+            invHdr = result.InvHdr,
         }, JsonOptions));
         return 0;
     }
@@ -251,6 +283,11 @@ internal static class WingenAudioHost
         var receipt = JsonNode.Parse(responseBody) as JsonObject
             ?? throw new JsonException("Worker returned a non-object response.");
         ValidateReceipt(action, receipt);
+        if (receipt["ok"]?.GetValue<bool>() == false)
+        {
+            Console.WriteLine(receipt.ToJsonString(JsonOptions));
+            return 2;
+        }
         if (action == WorkerAction.Generate && options.TryGetValue("output", out var output))
         {
             var source = Path.GetFullPath(receipt["output"]?.GetValue<string>()
@@ -280,6 +317,69 @@ internal static class WingenAudioHost
 
         Console.WriteLine(receipt.ToJsonString(JsonOptions));
         return receipt["ok"]?.GetValue<bool>() == false ? 2 : 0;
+    }
+
+    private static int RunPowerTorch(string[] args)
+    {
+        if (args.Length != 0 && args[0] != "probe")
+        {
+            throw new ArgumentException($"Unknown PowerTorch command '{args[0]}'.");
+        }
+
+        var cpu = new CpuBackend().GetCapabilities();
+        using var directMl = DirectMLBackend.Create();
+        directMl.SelfTest();
+        var accelerator = directMl.GetCapabilities();
+        var cuda = new PowerTorch.BackendCapability(
+            Device.Cuda(),
+            "PowerTorch.Cuda",
+            "native CUDA backend not implemented",
+            false,
+            [],
+            new Dictionary<string, bool>());
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            ok = cpu.IsAvailable && accelerator.IsAvailable,
+            runtime = Environment.Version.ToString(),
+            pin = "8ff5b4f5e8e4bde8ae2853015d2bc0add197f6f1",
+            cpu,
+            directMl = accelerator,
+            cuda,
+        }, JsonOptions));
+        return cpu.IsAvailable && accelerator.IsAvailable ? 0 : 2;
+    }
+
+    private static int RunVibeVoice(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            throw new ArgumentException("vibevoice requires capability or synthetic.");
+        }
+
+        if (args[0] == "synthetic")
+        {
+            var syntheticOptions = ParseOptions(args[1..]);
+            var receipt = VibeVoiceRuntime.RunSyntheticValidation(
+                syntheticOptions.GetValueOrDefault("tokenizer-dir"));
+            Console.WriteLine(JsonSerializer.Serialize(receipt, JsonOptions));
+            return receipt.Ok ? 0 : 2;
+        }
+
+        if (args[0] != "capability")
+        {
+            throw new ArgumentException($"Unknown vibevoice command '{args[0]}'.");
+        }
+        var options = ParseOptions(args[1..]);
+        var receiptCapability = VibeVoiceRuntime.Inspect(
+            Require(options, "model-dir"),
+            options.GetValueOrDefault("tokenizer-dir"),
+            options.GetValueOrDefault("script"),
+            options.GetValueOrDefault("voice-root"),
+            options.TryGetValue("voice-refs", out string? voiceRefs)
+                ? voiceRefs.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                : null);
+        Console.WriteLine(JsonSerializer.Serialize(receiptCapability, JsonOptions));
+        return receiptCapability.GenerationReady ? 0 : 2;
     }
 
     private static async Task<int> RunMxcAsync(string[] args)
@@ -494,9 +594,13 @@ internal static class WingenAudioHost
     {
         Console.WriteLine("""
 wingen.audio version
+wingen.audio cube-layers --input WAV --output JSON --stem STEM --engine ENGINE [--label LABEL] [--png PNG] [--repo-root ROOT]
 wingen.audio worker --action <status|preflight|load|unload|generate> --engine <vibevoice|personaplex> [--url URL] [--request FILE] [--output FILE] [--timeout SECONDS]
 wingen.audio worker-server --engine ENGINE --listen http://127.0.0.1:PORT --upstream http://127.0.0.1:PORT [--timeout SECONDS]
 wingen.audio mxc probe
+wingen.audio powertorch probe
+wingen.audio vibevoice capability --model-dir PATH [--tokenizer-dir PATH] [--script TEXT --voice-root PATH --voice-refs A;B]
+wingen.audio vibevoice synthetic [--tokenizer-dir PATH]
 wingen.audio mxc run --command COMMAND [--backend process|processcontainer|wslc] [--readonly P1;P2] [--readwrite P1;P2] [--deny P1;P2] [--host-loopback allow] [--network-egress allow] [--timeout-ms MS] [--gpu true]
 wingen.audio score --engine ENGINE --free-memory-gib N [placement signals]
 """);

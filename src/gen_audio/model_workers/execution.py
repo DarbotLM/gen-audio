@@ -88,6 +88,8 @@ def resolve(options: Execution) -> dict:
             "requested": requested,
             "attention": options.attention,
             "offload": "none",
+            "gpu_memory_bytes": 0,
+            "cpu_memory_bytes": int(options.cpu_memory_gib * GIB),
         }
 
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -148,10 +150,10 @@ def resolve(options: Execution) -> dict:
 
 
 def max_memory(execution: dict) -> dict[int | str, int]:
-    return {
-        execution["device_index"]: execution["gpu_memory_bytes"],
-        "cpu": execution["cpu_memory_bytes"],
-    }
+    limits = {"cpu": execution["cpu_memory_bytes"]}
+    if execution["backend"] == "cuda":
+        limits[execution["device_index"]] = execution["gpu_memory_bytes"]
+    return limits
 
 
 def execution_json(execution: dict) -> str:

@@ -11,12 +11,14 @@ param(
     [switch]$Preload,
     [switch]$SkipDlmSpeech,
     [switch]$PersistEnvironment,
-    [switch]$ReplaceExisting
+    [switch]$ReplaceExisting,
+    [switch]$DirectWorker
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RuntimeRoot = Join-Path $RepoRoot "artifacts\runtime\7b"
+$script:DirectWorker = [bool]$DirectWorker
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
 if ($ReplaceExisting) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -83,6 +85,15 @@ function Start-ResidentWorker {
         '-Stdout "' + $stdout + '" ' +
         '-Stderr "' + $stderr + '"'
     )
+    if ($script:DirectWorker) {
+        $hostProcess = Start-Process `
+            -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' `
+            -ArgumentList $commandLine `
+            -WorkingDirectory $RepoRoot `
+            -PassThru `
+            -WindowStyle Hidden
+        $hostProcess.Id | Set-Content -LiteralPath (Join-Path $RuntimeRoot "$Name.worker.pid") -Encoding ascii
+    } else {
     $taskName = "GenAudio-$Name-7B"
     $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $action = New-ScheduledTaskAction `
@@ -106,16 +117,21 @@ function Start-ResidentWorker {
         -Principal $principal `
         -Settings $settings | Out-Null
     Start-ScheduledTask -TaskName $taskName
+    }
     $process = $null
     $deadline = (Get-Date).AddMinutes(5)
     do {
         Start-Sleep -Milliseconds 500
-        $task = Get-ScheduledTask -TaskName $taskName
-        if ($task.State -eq "Ready") {
-            $info = Get-ScheduledTaskInfo -TaskName $taskName
-            if ($info.LastTaskResult -ne 267009) {
-                throw "$Name task exited $($info.LastTaskResult); inspect $stderr"
+        if (-not $script:DirectWorker) {
+            $task = Get-ScheduledTask -TaskName $taskName
+            if ($task.State -eq "Ready") {
+                $info = Get-ScheduledTaskInfo -TaskName $taskName
+                if ($info.LastTaskResult -ne 267009) {
+                    throw "$Name task exited $($info.LastTaskResult); inspect $stderr"
+                }
             }
+        } elseif ($hostProcess -and $hostProcess.HasExited) {
+            throw "$Name worker exited $($hostProcess.ExitCode); inspect $stderr"
         }
         try {
             $status = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v1/status" -TimeoutSec 2

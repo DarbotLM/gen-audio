@@ -4,6 +4,18 @@
   "transport": "ssh",
   "nodes": [
     {
+      "id": "darbot",
+      "ssh": "darbot@darbot",
+      "root": "D:\\darbot\\gen-audio",
+      "output_root": "D:\\darbot\\gen-audio\\outputs",
+      "voice_root": "D:\\darbot\\gen-audio\\voice-library",
+      "model_dirs": {
+        "vibevoice": "D:\\models\\VibeVoice-7B",
+        "personaplex": "D:\\models\\PersonaPlex-7B"
+      },
+      "weight": 0.65
+    },
+    {
       "id": "dayour",
       "ssh": "darbot@dayour",
       "root": "D:\\darbot\\gen-audio",

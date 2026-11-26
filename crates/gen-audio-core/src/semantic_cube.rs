@@ -74,7 +74,7 @@ pub fn project(doc: &Value) -> Result<Value, String> {
     }
     if let Some(error) = validator().iter_errors(doc).next() {
         // Report location and keyword, not potentially large/sensitive records.
-        return Err(format!("Invalid semantic cube at {} ({})", error.instance_path, error.schema_path));
+        return Err(format!("Invalid semantic cube at {} ({})", error.instance_path(), error.schema_path()));
     }
     let layers = doc["layers"].as_array().unwrap();
     let records = doc["records"].as_array().unwrap();

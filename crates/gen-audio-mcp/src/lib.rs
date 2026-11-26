@@ -129,6 +129,7 @@ pub fn smoke() -> Result<String, String> {
         "ui_set_sidepane",
         "ui_generate",
         "master_audio",
+        "mix_validate",
         "library_list",
         "library_rename",
         "library_harvest",
@@ -255,6 +256,7 @@ fn tool_defs() -> Vec<Value> {
         tool("synth", "Plan or run kokoro-onnx synthesis. Without model env vars this returns a refusal and writes no speech."),
         tool("improve", "Run the Python publish chain on a WAV already in the work directory."),
         tool("master_audio", "Create a separate independently verified podcast master from an issued mono 24 kHz PCM16 WAV (up to 600 seconds). Rust runs bounded, shell-free FFmpeg two-pass loudness normalization to -16 LUFS/-1.5 dBTP/LRA 4 and persists a WAV plus JSON report. This is audio processing, not speech synthesis."),
+        tool("mix_validate", "Validate and normalize a bounded ga-mix-1 project, check library source metadata and duck dependencies, and return its canonical SHA256. Metadata planning only: no media bytes are read, no audio is rendered, and no assets are minted."),
         tool("spectrogram", "Run the Python spectrogram helper on work-directory WAVs."),
         tool("cube_revision", "Run the Python inverse-HDR cube revision sketch on a work-directory WAV."),
         tool("serve_health", "Probe a configured genaid-audio host. With no host the result is unconfigured and is not a live probe."),
@@ -302,6 +304,7 @@ static UID_PROP: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
 
 fn tool(name: &str, description: &str) -> Value {
     let (properties, required) = match name {
+        "mix_validate" => (json!({"project":gen_audio_core::mix::project_schema()}), json!(["project"])),
         "semantic_cube_project" => (json!({"document":{"type":"object"},"offset":{"type":"integer","minimum":0,"maximum":32768},"limit":{"type":"integer","minimum":1,"maximum":2048,"default":2048}}), json!(["document"])),
         "synth" => (
             json!({
@@ -472,6 +475,7 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
     }
     known_arguments(name, &args)?;
     let payload = match name {
+        "mix_validate" => gen_audio_core::mix::validate(&args["project"])?,
         "semantic_schema_library" => gen_audio_core::semantic_cube::library(),
         "semantic_cube_project" => {
             let page_value = |key: &str, default: usize, maximum: usize| -> Result<usize, ToolError> {
@@ -555,6 +559,7 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
 /// inputSchema properties (tested): the UI and agents speak one contract.
 fn allowed_arguments(name: &str) -> &'static [&'static str] {
     match name {
+        "mix_validate" => &["project"],
         "semantic_schema_library" => &[],
         "semantic_cube_project" => &["document", "offset", "limit"],
         "synth" => &[
@@ -907,6 +912,109 @@ pub mod http;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mix_project() -> Value {
+        let source = gen_audio_core::asset_catalog::uid_for_legacy("audio_clip", "lib-misaki-kokoro").unwrap();
+        json!({"schema":"ga-mix-1","duration_ms":10000,"layers":[
+            {"id":"voice","source":source,"role":"voice"},
+            {"id":"bed","source":source,"role":"ambient","loop":{"mode":"fill"},
+             "duck":{"keys":["voice"],"depth_mdb":-12000,"threshold_mdbfs":-40000,
+                     "attack_ms":50,"release_ms":400,"hold_ms":100,"lookahead_ms":10}}
+        ]})
+    }
+
+    #[test]
+    fn mix_validation_normalizes_hashes_and_writes_no_media() {
+        let server = Server::isolated();
+        let call = |project: Value| call_tool(&server, &json!({
+            "name":"mix_validate","arguments":{"project":project}
+        })).unwrap();
+        let files = || std::fs::read_dir(&server.scratch.dir).unwrap().count();
+        let before = files();
+        let result = call(mix_project());
+        assert_eq!(result["isError"], false);
+        let payload: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["normalized"]["sample_rate_hz"], 48000);
+        assert_eq!(payload["normalized"]["layers"][0]["solo_safe"], true);
+        assert_eq!(payload["normalized"]["layers"][1]["solo_safe"], false);
+        assert_eq!(payload["normalized"]["layers"][1]["loop"]["xfade_ms"], 500);
+        assert!(payload["normalized"]["master"].get("target_lufs_milli").is_none());
+        assert_eq!(payload["renderedAudio"], false);
+        assert_eq!(payload["synthesizedSpeech"], false);
+        assert!(payload.get("asset").is_none());
+        let mut explicit = payload["normalized"].clone();
+        explicit["layers"][0]["duck"] = Value::Null;
+        let again = call(explicit.clone());
+        let again: Value = serde_json::from_str(again["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["normalized"], again["normalized"]);
+        assert_eq!(payload["projectSha256"], again["projectSha256"]);
+        explicit["layers"][1]["gain_mdb"] = json!(-6000);
+        let changed = call(explicit);
+        let changed: Value = serde_json::from_str(changed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_ne!(payload["projectSha256"], changed["projectSha256"]);
+        assert_eq!(files(), before);
+    }
+
+    #[test]
+    fn mix_validation_rejects_bounds_nested_keys_and_duck_cycles() {
+        let server = Server::isolated();
+        let call = |args: Value| call_tool(&server, &json!({"name":"mix_validate","arguments":args}));
+        for (pointer, value) in [
+            ("/duration_ms", json!(600001)),
+            ("/duration_ms", json!(10000.0)),
+            ("/layers/1/id", json!("voice")),
+            ("/layers/0/source", json!("../voice.wav")),
+            ("/layers/1/loop", json!({"mode":"off","xfade_ms":10})),
+            ("/layers/1/loop", json!({"mode":"count"})),
+            ("/layers/1/duck/keys", json!(["missing"])),
+            ("/layers/1/duck/keys", json!(["bed"])),
+            ("/layers/1/duck/keys", json!(["voice","voice"])),
+            ("/layers/1/duck/lookahead_ms", json!(101)),
+            ("/layers/1/duck", json!({"keys":["voice"],"extra":true})),
+        ] {
+            let mut project = mix_project();
+            *project.pointer_mut(pointer).unwrap() = value;
+            assert_eq!(call(json!({"project":project})).unwrap_err().code, -32602, "{pointer}");
+        }
+        let mut project = mix_project();
+        project["layers"][0]["duck"] = project["layers"][1]["duck"].clone();
+        project["layers"][0]["duck"]["keys"] = json!(["bed"]);
+        assert!(call(json!({"project":project})).unwrap_err().message.contains("cycle"));
+        let mut project = mix_project();
+        project["layers"][0]["trim_end_ms"] = json!(600000);
+        assert!(call(json!({"project":project})).unwrap_err().message.contains("trim"));
+        let mut project = mix_project();
+        project["master"] = json!({"unknown":false});
+        assert_eq!(call(json!({"project":project})).unwrap_err().code, -32602);
+        assert_eq!(call(json!({"project":mix_project(),"output":"mix.wav"})).unwrap_err().code, -32602);
+    }
+
+    #[test]
+    fn mix_validation_returns_honest_source_and_resource_refusals() {
+        let server = Server::isolated();
+        let call = |project: Value| {
+            let result = call_tool(&server, &json!({"name":"mix_validate","arguments":{"project":project}})).unwrap();
+            assert_eq!(result["isError"], true);
+            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        for (source, code) in [
+            ("ga:audio_clip:aaaaaaaaaaaaaaaaaaaaaaaaaa", "asset_not_found"),
+            ("ga:voice_model:aaaaaaaaaaaaaaaaaaaaaaaaaa", "kind_mismatch"),
+            ("ga:mix:aaaaaaaaaaaaaaaaaaaaaaaaaa", "not_configured"),
+        ] {
+            let mut project = mix_project();
+            project["layers"][0]["source"] = json!(source);
+            let payload = call(project);
+            assert_eq!(payload["code"], code);
+            assert_eq!(payload["renderedAudio"], false);
+            assert!(payload.get("projectSha256").is_none());
+        }
+        let mut project = mix_project();
+        project["layers"] = json!(vec![project["layers"][0].clone(); 17]);
+        let payload = call(project);
+        assert_eq!(payload["code"], "limit_exceeded");
+        assert_eq!(payload["limit"]["got"], 17);
+    }
 
     #[test]
     fn semantic_cube_tools_project_real_records_and_reject_bad_requests() {

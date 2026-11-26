@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gen-audio.local/schemas/mix-project.schema.json",
+  "title": "Gen-Audio mix project (validation only)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "duration_ms", "layers"],
+  "properties": {
+    "schema": { "const": "ga-mix-1" },
+    "sample_rate_hz": { "type": "integer", "enum": [16000, 24000, 44100, 48000], "default": 48000 },
+    "channels": { "type": "integer", "enum": [1, 2], "default": 2 },
+    "duration_ms": { "type": "integer", "minimum": 100, "maximum": 600000 },
+    "master": { "$ref": "#/$defs/master", "default": {} },
+    "layers": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/layer" } }
+  },
+  "$defs": {
+    "fade": { "type": "integer", "minimum": 0, "maximum": 30000, "default": 0 },
+    "time": { "type": "integer", "minimum": 0, "maximum": 600000, "default": 0 },
+    "gain": { "type": "integer", "minimum": -60000, "maximum": 12000, "default": 0 },
+    "master": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gain_mdb": { "$ref": "#/$defs/gain" },
+        "target_lufs_milli": { "type": "integer", "minimum": -36000, "maximum": -10000 },
+        "true_peak_mdbtp": { "type": "integer", "minimum": -9000, "maximum": -100, "default": -1000 },
+        "limiter": { "type": "boolean", "default": true },
+        "fade_in_ms": { "$ref": "#/$defs/fade" },
+        "fade_out_ms": { "$ref": "#/$defs/fade" }
+      }
+    },
+    "loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["off", "count", "fill"] },
+        "count": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "xfade_ms": { "type": "integer", "minimum": 0, "maximum": 30000 }
+      },
+      "allOf": [
+        { "if": { "properties": { "mode": { "const": "count" } } }, "then": { "required": ["count"] }, "else": { "not": { "required": ["count"] } } },
+        { "if": { "properties": { "mode": { "const": "off" } } }, "then": { "not": { "required": ["xfade_ms"] } } }
+      ]
+    },
+    "duck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keys", "depth_mdb", "threshold_mdbfs", "attack_ms", "release_ms", "hold_ms", "lookahead_ms"],
+      "properties": {
+        "keys": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9_]{1,32}$" } },
+        "depth_mdb": { "type": "integer", "minimum": -40000, "maximum": 0 },
+        "threshold_mdbfs": { "type": "integer", "minimum": -70000, "maximum": 0 },
+        "attack_ms": { "$ref": "#/$defs/fade" },
+        "release_ms": { "$ref": "#/$defs/fade" },
+        "hold_ms": { "$ref": "#/$defs/fade" },
+        "lookahead_ms": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source", "role"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_]{1,32}$" },
+        "source": { "type": "string", "maxLength": 48, "pattern": "^ga:[a-z_]+:[a-z2-7]{25}[aeimquy4]$" },
+        "role": { "enum": ["voice", "music", "ambient", "sfx", "other"] },
+        "gain_mdb": { "$ref": "#/$defs/gain" },
+        "pan_milli": { "type": "integer", "minimum": -1000, "maximum": 1000, "default": 0 },
+        "mute": { "type": "boolean", "default": false },
+        "solo": { "type": "boolean", "default": false },
+        "solo_safe": { "type": "boolean" },
+        "offset_ms": { "$ref": "#/$defs/time" },
+        "trim_start_ms": { "$ref": "#/$defs/time" },
+        "trim_end_ms": { "$ref": "#/$defs/time" },
+        "loop": { "$ref": "#/$defs/loop", "default": { "mode": "off" } },
+        "fade_in_ms": { "$ref": "#/$defs/fade" },
+        "fade_out_ms": { "$ref": "#/$defs/fade" },
+        "duck": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/duck" }] }
+      }
+    }
+  }
+}

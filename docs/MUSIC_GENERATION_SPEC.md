@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Documentation-only proposal; no music implementation.** This draft defines future music, ambient-audio and layering work; it does not implement or enable any of it. No music crate, music MCP tool, model adapter, codec, MIDI path or frame server is added by this document. |
+| Status | **Partial implementation: native `mix_validate` is callable (§5.3.10).** It validates and hashes a mix plan using existing library metadata; it does not render audio. Music generation, MIDI, instruments, mixing DSP, new asset kinds and streaming remain proposed. Inventory below describes the historical baseline. |
 | Audience | DarbotLabs engineers and coding agents evaluating a future implementation |
 | Intended repo path | `docs/MUSIC_GENERATION_SPEC.md` |
 | Baseline inspected | Local `main` at `e7603537289f69e45199395cf9d6d4371896bb60`; `origin/main` is `7fa121cd9b79bf1382e7f80730f2555f8afdcb44`. `e760353` only updates desktop Vite and `fast-uri` dependencies, so the product-code facts below are current at both revisions. |
@@ -338,8 +338,8 @@ gates are deliberately updated after review.
 
 ### 5.3 Tools
 
-All schemas below are proposed exact `inputSchema` candidates for a future
-implementation; none is currently advertised. Integers carry units in their
+Except for implemented `mix_validate` (§5.3.10), schemas below are proposed
+`inputSchema` candidates. Integers carry units in their
 names (`_ms`, `_hz`, `_mdb` = millidecibels, `_milli` = ×1000,
 `_bpm_milli`).
 
@@ -532,8 +532,42 @@ non-commercial opt-in returns `license_blocked`. These failures are not a
 
 #### 5.3.10 `mix_validate` and `mix_render` (Level 1)
 
-- `mix_validate {project: <MixProject JSON object>}` → `{ok, normalized: MixProject, projectSha256, warnings:[...]}`. It performs no rendering.
-- `mix_render`:
+- **Implemented:** `mix_validate {project: <MixProject JSON object>}` →
+  `{ok, normalized: MixProject, projectSha256, warnings:[...],
+  renderedAudio:false, synthesizedSpeech:false, absolutePathsOmitted:true}`.
+  The native Rust core reuses the existing validated ga1 release/user-library
+  catalog and integer JCS implementation; MCP remains the execution owner.
+  No Python, model, network call, media read, job, file write or asset minting
+  occurs. Success establishes a metadata-valid plan, **not playable audio**.
+- The input contract is `schemas/mix-project.schema.json`, also inlined in
+  `tools/list`. Unknown keys at every nesting level, invalid integer tokens,
+  duplicate layer ids, missing/self/cyclic duck keys and invalid source trims
+  return `-32602`. More than 16 layers or 64 KiB of serialized project JSON
+  returns `limit_exceeded`; absent source uids return `asset_not_found`.
+  Full uids are required. Only current mono/stereo `audio_clip` sources can
+  validate successfully; proposed `music_track`, `ambient_bed` and nested
+  `mix` sources return `not_configured` until their asset writers exist.
+- A normalized project is accepted as input again with the same SHA256.
+  Source media availability is not inferred from metadata: warnings say this
+  explicitly, and also flag unavailable source status and layers starting
+  beyond the project end. The hash describes the normalized **plan**, not PCM.
+
+Callable with the existing PowerShell MCP client against the built listener:
+
+```powershell
+$project = @{
+    schema = 'ga-mix-1'
+    duration_ms = 10000
+    layers = @(@{
+        id = 'voice'
+        source = 'ga:audio_clip:33g2yv7vmahe5hzxn2e6p57fuy'
+        role = 'voice'
+    })
+}
+.\scripts\mcp-call.ps1 -Tool mix_validate -ArgsJson (@{ project = $project } | ConvertTo-Json -Depth 12 -Compress)
+```
+
+- **Still proposed:** `mix_render`:
 
 ```json
 {"type":"object","additionalProperties":false,"required":["project"],
@@ -686,9 +720,22 @@ The table distinguishes that current boundary from proposed music I/O.
 - Written files always contain: `MThd` with the correct length 6; track 0 (in format 1) carrying tempo/time-sig/key-sig and a track name `gen-audio`; End-of-Track in every track; and a GM System On SysEx at tick 0 only when `gmReset: true`.
 - Text metas written by Gen Audio are ASCII, ≤ 64 bytes, and contain no user free text beyond the sanitized track `name`.
 
-### 6.4 Proposed mix project JSON (`schemas/mix-project.schema.json`)
+### 6.4 Mix project JSON (`schemas/mix-project.schema.json`)
 
-Integers only (so the normalized project can be JCS-hashed into `mix.fields.project_sha256` under the same rules as asset identity). Units are in the key names.
+Validation and normalization are implemented; rendering and the `mix` asset
+writer remain proposed. Integers only (so the normalized project can later be
+JCS-hashed into `mix.fields.project_sha256` under the same rules as asset
+identity). Units are in the key names.
+
+Current normalization fills 48 kHz/stereo, an optional master object, zero
+gains/pan/offsets/trims/fades, `mute:false`, `solo:false`, and `loop.mode:"off"`.
+`solo_safe` defaults true only for a `voice` role; `true_peak_mdbtp` defaults
+−1000 and `limiter` true. Omitting `target_lufs_milli` keeps it omitted (skip
+normalization), rather than silently choosing a loudness target. Active loops
+default to a 500 ms crossfade, which must not exceed the trimmed source span.
+Fades/crossfades and duck attack/release/hold are bounded to 0..30000 ms;
+lookahead is 0..100 ms. All duck fields are required when ducking is supplied.
+These are plan parameters only, not an implemented mixer.
 
 ```jsonc
 {
@@ -739,14 +786,16 @@ Integers only (so the normalized project can be JCS-hashed into `mix.fields.proj
 
 The `source` uid in the example is the real misaki clip uid cited in `docs/ASSET_OBJECT_MODEL.md` §2. It is used for illustration only.
 
-Proposed validation rules (future Rust `mix::validate`, mirrored by the schema
-where expressible):
+Validation rules (`gen_audio_core::mix::validate`, mirrored by the schema
+where expressible; future asset/rendering checks explicitly noted):
 
 - No unknown keys at any level.
 - Layer ids are unique. Every duck key exists and is not the layer itself. The duck graph is acyclic.
-- Every `source` resolves via the catalog or the scratch set, and has an allowed kind.
-- Nested `mix` sources: depth ≤ 2, no self-reference (the uid DAG makes cycles impossible, but the check stays).
-- Memory never scales with layer length × layer count, because rendering is streamed (§9).
+- Every current `source` resolves via the existing release/user-library catalog
+  and passes its envelope checks. Scratch music assets await their writers.
+- Future nested `mix` sources: depth ≤ 2, no self-reference (the uid DAG makes cycles impossible, but the check stays). They currently refuse as `not_configured`.
+- Future rendering memory must never scale with layer length × layer count,
+  because rendering will be streamed (§9). Validation allocates no audio.
 - `trim_start_ms + trim_end_ms < source duration`.
 - Normalization: defaults filled in, keys sorted by JCS, `null` duck removed (the identity rule omits null). The result is hashed to `project_sha256`.
 

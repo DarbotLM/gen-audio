@@ -97,12 +97,13 @@ if (-not `$SkipRuntimeInstall) {
 "@
     $skipRuntimeInstallLiteral = if ($SkipRuntimeInstall) { '$true' } else { '$false' }
     $script = $script.Replace('$SkipRuntimeInstall', $skipRuntimeInstallLiteral)
-    $encoded = ConvertTo-EncodedCommand $script
     if ($node.id -eq $env:COMPUTERNAME.ToLowerInvariant()) {
+        $encoded = ConvertTo-EncodedCommand $script
         $output = & 'C:\Program Files\PowerShell\7\pwsh.exe' `
             -NoProfile -NonInteractive -EncodedCommand $encoded
     } else {
-        $output = & ssh -T -o BatchMode=yes -o IdentitiesOnly=yes $node.ssh `
+        $encoded = ConvertTo-EncodedCommand '$ErrorActionPreference = ''Stop''; & ([scriptblock]::Create([Console]::In.ReadToEnd()))'
+        $output = $script | & ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 $node.ssh `
             pwsh.exe -NoProfile -NonInteractive -EncodedCommand $encoded
     }
     if ($LASTEXITCODE -ne 0) {

@@ -188,8 +188,10 @@ function Invoke-WingenAudioRemoteJson {
         [ValidateRange(1, 7200)]
         [int]$TimeoutSeconds = 60
     )
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
     $local = [StringComparer]::OrdinalIgnoreCase.Equals([string]$Node.id, $env:COMPUTERNAME)
+    $bootstrap = '$ErrorActionPreference = ''Stop''; & ([scriptblock]::Create([Console]::In.ReadToEnd()))'
+    $command = if ($local) { $Script } else { $bootstrap }
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $file = if ($local) { (Get-Process -Id $PID).Path } else { 'ssh' }
     $arguments = if ($local) {
         @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
@@ -203,7 +205,12 @@ function Invoke-WingenAudioRemoteJson {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = @(& $file @arguments 2>&1 | ForEach-Object { "$_" })
+        $output = if ($local) {
+            @(& $file @arguments 2>&1 | ForEach-Object { "$_" })
+        } else {
+            # Stream the whole script past Windows' SSH command-line limit.
+            @($Script | & $file @arguments 2>&1 | ForEach-Object { "$_" })
+        }
         $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previous

@@ -870,14 +870,14 @@ mod tests {
             (format!("{token_filler}error: key {token} refused"), token),
         ] {
             let (lines, dir) = pumped("straddle", &format!("{secret_line}\nsecond line\n"));
-            assert_eq!(lines.len(), 2, "one stderr line is one log line: {lines:?}");
-            assert_eq!(lines[1], "second line");
+            assert_eq!(lines.len(), 2, "one stderr line should be one log line");
+            assert!(lines[1] == "second line", "pump changed the second line");
             let text = lines.join("\n");
             for start in 0..secret.len() - 2 {
                 let fragment = &secret[start..];
                 assert!(
                     !text.contains(fragment),
-                    "{fragment:?} of {secret:?} reached the log"
+                    "secret suffix starting at byte {start} reached the log"
                 );
             }
             let _ = fs::remove_dir_all(&dir);
@@ -943,15 +943,15 @@ mod tests {
             ("Authorization: zz9", "zz9", "<redacted>"),
             ("upstream said bearer q7", "q7", "<redacted>"),
         ];
-        for (raw, secret, kept) in cases {
+        for (index, (raw, secret, kept)) in cases.into_iter().enumerate() {
             let line = redact(raw);
             assert!(
                 !line.contains(secret),
-                "{raw:?} -> {line:?} still has {secret:?}"
+                "redaction case {index} retained the sensitive value"
             );
             assert!(
                 line.contains(kept),
-                "{raw:?} -> {line:?} should keep {kept:?}"
+                "redaction case {index} lost the expected public text"
             );
         }
         let plain = "gen-audio-mcp http: rejected POST /mcp 403 origin peer=127.0.0.1:51234";
@@ -983,7 +983,7 @@ mod tests {
             );
             assert!(
                 raw[..MAX_LINE].ends_with(head),
-                "{secret:?} straddles byte {MAX_LINE}"
+                "{marker} fixture did not straddle byte {MAX_LINE} as expected"
             );
             let line = redact(&raw);
             assert!(line.len() <= MAX_LINE, "{} bytes", line.len());
@@ -993,9 +993,9 @@ mod tests {
                 .filter(|piece| line.contains(piece))
                 .max_by_key(|piece| piece.len());
             if let Some(piece) = leaked {
-                leaks.push(format!("{piece:?} of {secret:?}"));
+                leaks.push(format!("{marker}: {} bytes exposed", piece.len()));
             } else if !line.contains(marker) {
-                leaks.push(format!("no {marker} for {secret:?}"));
+                leaks.push(format!("missing {marker}"));
             }
         }
         assert!(
@@ -1294,7 +1294,7 @@ mod tests {
         stream.write_all(request.as_bytes()).unwrap();
         let mut response = String::new();
         let _ = stream.read_to_string(&mut response);
-        assert!(response.starts_with("HTTP/1.1 4"), "{response}");
+        assert!(response.starts_with("HTTP/1.1 4"), "expected an HTTP 4xx rejection");
         drop(child.stdin.take());
         let _ = child.wait();
         pump.join().unwrap();
@@ -1333,9 +1333,9 @@ mod tests {
         let (text, dir) = through_the_pipe("redact", &request);
         assert!(
             text.contains("rejected POST /mcp?<redacted> 403"),
-            "the rejection is still logged: {text:?}"
+            "missing the redacted rejection in the sidecar log"
         );
-        for secret in [
+        for (index, secret) in [
             token,
             "tok_9f8e",
             bearer,
@@ -1343,10 +1343,13 @@ mod tests {
             "Authorization",
             "body-marker-7",
             "tools/call",
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             assert!(
                 !text.contains(secret),
-                "{secret:?} reached the log: {text:?}"
+                "forbidden request marker {index} reached the sidecar log"
             );
         }
         let _ = fs::remove_dir_all(&dir);

@@ -91,8 +91,8 @@ async function viteBuild(flag: string | undefined): Promise<Dist> {
 }
 
 const DEV_CHUNKS = ["viewport.example", "assets.dev", "fixture-controls"] as const;
-const devChunkFile = (name: string) => new RegExp(`(^|/)${name.replace(/\./g, "\\.")}-[\\w-]+\\.js$`);
-const devChunkRef = (name: string) => new RegExp(`["'\`]\\./${name.replace(/\./g, "\\.")}-[\\w-]+\\.js["'\`]`);
+const devChunkFile = (name: string) => new RegExp(`(^|/)${RegExp.escape(name)}-[\\w-]+\\.js$`);
+const devChunkRef = (name: string) => new RegExp(`["'\`]\\./${RegExp.escape(name)}-[\\w-]+\\.js["'\`]`);
 const DEV_BODY_MARKERS = ['id:"spec-fixture"', 'id:"cube-fixture"', 'source:"fixture-tone"', '"fixture_tone"', "<node>"];
 const unquoteKeys = (text: string) => text.replace(/"([A-Za-z_$][\w$]*)":/g, "$1:");
 

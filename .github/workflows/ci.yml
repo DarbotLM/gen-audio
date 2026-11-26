@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   python-vibevoice:
     # The locked `vibevoice` extra (torch 2.14.1+cpu, transformers 4.51.3,

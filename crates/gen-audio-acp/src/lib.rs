@@ -1170,14 +1170,15 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        let error = handle(
+        let Err(error) = handle(
             &agent,
             json!({"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{
                 "sessionId": session_id, "prompt":[{"type":"text","text":"frobnicate this"}]
             }}),
-        )
-        .unwrap_err();
-        assert!(error.contains("unsupported intent"), "{error}");
+        ) else {
+            panic!("session/prompt accepted an unsupported intent");
+        };
+        assert!(error.contains("unsupported intent"));
     }
 
     #[test]
@@ -1259,16 +1260,13 @@ mod tests {
                 .is_empty()
         );
         let blob = serde_json::to_string(&prompted.notifications).unwrap();
-        assert!(blob.contains("ui_generate"), "{blob}");
-        assert!(blob.contains("synth"), "{blob}");
-        assert!(blob.contains("No speech was invented"), "{blob}");
-        assert!(blob.contains("tool_call"), "{blob}");
-        assert!(!blob.contains("\"synthesizedSpeech\":true"), "{blob}");
-        assert!(
-            blob.contains("GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES are unset"),
-            "{blob}"
-        );
-        let rejected = handle(
+        assert!(blob.contains("ui_generate"));
+        assert!(blob.contains("synth"));
+        assert!(blob.contains("No speech was invented"));
+        assert!(blob.contains("tool_call"));
+        assert!(!blob.contains("\"synthesizedSpeech\":true"));
+        assert!(blob.contains("GEN_AUDIO_KOKORO_MODEL and GEN_AUDIO_KOKORO_VOICES are unset"));
+        let Err(rejected) = handle(
             &agent,
             json!({
                 "jsonrpc": "2.0",
@@ -1276,12 +1274,10 @@ mod tests {
                 "method": "session/new",
                 "params": {"cwd": ".", "agents": ["copilot"], "voice": "af_heart"}
             }),
-        )
-        .unwrap_err();
-        assert!(
-            rejected.contains("connector") || rejected.contains("af_heart"),
-            "{rejected}"
-        );
+        ) else {
+            panic!("session/new accepted an invalid connector/voice pair");
+        };
+        assert!(rejected.contains("connector") || rejected.contains("af_heart"));
     }
 
     #[test]

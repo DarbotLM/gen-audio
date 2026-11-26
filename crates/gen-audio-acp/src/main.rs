@@ -8,8 +8,8 @@ fn main() {
                 println!("{message}");
                 std::process::exit(0);
             }
-            Err(err) => {
-                eprintln!("error: {err}");
+            Err(_) => {
+                eprintln!("error: ACP smoke handshake failed");
                 std::process::exit(1);
             }
         }

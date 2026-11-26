@@ -97,6 +97,77 @@ execution. Complete these in order:
     Python `model_workers` package, isolated 7B Python environments, Python
     dependency branches, and Python process launch paths.
 
+### Forward log: replacing seven worker dependencies
+
+On November 24, 2026, [the dependency update](https://github.com/DarbotLM/gen-audio/pull/20)
+changed the two `runtimes/requirements-*-hybrid.txt` manifests. It did not port
+inference to `wingen.audio`, install a worker, or change the Python 3.15 app
+lock. The native host can bound and relay `/v1` traffic; successful relay is
+not evidence of native synthesis.
+
+**Release blocker:** the pinned [PersonaPlex provider](https://github.com/NVIDIA/personaplex/blob/3428dfd95309a7f3c84fd93259ded0f810d1ff91/moshi/pyproject.toml)
+requires `torch<2.5` and `sentencepiece==0.2`. The pinned
+[VibeVoice provider](https://github.com/vibevoice-community/VibeVoice/blob/952326ddb264062466a888cf32a5b2f4e803e16e/pyproject.toml)
+requires older Accelerate, Transformers, Datasets, and Gradio; Diffusers
+0.38.0 also needs newer Safetensors than the manifest's 0.5.3. Neither
+configured CUDA wheel index supplied the requested Torch 2.13.0 Windows
+CPython 3.12 build in this review. Do not resolve these conflicts by ignoring
+package metadata, downgrading security fixes, or silently running on CPU.
+
+The following work belongs in `src/wingen.audio` (execution) and
+`src/WingenAudio.Contracts` (typed requests and receipts). Replace only the
+operations the product uses, not entire general-purpose libraries:
+
+| Order | Worker package: old to new | Implementation task | Evidence required before removing it |
+|---|---|---|---|
+| 1 | `datasets`: `3.5.0` to `5.0.1` | Inventory inference-time reads separately from provider demo/training imports. For required inputs, stream local manifest entries with path confinement, length bounds, and hash checks. If no reads are required, remove the provider import rather than implementing a dataset service. | With downloads disabled and Datasets absent, both workers read the same approved records and reject a missing or mismatched asset. |
+| 2 | `sentencepiece`: `0.2.0` to `0.2.1` | Load the pinned PersonaPlex `.model` through a native tokenizer. Preserve normalization, whitespace pieces, unknown IDs, and piece-to-text behavior from `model_workers/personaplex.py`. | Compare IDs and decoded pieces with the reference on multilingual, whitespace, empty, and unknown-token cases. Reject incompatible vocabulary or model hashes before allocation. |
+| 3 | `torch`: `2.4.1+cu121` to `2.13.0` | Export the actual VibeVoice and PersonaPlex inference graphs as immutable artifacts. Load a pinned native execution provider, verify tensor shapes and precision at load, and stream bounded PCM on generate. | On an approved GPU node, record provider, device, peak memory, sample rate, channels, output duration, and numerical/audio parity against the reference. Cancel and unload must release the allocation; an unavailable provider must fail explicitly. |
+| 4 | `accelerate`: `1.6.0` to `1.15.0` | Extend F# node scoring to a per-model placement plan. Account for host and GPU memory, reserves, and tensor residency; have the C# loader enforce it before loading weights. | Compare plans with the current worker for GPU-only, allowed hybrid, and insufficient-memory cases. No oversubscription or implicit provider change. |
+| 5 | `transformers`: `4.51.3` to `5.10.1` | Implement the VibeVoice processor, special-token checks, masks, and generation loop against the approved graphs. Keep ASR and other independent consumers out of the removal decision. | Golden token IDs, mask shapes, cache bounds, stop conditions, and fixed-seed output agree with the reference; incompatible model/tokenizer pairs fail preflight. |
+| 6 | `diffusers`: `0.32.2` to `0.38.0` | Read the scheduler parameters from the pinned graph manifest and implement the denoising step schedule used by VibeVoice. Honor the request's inference-step limit and cancellation between steps. | Compare timesteps and intermediate latents at a fixed seed under recorded tolerances, then compare decoded PCM. Unknown schedules fail before generation. |
+| 7 | `gradio`: `5.50.0` to `6.16.0` | Use the existing Studio/MCP clients and native `/v1` JSON receipts instead of importing the upstream demo UI. Remove Gradio from the worker dependency graph, not just from the top-level requirements file. | Run status, load, generate, cancel where supported, and unload through the shipped interfaces with no Gradio import, demo listener, or extra port. |
+
+For each row, first record reference behavior and artifact hashes, then land
+the native implementation behind the existing contract, then exercise parity
+and rollback on the supported hardware. Mark a row complete only when a fresh
+release install can run that path with the Python package absent from the
+worker graph. Coordinate live model and service changes separately.
+
+**Campaign scoring:** a verified remediation on `main` earns one point. Award
+two additional points, shared once per retired production Python module, when
+reviewers can identify the old caller, its replacement, and the passing parity
+and safety checks. Prefer PowerShell for Windows operator workflows, F# for
+typed contracts and placement, and .NET 11 for execution. A wrapper that still
+launches Python, a renamed file, or an unverified port earns no migration bonus.
+
+### Forward log: scanner reconciliation
+
+The initial GitHub inventory at `1085a73` contained 44 Dependabot records and
+29 CodeQL records, not 84 verified findings. The Code Quality endpoint reported
+that the feature was not enabled; it is not a source for an inferred extra 11.
+Use the scanner and record number together: numbering overlaps.
+
+| Records | Action and closure gate |
+|---|---|
+| Dependabot 83-125 | GitHub subsequently marked all 43 worker-manifest records fixed after the seven-package update. Verify the separately installed worker inventory and ABI before claiming deployment protection. |
+| [Dependabot 1](https://github.com/DarbotLM/gen-audio/security/dependabot/1) | Open: `glib 0.18.5` on the Linux GTK3/WebKit2GTK desktop path; not in the Windows target graph. Move the consuming desktop stack to a supported compatible version with the [iterator fix](https://github.com/advisories/GHSA-wrw7-89jp-8q8g). Require a locked Linux build, tray/WebView smoke check, and no affected version in `cargo tree --locked --target x86_64-unknown-linux-gnu`. Adding parallel `glib 0.20` does not fix the existing path. |
+| CodeQL 1-7 | Give CI jobs a read-only token and match literal chunk names safely in the release/fixture test. Verify both build modes and rescan Actions and JavaScript. |
+| CodeQL 8-11 | Bound release-gate parsing, validate HTML structurally, and keep request-selected resources under their trusted roots. Exercise valid release and route inputs as well as refusal cases; rescan Python. |
+| CodeQL 12-29 | Separate ACP production stderr from test-only assertions. Keep failure locations useful without printing sensitive payloads; preserve each assertion, then rescan Rust. |
+
+Closure means a default-branch scan reports the relevant record fixed. A passing
+unit test, a clean Windows dependency tree, and absence of a Code Quality count
+are not substitutes for that result.
+
+**Verified outcome:** after [CodeQL scanned the remediation](https://github.com/DarbotLM/gen-audio/actions/runs/45525694761)
+at `56926b1`, GitHub reported all 29 listed CodeQL records fixed and zero open
+on `main`; [repository CI](https://github.com/DarbotLM/gen-audio/actions/runs/45525695829)
+also passed. Together with the 43 fixed Dependabot records, that closes 72 of
+the 73 verified records. The Linux `glib` advisory and both worker-install
+compatibility blockers above remain open. No Python-module retirement is
+claimed for these fixes.
+
 ## D — Desktop honesty (fixtures ≠ podcast)
 
 ### Done

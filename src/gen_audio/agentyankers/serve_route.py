@@ -106,8 +106,10 @@ def handle_episode(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             raise AgentYankersError("mode must be dry_run or render")
         if "rundown" not in body or "marks" not in body:
             raise AgentYankersError("episode body needs rundown and marks")
-        output = _output_dir(body.get("output_dir"))
-        recordings = _recordings(body.get("recordings"), output)
+        configured = os.environ.get("GEN_AUDIO_ARTIFACT_DIR", "").strip()
+        root = Path(configured).resolve() if configured else None
+        output = _output_dir(body.get("output_dir"), root)
+        recordings = _recordings(body.get("recordings"), root if output is not None else None)
         seed = body.get("seed", 0)
         logline = body.get("logline", "")
         if not isinstance(logline, str):
@@ -152,35 +154,32 @@ def handle_episode(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     return 200, rendered.public_body()
 
 
-def _output_dir(requested: Any) -> Path | None:
+def _output_dir(requested: Any, root: Path | None) -> Path | None:
     if requested is None:
         return None
     if not isinstance(requested, str) or not requested.strip():
         raise AgentYankersError("output_dir must be a relative directory under GEN_AUDIO_ARTIFACT_DIR")
-    root = os.environ.get("GEN_AUDIO_ARTIFACT_DIR", "").strip()
-    if not root:
+    if root is None:
         raise AgentYankersError("GEN_AUDIO_ARTIFACT_DIR is unset")
     if "\x00" in requested or requested.startswith(("/", "\\")) or ":" in requested:
         raise AgentYankersError("output_dir must stay under GEN_AUDIO_ARTIFACT_DIR")
     parts = requested.replace("\\", "/").split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise AgentYankersError("output_dir must stay under GEN_AUDIO_ARTIFACT_DIR")
-    destination = Path(root).joinpath(*parts).resolve()
-    root_real = Path(root).resolve()
-    if destination != root_real and root_real not in destination.parents:
+    destination = root.joinpath(*parts).resolve()
+    if not destination.is_relative_to(root):
         raise AgentYankersError("output_dir must stay under GEN_AUDIO_ARTIFACT_DIR")
     return destination
 
 
-def _recordings(payload: Any, output: Path | None) -> dict[str, np.ndarray]:
+def _recordings(payload: Any, root: Path | None) -> dict[str, np.ndarray]:
     if payload is None:
         return {}
     if not isinstance(payload, dict):
         raise AgentYankersError("recordings must be an object of ref id to wav file name")
-    if output is None:
+    if root is None:
         raise AgentYankersError("recordings need output_dir so the wavs stay in the artifact directory")
-    root = Path(os.environ.get("GEN_AUDIO_ARTIFACT_DIR", "")).resolve()
-    loaded: dict[str, np.ndarray] = {}
+    requested: dict[str, str] = {}
     for ref, name in payload.items():
         if not isinstance(ref, str) or not isinstance(name, str):
             raise AgentYankersError("recordings map a ref id to a wav file name")
@@ -190,8 +189,22 @@ def _recordings(payload: Any, output: Path | None) -> dict[str, np.ndarray]:
             raise AgentYankersError("recordings must name a .wav file in the artifact directory") from exc
         if not filename.lower().endswith(".wav"):
             raise AgentYankersError("recordings must name a .wav file in the artifact directory")
-        path = (root / filename).resolve()
-        if root != path and root not in path.parents:
+        if name != filename:
+            raise MissingRecording(f"no audio stored for {ref}")
+        requested[ref] = os.path.normcase(filename)
+    if not requested:
+        return {}
+
+    # Names from the request select entries; only paths from the artifact root reach I/O.
+    names = set(requested.values())
+    entries = {key: entry for entry in root.glob("*") if (key := os.path.normcase(entry.name)) in names}
+    loaded: dict[str, np.ndarray] = {}
+    for ref, key in requested.items():
+        entry = entries.get(key)
+        if entry is None:
+            raise MissingRecording(f"no audio stored for {ref}")
+        path = entry.resolve()
+        if not path.is_relative_to(root):
             raise AgentYankersError("recording must stay under GEN_AUDIO_ARTIFACT_DIR")
         if not path.is_file():
             raise MissingRecording(f"no audio stored for {ref}")

@@ -348,12 +348,12 @@ mod tests {
 
     #[test]
     fn every_stored_asset_resolves_and_maps_media_to_library_urls() {
-        for asset in assets() {
+        for (index, asset) in assets().into_iter().enumerate() {
             let uid = uid_of(&asset);
-            assert!(matches!(resolve(uid).unwrap(), Resolve::Found(_)), "{uid}");
+            assert!(matches!(resolve(uid), Ok(Resolve::Found(_))), "asset {index} did not resolve");
             for media in public_view(&asset)["media"].as_array().unwrap() {
                 let url = media["url"].as_str().unwrap();
-                assert!(url.starts_with("/library/") && !url.contains(".."), "{url}");
+                assert!(url.starts_with("/library/") && !url.contains(".."), "asset {index} has an invalid media URL");
                 assert!(media.get("path").is_none());
             }
         }

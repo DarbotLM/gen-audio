@@ -10,7 +10,7 @@ transport, deterministic scoring, failover, and deployment receipts.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Status', 'Preflight', 'Load', 'Unload', 'Generate', 'Deploy', 'Benchmark')]
+    [ValidateSet('Status', 'Preflight', 'Load', 'Unload', 'Generate', 'Deploy', 'Benchmark', 'Queue')]
     [string]$Action = 'Status',
     [ValidateSet('vibevoice', 'personaplex')]
     [string]$Engine,
@@ -22,10 +22,21 @@ param(
     [switch]$StageModels,
     [switch]$SkipRuntimeInstall,
     [ValidateRange(1, 7200)]
-    [int]$TimeoutSeconds = 1800
+    [int]$TimeoutSeconds = 1800,
+    [ValidateSet('submit', 'claim', 'heartbeat', 'succeed', 'fail', 'cancel', 'get', 'stats')]
+    [string]$QueueAction,
+    [string]$PayloadBase64 = 'e30=',
+    [string]$StatePath
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Action -eq 'Queue') {
+    if (-not $QueueAction) { throw 'Queue requires -QueueAction.' }
+    $queueArgs = @{ Action = $QueueAction; PayloadBase64 = $PayloadBase64 }
+    if ($StatePath) { $queueArgs.StatePath = $StatePath }
+    & (Join-Path $PSScriptRoot 'lib\cluster-queue.ps1') @queueArgs
+    return
+}
 Set-StrictMode -Version 2.0
 $clusterInvocation = @{
     Action = $Action

@@ -8,7 +8,9 @@ import math
 import os
 import re
 import struct
+import sys
 import wave
+from importlib import metadata
 from pathlib import Path
 
 from .contracts import (
@@ -25,6 +27,50 @@ from .contracts import (
     runtime_spec,
 )
 from .execution import preferences, resolve
+
+
+def _runtime_versions(spec: dict) -> dict[str, str]:
+    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 12):
+        raise WorkerError("runtime_mismatch", "Use the isolated CPython 3.12 worker, not the app interpreter")
+    try:
+        from packaging.requirements import Requirement
+    except ImportError as exc:
+        raise WorkerError("missing_dependency", "Worker dependency validation requires packaging") from exc
+
+    manifest = Path(__file__).resolve().parents[3] / spec["requirements"]
+    try:
+        lines = manifest.read_text(encoding="utf-8-sig").splitlines()
+    except OSError as exc:
+        raise WorkerError("missing_runtime_manifest", f"Cannot read {manifest}") from exc
+    versions = {}
+    try:
+        provider = metadata.distribution(spec["distribution"])
+        origin = json.loads(provider.read_text("direct_url.json") or "{}")
+        vcs = origin.get("vcs_info") if isinstance(origin, dict) else None
+        if not isinstance(vcs, dict) or vcs.get("commit_id") != spec["revision"]:
+            raise WorkerError("runtime_mismatch", f"{provider.name} must be installed from {spec['revision']}")
+        # Check the provider's mandatory constraints as well: matching the top-level
+        # pins alone does not make a --no-deps installation compatible.
+        for source, entries in ((spec["requirements"], lines), (provider.name, provider.requires or [])):
+            for line in entries:
+                line = re.split(r"\s+#", line, maxsplit=1)[0].strip()
+                if not line or line.startswith(("#", "--extra-index-url ")):
+                    continue
+                req = Requirement(line)
+                if req.marker and not req.marker.evaluate({"extra": ""}):
+                    continue
+                if req.url and (
+                    req.name != spec["distribution"]
+                    or not req.url.partition("#")[0].endswith("@" + spec["revision"])
+                ):
+                    raise WorkerError("runtime_mismatch", f"Unexpected provider reference in {source}: {req.name}")
+                if req.name not in versions:
+                    versions[req.name] = metadata.version(req.name)
+                if req.specifier and not req.specifier.contains(versions[req.name], prereleases=True):
+                    raise WorkerError("runtime_mismatch", f"{source} requires {req}; installed {versions[req.name]}")
+    except metadata.PackageNotFoundError as exc:
+        raise WorkerError("missing_dependency", f"Missing worker distribution: {exc.name}") from exc
+    return versions
 
 
 def read_json(path: Path) -> dict:
@@ -262,6 +308,7 @@ def _personaplex_assets(request: Request) -> tuple[dict, list[dict]]:
 
 def preflight(request: Request, *, load_only: bool = False, resident: dict | None = None) -> dict:
     errors: list[dict] = []
+    spec = runtime_spec(request.engine)
     report: dict = {
         "schema_version": "1.0",
         "ok": False,
@@ -269,10 +316,10 @@ def preflight(request: Request, *, load_only: bool = False, resident: dict | Non
         "preflight": True,
         "synthesizedSpeech": False,
         "engine": request.engine,
-        "capability": runtime_spec(request.engine)["capability"],
+        "capability": spec["capability"],
         "inference_validated": False,
         "assets": {},
-        "runtime": runtime_spec(request.engine),
+        "runtime": spec,
         "errors": errors,
     }
 
@@ -284,6 +331,8 @@ def preflight(request: Request, *, load_only: bool = False, resident: dict | Non
             return None
 
     check(lambda: validate_request(request, load_only=load_only))
+    versions = check(lambda: _runtime_versions(spec))
+    spec["versions"] = versions or {}  # Installed versions, not a second copy of the manifest.
     assets_result = check(
         lambda: _vibevoice_assets(request)
         if request.engine == "vibevoice"
@@ -323,9 +372,17 @@ def preflight(request: Request, *, load_only: bool = False, resident: dict | Non
                             "message": "PersonaPlex input needs more stream steps than max_new_tokens",
                         }
                     )
-    execution = resident["execution"] if resident is not None else check(
-        lambda: resolve(preferences(request))
-    )
+    execution = None
+    if versions is not None:
+        execution = resident["execution"] if resident is not None else check(lambda: resolve(preferences(request)))
+    if execution is not None and execution["backend"] == "cuda":
+        actual = execution.get("runtime", {}).get("cuda")
+        if actual != spec["cuda_build"]:
+            errors.append({
+                "code": "runtime_mismatch",
+                "message": f"Worker requires a CUDA {spec['cuda_build']} torch build; found {actual!r}",
+            })
+            execution = None
     if execution is not None:
         report["execution"] = execution
         report["device"] = execution["torch_device"]

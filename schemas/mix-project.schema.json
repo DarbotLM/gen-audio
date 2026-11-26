@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://gen-audio.local/schemas/mix-project.schema.json",
-  "title": "Gen-Audio mix project (validation only)",
+  "title": "Gen-Audio mix project",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "duration_ms", "layers"],

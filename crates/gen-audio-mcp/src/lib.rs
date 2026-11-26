@@ -129,7 +129,7 @@ pub fn smoke() -> Result<String, String> {
         "ui_set_sidepane",
         "ui_generate",
         "master_audio",
-        "mix_validate",
+        "wingen.audio_mix",
         "library_list",
         "library_rename",
         "library_harvest",
@@ -256,7 +256,7 @@ fn tool_defs() -> Vec<Value> {
         tool("synth", "Plan or run kokoro-onnx synthesis. Without model env vars this returns a refusal and writes no speech."),
         tool("improve", "Run the Python publish chain on a WAV already in the work directory."),
         tool("master_audio", "Create a separate independently verified podcast master from an issued mono 24 kHz PCM16 WAV (up to 600 seconds). Rust runs bounded, shell-free FFmpeg two-pass loudness normalization to -16 LUFS/-1.5 dBTP/LRA 4 and persists a WAV plus JSON report. This is audio processing, not speech synthesis."),
-        tool("mix_validate", "Validate and normalize a bounded ga-mix-1 project, check library source metadata and duck dependencies, and return its canonical SHA256. Metadata planning only: no media bytes are read, no audio is rendered, and no assets are minted."),
+        tool("wingen.audio_mix", "Render a verified stereo float WAV from hash-checked PCM16 library audio_clip layers at the project rate. Applies exact trims/offsets, gain, constant-power mono pan, stereo balance, mute/solo/solo_safe and linear fades. Requires limiter:false, no loudness target, no loops or ducking. Synchronous 120-second limit, no jobs. Writes an issued WAV and provenance JSON; does not synthesize speech, mint a ga1 mix asset or import the result into the library."),
         tool("spectrogram", "Run the Python spectrogram helper on work-directory WAVs."),
         tool("cube_revision", "Run the Python inverse-HDR cube revision sketch on a work-directory WAV."),
         tool("serve_health", "Probe a configured genaid-audio host. With no host the result is unconfigured and is not a live probe."),
@@ -304,7 +304,7 @@ static UID_PROP: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
 
 fn tool(name: &str, description: &str) -> Value {
     let (properties, required) = match name {
-        "mix_validate" => (json!({"project":gen_audio_core::mix::project_schema()}), json!(["project"])),
+        "wingen.audio_mix" => (json!({"project":gen_audio_core::mix::project_schema(),"output":{"type":"string","maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._-]*\\.wav$"}}), json!(["project","output"])),
         "semantic_cube_project" => (json!({"document":{"type":"object"},"offset":{"type":"integer","minimum":0,"maximum":32768},"limit":{"type":"integer","minimum":1,"maximum":2048,"default":2048}}), json!(["document"])),
         "synth" => (
             json!({
@@ -475,7 +475,7 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
     }
     known_arguments(name, &args)?;
     let payload = match name {
-        "mix_validate" => gen_audio_core::mix::validate(&args["project"])?,
+        "wingen.audio_mix" => gen_audio_core::mix_render::render(&server.scratch, server.repo.as_deref(), &args)?,
         "semantic_schema_library" => gen_audio_core::semantic_cube::library(),
         "semantic_cube_project" => {
             let page_value = |key: &str, default: usize, maximum: usize| -> Result<usize, ToolError> {
@@ -559,7 +559,7 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
 /// inputSchema properties (tested): the UI and agents speak one contract.
 fn allowed_arguments(name: &str) -> &'static [&'static str] {
     match name {
-        "mix_validate" => &["project"],
+        "wingen.audio_mix" => &["project","output"],
         "semantic_schema_library" => &[],
         "semantic_cube_project" => &["document", "offset", "limit"],
         "synth" => &[
@@ -926,14 +926,11 @@ mod tests {
     #[test]
     fn mix_validation_normalizes_hashes_and_writes_no_media() {
         let server = Server::isolated();
-        let call = |project: Value| call_tool(&server, &json!({
-            "name":"mix_validate","arguments":{"project":project}
-        })).unwrap();
+        let call = |project: Value| gen_audio_core::mix::validate(&project).unwrap();
         let files = || std::fs::read_dir(&server.scratch.dir).unwrap().count();
         let before = files();
-        let result = call(mix_project());
-        assert_eq!(result["isError"], false);
-        let payload: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let payload = call(mix_project());
+        assert_eq!(payload["ok"], true);
         assert_eq!(payload["normalized"]["sample_rate_hz"], 48000);
         assert_eq!(payload["normalized"]["layers"][0]["solo_safe"], true);
         assert_eq!(payload["normalized"]["layers"][1]["solo_safe"], false);
@@ -945,12 +942,10 @@ mod tests {
         let mut explicit = payload["normalized"].clone();
         explicit["layers"][0]["duck"] = Value::Null;
         let again = call(explicit.clone());
-        let again: Value = serde_json::from_str(again["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(payload["normalized"], again["normalized"]);
         assert_eq!(payload["projectSha256"], again["projectSha256"]);
         explicit["layers"][1]["gain_mdb"] = json!(-6000);
         let changed = call(explicit);
-        let changed: Value = serde_json::from_str(changed["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_ne!(payload["projectSha256"], changed["projectSha256"]);
         assert_eq!(files(), before);
     }
@@ -958,7 +953,7 @@ mod tests {
     #[test]
     fn mix_validation_rejects_bounds_nested_keys_and_duck_cycles() {
         let server = Server::isolated();
-        let call = |args: Value| call_tool(&server, &json!({"name":"mix_validate","arguments":args}));
+        let call = |args: Value| gen_audio_core::mix::validate(&args["project"]).map_err(ToolError::from);
         for (pointer, value) in [
             ("/duration_ms", json!(600001)),
             ("/duration_ms", json!(10000.0)),
@@ -986,16 +981,16 @@ mod tests {
         let mut project = mix_project();
         project["master"] = json!({"unknown":false});
         assert_eq!(call(json!({"project":project})).unwrap_err().code, -32602);
-        assert_eq!(call(json!({"project":mix_project(),"output":"mix.wav"})).unwrap_err().code, -32602);
+        assert_eq!(call_tool(&server, &json!({"name":"wingen.audio_mix",
+            "arguments":{"project":mix_project(),"output":"mix.wav","unknown":true}})).unwrap_err().code, -32602);
     }
 
     #[test]
     fn mix_validation_returns_honest_source_and_resource_refusals() {
-        let server = Server::isolated();
         let call = |project: Value| {
-            let result = call_tool(&server, &json!({"name":"mix_validate","arguments":{"project":project}})).unwrap();
-            assert_eq!(result["isError"], true);
-            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap()
+            let result = gen_audio_core::mix::validate(&project).unwrap();
+            assert_eq!(result["ok"], false);
+            result
         };
         for (source, code) in [
             ("ga:audio_clip:aaaaaaaaaaaaaaaaaaaaaaaaaa", "asset_not_found"),

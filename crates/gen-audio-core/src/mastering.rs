@@ -5,7 +5,7 @@
 //! is never changed, and a successful result is evidence of audio processing,
 //! not evidence that any speech was synthesized.
 
-mod process;
+pub(crate) mod process;
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
@@ -116,7 +116,7 @@ fn next_output_name() -> String {
     )
 }
 
-fn is_windows_device_name(stem: &str) -> bool {
+pub(crate) fn is_windows_device_name(stem: &str) -> bool {
     let base = stem
         .split('.')
         .next()
@@ -144,7 +144,7 @@ pub fn master(scratch: &Scratch, args: &Value) -> Result<Value, String> {
     master_with_program(scratch, args, &ffmpeg_program()?)
 }
 
-fn ffmpeg_program() -> Result<OsString, String> {
+pub(crate) fn ffmpeg_program() -> Result<OsString, String> {
     match std::env::var_os("GEN_AUDIO_FFMPEG") {
         None => Ok("ffmpeg".into()),
         Some(program) => {
@@ -323,7 +323,7 @@ fn report_name(output: &str) -> Result<String, String> {
     Ok(format!("{stem}.json"))
 }
 
-fn destination_paths(
+pub(crate) fn destination_paths(
     scratch: &Scratch,
     wav_name: &str,
     report_name: &str,
@@ -621,7 +621,7 @@ fn parse_loudnorm(stderr: &[u8]) -> Result<Loudnorm, String> {
     })
 }
 
-fn read_bounded(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_bounded(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
     let file = fs::File::open(path).map_err(|_| "mastering could not read a reserved artifact")?;
     let metadata = file
         .metadata()
@@ -639,7 +639,7 @@ fn read_bounded(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -663,12 +663,12 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-struct StagingDir {
-    path: PathBuf,
+pub(crate) struct StagingDir {
+    pub(crate) path: PathBuf,
 }
 
 impl StagingDir {
-    fn create(scratch: &Path) -> Result<Self, String> {
+    pub(crate) fn create(scratch: &Path) -> Result<Self, String> {
         for _ in 0..32 {
             let id = NEXT_ARTIFACT.fetch_add(1, Ordering::Relaxed);
             let path = scratch.join(format!("master-work-{}-{id}", std::process::id()));
@@ -711,7 +711,7 @@ impl Drop for Publication {
     }
 }
 
-fn publish(
+pub(crate) fn publish(
     scratch: &Scratch,
     staged_wav: &Path,
     staged_report: &Path,
@@ -748,13 +748,13 @@ fn publish(
         &scratch
             .open_input(output_name)
             .map_err(|_| "mastering WAV was not persisted")?,
-        MAX_WAV_BYTES,
+        final_bytes.len(),
     )?;
     let persisted_report = read_bounded(
         &scratch
             .open_input(report_name)
             .map_err(|_| "mastering report was not persisted")?,
-        MAX_REPORT_BYTES,
+        report_bytes.len(),
     )?;
     if persisted_wav != final_bytes || persisted_report != report_bytes {
         return Err("mastering artifacts failed persistence verification".into());

@@ -1,4 +1,4 @@
-//! Small bounded, shell-free process runner used only by mastering.
+//! Bounded, shell-free process runner shared by mastering and WAV mixing.
 
 use std::io::Read;
 use std::process::{Command, ExitStatus, Stdio};
@@ -7,14 +7,14 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub(super) struct Limits {
+pub(crate) struct Limits {
     pub deadline: Duration,
     pub stdout: usize,
     pub stderr: usize,
 }
 
 #[derive(Debug)]
-pub(super) struct Output {
+pub(crate) struct Output {
     pub status: ExitStatus,
     pub _stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -36,7 +36,7 @@ enum Event {
     Stderr(Result<Vec<u8>, String>),
 }
 
-pub(super) fn run(command: &mut Command, limits: Limits) -> Result<Output, String> {
+pub(crate) fn run(command: &mut Command, limits: Limits) -> Result<Output, String> {
     let started = Instant::now();
     ACTIVE
         .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {

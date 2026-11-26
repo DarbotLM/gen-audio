@@ -15,6 +15,7 @@ pub mod fixture;
 pub mod library_store;
 pub mod mastering;
 pub mod mix;
+pub mod mix_render;
 pub mod paths;
 pub mod redact;
 pub mod script;

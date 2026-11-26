@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Partial implementation: native `mix_validate` is callable (§5.3.10).** It validates and hashes a mix plan using existing library metadata; it does not render audio. Music generation, MIDI, instruments, mixing DSP, new asset kinds and streaming remain proposed. Inventory below describes the historical baseline. |
+| Status | **Partial implementation: `wingen.audio_mix` renders verified stereo float WAVs (§5.3.10).** Native validation remains internal. The bounded renderer supports existing PCM16 library clips, trims, offsets, gains, pan/balance, mute/solo and fades; it is not the complete Level-1 mixer. Music generation, MIDI, instruments, new asset kinds, ducking, loops, calibrated mastering and streaming remain proposed. Inventory below describes the historical baseline. |
 | Audience | DarbotLabs engineers and coding agents evaluating a future implementation |
 | Intended repo path | `docs/MUSIC_GENERATION_SPEC.md` |
 | Baseline inspected | Local `main` at `e7603537289f69e45199395cf9d6d4371896bb60`; `origin/main` is `7fa121cd9b79bf1382e7f80730f2555f8afdcb44`. `e760353` only updates desktop Vite and `fast-uri` dependencies, so the product-code facts below are current at both revisions. |
@@ -259,7 +259,7 @@ See the **proposed** project JSON in §6.4. The mixer per block:
 
 ## 5. Proposed API surface
 
-Nothing in this section is registered in main's current 31-tool MCP surface.
+Except for `wingen.audio_mix` (§5.3.10), the music APIs in this section remain proposed.
 Level 0 is the first proposed point at which declarations could exist.
 
 ### 5.1 Conventions (inherited, normative)
@@ -338,7 +338,7 @@ gates are deliberately updated after review.
 
 ### 5.3 Tools
 
-Except for implemented `mix_validate` (§5.3.10), schemas below are proposed
+Except for implemented `wingen.audio_mix` (§5.3.10), schemas below are proposed
 `inputSchema` candidates. Integers carry units in their
 names (`_ms`, `_hz`, `_mdb` = millidecibels, `_milli` = ×1000,
 `_bpm_milli`).
@@ -530,41 +530,77 @@ GEN_AUDIO_MODEL_DIR"}` and no audio asset is minted. `musicgen` without the
 non-commercial opt-in returns `license_blocked`. These failures are not a
 `synthesizedSpeech` claim.
 
-#### 5.3.10 `mix_validate` and `mix_render` (Level 1)
+#### 5.3.10 `wingen.audio_mix` (implemented bounded WAV mode); full mixer remains Level 1
 
-- **Implemented:** `mix_validate {project: <MixProject JSON object>}` →
-  `{ok, normalized: MixProject, projectSha256, warnings:[...],
-  renderedAudio:false, synthesizedSpeech:false, absolutePathsOmitted:true}`.
-  The native Rust core reuses the existing validated ga1 release/user-library
-  catalog and integer JCS implementation; MCP remains the execution owner.
-  No Python, model, network call, media read, job, file write or asset minting
-  occurs. Success establishes a metadata-valid plan, **not playable audio**.
-- The input contract is `schemas/mix-project.schema.json`, also inlined in
-  `tools/list`. Unknown keys at every nesting level, invalid integer tokens,
-  duplicate layer ids, missing/self/cyclic duck keys and invalid source trims
-  return `-32602`. More than 16 layers or 64 KiB of serialized project JSON
-  returns `limit_exceeded`; absent source uids return `asset_not_found`.
-  Full uids are required. Only current mono/stereo `audio_clip` sources can
-  validate successfully; proposed `music_track`, `ambient_bed` and nested
-  `mix` sources return `not_configured` until their asset writers exist.
-- A normalized project is accepted as input again with the same SHA256.
-  Source media availability is not inferred from metadata: warnings say this
-  explicitly, and also flag unavailable source status and layers starting
-  beyond the project end. The hash describes the normalized **plan**, not PCM.
+The public validation-only route has been replaced, not aliased.
+`wingen.audio_mix {project: <MixProject>, output: "name.wav"}` performs
+internal ga1 validation, canonical normalization and SHA256 hashing, then
+renders the requested source audio using the existing bounded native FFmpeg
+process runner. It does not invoke Python or the speech `improve()` chain.
 
-Callable with the existing PowerShell MCP client against the built listener:
+**Supported mode**
+
+- 1..16 existing mono/stereo PCM16 `audio_clip` layers, at the **same** rate as
+  the project (16/24/44.1/48 kHz); stereo IEEE float32 WAV output only.
+- Exact round-half-up sample trims and offsets; layers are cut/padded to the
+  project length. Linear fades apply to each trimmed, timeline-clipped audible
+  span, then gain, mono constant-power pan (−3.01 dB center), or stereo balance.
+  Stereo balance attenuates each channel by `min(1, sqrt(2)*cos(theta))` /
+  `min(1, sqrt(2)*sin(theta))`, preserving both channels at center.
+- Mute always wins; any solo suppresses non-solo layers except `solo_safe`.
+  An entirely muted project intentionally produces silence, not a fixture.
+  Master gain and non-overlapping linear fades are supported.
+- Source paths are confined, symlinks/reparse points rejected, and the actual
+  WAV bytes, SHA256, rate, channels and duration must match catalog metadata.
+  Sources are rechecked when copied to private staging, including muted ones.
+  Baked sources require a checkout's staged locked library WAVs; generated
+  sources use the existing user library. No arbitrary paths or URLs are tool
+  inputs.
+- The rendered container, float format, exact frame count, finite PCM, full-scale
+  sample peak and persisted bytes are independently checked before success.
+  Over-full-scale output refuses instead of clipping. This is **not** a
+  calibrated true-peak or loudness measurement.
+
+**Explicitly unsupported:** loops, ducking, resampling, mono output, PCM16/24
+export, normalization, limiting, custom true-peak ceilings, overlapping fades,
+jobs/cancel/wait controls and Teams renditions. Set `master.limiter:false`,
+omit `target_lufs_milli`, leave the inactive `true_peak_mdbtp` at its default,
+and use `loop.mode:"off"` without `duck`. Unsupported options refuse before
+output staging; nothing is silently ignored.
+
+**Bounds and persistence:** 100..600000 ms, 64 KiB project JSON, 16 layers,
+256 MiB combined unique source WAVs, 256 MiB output, two concurrent renders,
+no queue, 120 seconds total deadline. Names must be unique scratch basenames.
+WAV and JSON provenance are published together with rollback on failure.
+Set the listener's `GEN_AUDIO_WORK_DIR` to a dedicated persistent directory
+(in a checkout, e.g. `artifacts\runtime\mixes`) to retain artifacts after exit.
+Default process scratch is temporary. An HTTP client timeout is not cancellation;
+use a client timeout longer than the render deadline.
+
+The result/provenance includes WAV SHA256, bytes, rate/channels/frames/duration,
+normalized project and project SHA256, verified source uids/hashes/honesty,
+audible layer spans and pan gains, sample peak/RMS, and
+`renderedAudio:true, synthesizedSpeech:false, assetMinted:false,
+libraryImported:false`. Inherited source speech/fixture facts are explicit.
+This is an **unregistered processing artifact**, not a fake ga1 `mix` asset;
+the §5.2 asset extension and import/release policy remain required future work.
+
+The existing PowerShell MCP client calls a running built listener:
 
 ```powershell
 $project = @{
     schema = 'ga-mix-1'
+    sample_rate_hz = 24000
+    channels = 2
     duration_ms = 10000
+    master = @{ limiter = $false; gain_mdb = -6000 }
     layers = @(@{
         id = 'voice'
-        source = 'ga:audio_clip:33g2yv7vmahe5hzxn2e6p57fuy'
+        source = 'ga:audio_clip:vtwxksrsuci7zygslimzfy7kdy'
         role = 'voice'
     })
 }
-.\scripts\mcp-call.ps1 -Tool mix_validate -ArgsJson (@{ project = $project } | ConvertTo-Json -Depth 12 -Compress)
+.\scripts\mcp-call.ps1 -Tool wingen.audio_mix -TimeoutSec 150 -ArgsJson (@{ project = $project; output = 'mix.wav' } | ConvertTo-Json -Depth 12 -Compress)
 ```
 
 - **Still proposed:** `mix_render`:
@@ -722,8 +758,8 @@ The table distinguishes that current boundary from proposed music I/O.
 
 ### 6.4 Mix project JSON (`schemas/mix-project.schema.json`)
 
-Validation and normalization are implemented; rendering and the `mix` asset
-writer remain proposed. Integers only (so the normalized project can later be
+Validation/normalization and the bounded WAV mode in §5.3.10 are implemented;
+the full mixer and `mix` asset writer remain proposed. Integers only (so the normalized project can later be
 JCS-hashed into `mix.fields.project_sha256` under the same rules as asset
 identity). Units are in the key names.
 
@@ -735,7 +771,8 @@ normalization), rather than silently choosing a loudness target. Active loops
 default to a 500 ms crossfade, which must not exceed the trimmed source span.
 Fades/crossfades and duck attack/release/hold are bounded to 0..30000 ms;
 lookahead is 0..100 ms. All duck fields are required when ducking is supplied.
-These are plan parameters only, not an implemented mixer.
+The renderer supports only the subset in §5.3.10; other valid plan parameters
+are rejected rather than silently skipped.
 
 ```jsonc
 {
@@ -1032,7 +1069,7 @@ their additional CI must be approved when introduced.
 
 Scope:
 
-- Add tool declarations (§5.3) to `tool_defs()` / `tool()` / `allowed_arguments()` for: `music_capabilities`, `noise_generate`, `ambient_generate`, `midi_import`, `midi_compose`, `midi_export`, `instrument_list`, `instrument_render`, `music_generate`, `mix_validate`, `mix_render`, `audio_encode`, `music_job_status`, `music_job_cancel`, `music_stream_open`, `music_stream_status`, `music_stream_close`.
+- Original declaration milestone (§5.3): `music_capabilities`, `noise_generate`, `ambient_generate`, `midi_import`, `midi_compose`, `midi_export`, `instrument_list`, `instrument_render`, `music_generate`, mix validation/rendering, `audio_encode`, `music_job_status`, `music_job_cancel`, `music_stream_open`, `music_stream_status`, `music_stream_close`. The implemented public mix entry is now `wingen.audio_mix`; validation is internal, and no additional public mix alias is registered.
 - Dispatch: `music_capabilities` returns every capability with `status:"not_configured"`. Every other tool validates its arguments (schema-level only) and returns `{ok:false, code:"not_configured", reason:"<capability> is declared but not implemented in this build"}`.
 - Writes no files, mints no assets, and creates no WAV or fixture.
 - No schema kind changes yet; proposed kinds arrive only with an actual writer.
@@ -1054,7 +1091,7 @@ Scope:
 - New crate `crates/gen-audio-music` with modules `noise`, `ambient`, `wav`, `resample`, `midi` (`midly` + caps + fuzz target), `gm`, `mix`, `loudness` (BS.1770-4 K-weighting, gating, true-peak 4× oversampling) and `limiter`.
 - Schema minor bump: kinds `ambient_bed`, `midi_sequence`, `mix`; roles `smf`, `mix_json`; claims `procedural_audio`, `symbolic_composition`, `mix_render`. Vectors added to `v1.json` and asserted in both Rust and TS. `UID_PROP.maxLength` → 48.
 - `schemas/mix-project.schema.json` + Rust validator + TS validator (UI never mints; parity only, as in the existing asset model).
-- Tools live: `noise_generate`, `ambient_generate`, `midi_import`, `midi_compose`, `midi_export`, `instrument_list` (data only), `mix_validate`, `mix_render` (WAV only), `music_job_*`. `music_capabilities` reports `noise`, `ambient`, `midi_io`, `midi_compose` and `mix` as `ok`, the rest `not_configured`.
+- Target tools: `noise_generate`, `ambient_generate`, `midi_import`, `midi_compose`, `midi_export`, `instrument_list` (data only), full validated mixing (public name `wingen.audio_mix`), `music_job_*`. The bounded WAV mode does not satisfy this full milestone. `music_capabilities` is intended to report `noise`, `ambient`, `midi_io`, `midi_compose` and `mix` as `ok` only when those requirements pass, the rest `not_configured`.
 - The current AgentYankers bed/stinger implementation remains unchanged unless a separate migration is approved.
 
 Acceptance tests:

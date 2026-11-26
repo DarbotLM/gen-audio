@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { copyUidButton, flipGlyph, flipGlyphLabel } from "../src/glyph.ts";
-import { applyCardOp, facesForCard } from "../src/render.ts";
+import { applyCardOp, facesForCard, fillCubeGlyph, setTileFaceState } from "../src/render.ts";
 
 class Classes {
   private values = new Set<string>();
@@ -39,6 +39,12 @@ class Node {
       this.children.push(node);
     }
   }
+  replaceChildren(...nodes: Node[]) {
+    for (const child of this.children) child.parent = null;
+    this.children = [];
+    this.textContent = "";
+    this.append(...nodes);
+  }
   remove() {
     if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this);
   }
@@ -53,13 +59,16 @@ class Node {
   querySelector(query: string): Node | null { return this.selector?.(query) ?? null; }
   querySelectorAll(query: string): Node[] { return this.query?.(query) ?? []; }
   closest(query: string): Node | null { return query === ".face" ? this.closestFace : null; }
-  dispatch(name: string) {
+  dispatch(name: string, key = "Enter") {
     const event = {
-      stopPropagation() {},
-      preventDefault() {},
-      key: name === "keydown" ? "Enter" : undefined,
+      stopped: false,
+      defaultPrevented: false,
+      stopPropagation() { this.stopped = true; },
+      preventDefault() { this.defaultPrevented = true; },
+      key: name === "keydown" ? key : undefined,
     };
     for (const listener of this.listeners.get(name) ?? []) listener(event);
+    return event;
   }
 }
 
@@ -170,4 +179,75 @@ test("card_status and legacy flipcard update refs without changing either tile's
   }
   const badge = profile.children.find((child) => child.className === "profile-status");
   assert.match(badge?.textContent ?? "", /persona face/);
+});
+
+// Port livetile-faces-v2 regressions to the reducer-owned multi-face contract.
+test("flip glyph consumes Enter and Space exactly once; a single-face tile cannot flip", () => {
+  let flips = 0;
+  const uid = "ga:card:wgi2proc543zzqzfa2ydlfbnl4";
+  const glyph = flipGlyph(uid, () => { flips += 1; }) as unknown as Node;
+  assert.ok(glyph);
+  for (const key of ["Enter", " "]) {
+    const event = glyph.dispatch("keydown", key);
+    assert.equal(event.defaultPrevented, true, key);
+    assert.equal(event.stopped, true, key);
+  }
+  assert.equal(flips, 2);
+  assert.equal(glyph.dispatch("keydown", "a").defaultPrevented, false);
+  assert.equal(flips, 2);
+  glyph.setAttribute("aria-disabled", "true");
+  glyph.dispatch("click");
+  glyph.dispatch("keydown", "Enter");
+  glyph.dispatch("keydown", " ");
+  assert.equal(flips, 2, "disabled glyph never advances a face");
+  assert.equal(flipGlyphLabel(0, ["Connector"]), "Card has 1 face: Connector");
+});
+
+test("only the selected face remains visible and interactive, including wrap to first face", () => {
+  const ids = ["clip", "cube", "layers", "spectrogram", "relations"];
+  const names = ["Clip", "Cube", "Layers", "Spectrogram", "Relations"];
+  const card = tile("clip", ids, names);
+  const faces = card.querySelectorAll(":scope > .flip > .face");
+  const glyph = flipGlyph("ga:card:wgi2proc543zzqzfa2ydlfbnl4", () => {}) as unknown as Node;
+  card.selector = (selector) => selector === ":scope > .flip-glyph" ? glyph : null;
+  for (let step = 0; step <= ids.length; step += 1) {
+    const index = step % ids.length;
+    assert.equal(setTileFaceState(card as unknown as HTMLElement, {
+      face_id: ids[index], face_index: index, face_count: ids.length, ids, names,
+    }), true);
+    assert.equal(card.dataset.faceId, ids[index]);
+    assert.equal(glyph.getAttribute("aria-label"), `Flip card, face ${index + 1} of ${ids.length}: ${names[(index + 1) % ids.length]}`);
+    for (let i = 0; i < faces.length; i += 1) {
+      assert.equal(faces[i].hidden, i !== index);
+      assert.equal(faces[i].getAttribute("aria-hidden"), String(i !== index));
+      assert.equal(faces[i].getAttribute("inert") !== null, i !== index);
+    }
+  }
+});
+
+test("spatial cube identity mark is passive; only its labelled copy control writes the uid", async () => {
+  const slot = new Node();
+  const catalog = JSON.parse(readFileSync(repo("apps/desktop/public/library/assets.json"), "utf8"));
+  const cube = catalog.assets.find((asset: { kind: string; legacy_id?: string }) =>
+    asset.kind === "cube_ihdr" && asset.legacy_id === "lib-misaki-kokoro.cube");
+  assert.ok(cube, "the real library cube exists");
+  const uid: string = cube.uid;
+  const announced: Array<[string, boolean]> = [];
+  copied.length = 0;
+  fillCubeGlyph(slot as unknown as HTMLElement, uid, (value, ok) => announced.push([value, ok]));
+  assert.equal(slot.children.length, 2);
+  const [mark, button] = slot.children;
+  assert.equal(mark.getAttribute("role"), "img");
+  assert.equal(mark.classList.contains("ga-glyph-mark"), true);
+  mark.dispatch("click");
+  mark.dispatch("keydown", "Enter");
+  assert.deepEqual(copied, []);
+  assert.equal(button.textContent, "Copy cube uid");
+  button.dispatch("click");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(copied, [uid]);
+  assert.deepEqual(announced, [[uid, true]]);
+  fillCubeGlyph(slot as unknown as HTMLElement, null);
+  assert.equal(slot.children.length, 0);
+  assert.equal(slot.textContent, "");
 });

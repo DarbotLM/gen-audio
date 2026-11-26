@@ -140,6 +140,8 @@ pub fn smoke() -> Result<String, String> {
         "viewport_get",
         "card_export",
         "cube_layers",
+        "semantic_schema_library",
+        "semantic_cube_project",
         "asset_resolve",
         "asset_list",
         "asset_glyph",
@@ -284,6 +286,8 @@ fn tool_defs() -> Vec<Value> {
         tool("voice_profile_get", "Return one persona profile: tone, purpose, domain, accent, traits, refs. Not audio."),
         tool("voice_profile_list", "List personas and TTS voice models. LLM ids are connectors, not agents."),
         tool("cube_layers", "Read signal, tonality, confidence, and quality summaries from an allowlisted library cube JSON. Omits point clouds and absolute paths."),
+        tool("semantic_schema_library", "Return the bundled semantic metric schemas and labeled examples. No network or live data."),
+        tool("semantic_cube_project", "Validate a semantic metric cube and return a bounded page of normalized points. Missing observations remain missing; clipping is explicit. No external data fetch."),
         tool("asset_resolve", "Resolve a ga1 asset uid (or a ga:<kind>: prefix of 8+ chars) from the library catalog. Media come back as /library URLs plus sha256."),
         tool("asset_list", "Page through library assets in uid order. Optional kind; limit 1 to 100 (default 50); cursor is the last uid returned."),
         tool("asset_glyph", "Braille glyph, dot pattern, kind hue class and aria label for a ga1 uid. Visual hint only; resolve by uid."),
@@ -298,6 +302,7 @@ static UID_PROP: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
 
 fn tool(name: &str, description: &str) -> Value {
     let (properties, required) = match name {
+        "semantic_cube_project" => (json!({"document":{"type":"object"},"offset":{"type":"integer","minimum":0,"maximum":32768},"limit":{"type":"integer","minimum":1,"maximum":2048,"default":2048}}), json!(["document"])),
         "synth" => (
             json!({
                 "script": {"type": "string"},
@@ -467,6 +472,22 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
     }
     known_arguments(name, &args)?;
     let payload = match name {
+        "semantic_schema_library" => gen_audio_core::semantic_cube::library(),
+        "semantic_cube_project" => {
+            let page_value = |key: &str, default: usize, maximum: usize| -> Result<usize, ToolError> {
+                match args.get(key) {
+                    None => Ok(default),
+                    Some(value) => value.as_u64()
+                        .filter(|n| *n <= maximum as u64)
+                        .map(|n| n as usize)
+                        .ok_or_else(|| ToolError::from((-32602, format!("invalid {key}")))),
+                }
+            };
+            let offset = page_value("offset", 0, 32768)?;
+            let limit = page_value("limit", 2048, 2048)?;
+            gen_audio_core::semantic_cube::project_page(&args["document"], offset, limit)
+                .map_err(|error| (-32602, error))?
+        }
         "synth" => synth(server, &args)?,
         "improve" => python_tool(server, PythonTool::Improve, &args)?,
         "master_audio" => gen_audio_core::mastering::master(&server.scratch, &args)
@@ -534,6 +555,8 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
 /// inputSchema properties (tested): the UI and agents speak one contract.
 fn allowed_arguments(name: &str) -> &'static [&'static str] {
     match name {
+        "semantic_schema_library" => &[],
+        "semantic_cube_project" => &["document", "offset", "limit"],
         "synth" => &[
             "script",
             "castMap",
@@ -884,6 +907,38 @@ pub mod http;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_cube_tools_project_real_records_and_reject_bad_requests() {
+        let server = Server::isolated();
+        let call = |name: &str, args: Value| handle(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":name,"arguments":args}}),
+        ).unwrap().unwrap();
+        let response = call("semantic_schema_library", json!({}));
+        let library: Value = serde_json::from_str(
+            response["result"]["content"][0]["text"].as_str().unwrap(),
+        ).unwrap();
+        assert_eq!(library["schemas"].as_array().unwrap().len(), 2);
+        let mut doc = library["examples"][0].clone();
+        let response = call("semantic_cube_project", json!({"document":doc,"limit":1}));
+        let page: Value = serde_json::from_str(
+            response["result"]["content"][0]["text"].as_str().unwrap(),
+        ).unwrap();
+        assert_eq!(page["points"].as_array().unwrap().len(), 1);
+        assert_eq!(page["totalPoints"], 48);
+        assert_eq!(page["nextOffset"], 1);
+        for bad in [json!(-1), json!(0.5), json!("1"), Value::Null, json!(2049), json!(0)] {
+            assert_eq!(call("semantic_cube_project",json!({"document":doc,"limit":bad}))["error"]["code"], -32602);
+        }
+        assert_eq!(call("semantic_cube_project",json!({"document":doc,"offset":-1}))["error"]["code"], -32602);
+        assert_eq!(call("semantic_cube_project",json!({"document":doc,"unexpected":true}))["error"]["code"], -32602);
+        doc["layers"][0]["color"] = json!("red");
+        assert_eq!(call("semantic_cube_project",json!({"document":doc}))["error"]["code"], -32602);
+        assert_eq!(call("semantic_cube_project",json!({"document":"bad"}))["error"]["code"], -32602);
+    }
+
 
     #[test]
     fn calls_do_not_require_a_stored_session() {

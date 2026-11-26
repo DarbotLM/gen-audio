@@ -17,6 +17,7 @@ pub mod mastering;
 pub mod paths;
 pub mod redact;
 pub mod script;
+pub mod semantic_cube;
 pub mod serve;
 pub mod viewport;
 pub mod voices;

@@ -47,7 +47,7 @@ internal static class WingenAudioHost
                 "cube-layers" => RunCubeLayers(args[1..]),
                 "mxc" => await RunMxcAsync(args[1..]),
                 "powertorch" => RunPowerTorch(args[1..]),
-                "vibevoice" => RunVibeVoice(args[1..]),
+                "vibevoice" => await RunVibeVoiceAsync(args[1..]),
                 "worker" => await RunWorkerAsync(args[1..]),
                 "worker-server" => await RunWorkerServerAsync(args[1..]),
                 "score" => RunScore(args[1..]),
@@ -349,7 +349,7 @@ internal static class WingenAudioHost
         return cpu.IsAvailable && accelerator.IsAvailable ? 0 : 2;
     }
 
-    private static int RunVibeVoice(string[] args)
+    private static async Task<int> RunVibeVoiceAsync(string[] args)
     {
         if (args.Length == 0)
         {
@@ -365,6 +365,86 @@ internal static class WingenAudioHost
             return receipt.Ok ? 0 : 2;
         }
 
+        if (args[0] == "generate")
+        {
+            var generationOptions = ParseOptions(args[1..]);
+            JsonObject? request = null;
+            if (generationOptions.TryGetValue("request", out string? requestPath))
+            {
+                request = await ReadObjectAsync(requestPath);
+            }
+            string Value(string name, string? fallback = null)
+            {
+                if (generationOptions.TryGetValue(name, out string? direct))
+                {
+                    return direct;
+                }
+                string? requestValue = request?[name.Replace('-', '_')]?.ToString();
+                return requestValue ?? fallback
+                    ?? throw new ArgumentException(
+                        $"Missing required option --{name}.");
+            }
+            string voiceRoot = Value(
+                "voice-root",
+                request?["voice_root"]?.GetValue<string>()
+                    ?? Directory.GetCurrentDirectory());
+            string modelDirectory = Value(
+                "model-dir",
+                request?["model_dir"]?.GetValue<string>());
+            string tokenizerDirectory = Value(
+                "tokenizer-dir",
+                request?["tokenizer"]?.GetValue<string>()
+                    ?? Path.Combine(modelDirectory, "tokenizer"));
+            string[] voiceReferences =
+                generationOptions.TryGetValue("voice-refs", out string? directVoiceRefs)
+                    ? directVoiceRefs.Split(
+                        ';',
+                        StringSplitOptions.RemoveEmptyEntries |
+                        StringSplitOptions.TrimEntries)
+                    : request?["voiceRefs"]?.AsArray()
+                        .Select(item => item!.GetValue<string>())
+                        .ToArray() ?? [];
+            var requestOptions = new VibeVoiceGenerationOptions(
+                modelDirectory,
+                tokenizerDirectory,
+                voiceRoot,
+                Value(
+                    "script",
+                    request?["scriptText"]?.GetValue<string>()),
+                voiceReferences,
+                Value(
+                    "output",
+                    request?["output"]?.GetValue<string>()),
+                int.Parse(Value(
+                    "max-new-tokens",
+                    request?["maxNewTokens"]?.ToString() ?? "256")),
+                double.Parse(Value(
+                    "max-seconds",
+                    request?["maxSeconds"]?.ToString() ?? "30"),
+                    System.Globalization.CultureInfo.InvariantCulture),
+                double.Parse(Value(
+                    "cfg-scale",
+                    request?["cfgScale"]?.ToString() ?? "1.3"),
+                    System.Globalization.CultureInfo.InvariantCulture),
+                int.Parse(Value(
+                    "inference-steps",
+                    request?["inferenceSteps"]?.ToString() ?? "20")),
+                int.Parse(Value(
+                    "seed",
+                    request?["seed"]?.ToString() ?? "0")),
+                double.Parse(Value(
+                    "timeout-seconds",
+                    request?["timeoutSeconds"]?.ToString() ?? "600"),
+                    System.Globalization.CultureInfo.InvariantCulture));
+            await using var generator =
+                await VibeVoiceGenerator.LoadAsync(modelDirectory);
+            var generation = await generator.GenerateAsync(requestOptions);
+            Console.WriteLine(JsonSerializer.Serialize(
+                generation,
+                JsonOptions));
+            return generation.Ok ? 0 : 2;
+        }
+
         if (args[0] != "capability")
         {
             throw new ArgumentException($"Unknown vibevoice command '{args[0]}'.");
@@ -375,8 +455,8 @@ internal static class WingenAudioHost
             options.GetValueOrDefault("tokenizer-dir"),
             options.GetValueOrDefault("script"),
             options.GetValueOrDefault("voice-root"),
-            options.TryGetValue("voice-refs", out string? voiceRefs)
-                ? voiceRefs.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            options.TryGetValue("voice-refs", out string? capabilityVoiceRefs)
+                ? capabilityVoiceRefs.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 : null);
         Console.WriteLine(JsonSerializer.Serialize(receiptCapability, JsonOptions));
         return receiptCapability.GenerationReady ? 0 : 2;
@@ -601,6 +681,7 @@ wingen.audio mxc probe
 wingen.audio powertorch probe
 wingen.audio vibevoice capability --model-dir PATH [--tokenizer-dir PATH] [--script TEXT --voice-root PATH --voice-refs A;B]
 wingen.audio vibevoice synthetic [--tokenizer-dir PATH]
+wingen.audio vibevoice generate --request FILE [--voice-root PATH] | --model-dir PATH --script TEXT --voice-refs A;B --output WAV [options]
 wingen.audio mxc run --command COMMAND [--backend process|processcontainer|wslc] [--readonly P1;P2] [--readwrite P1;P2] [--deny P1;P2] [--host-loopback allow] [--network-egress allow] [--timeout-ms MS] [--gpu true]
 wingen.audio score --engine ENGINE --free-memory-gib N [placement signals]
 """);

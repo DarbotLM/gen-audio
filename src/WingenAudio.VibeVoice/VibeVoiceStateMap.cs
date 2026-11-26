@@ -146,12 +146,44 @@ public sealed class VibeVoiceStateMap : IDisposable
             throw new InvalidDataException(
                 $"Checkpoint is missing state prefix '{prefix}'.");
         }
+
         var state = new Dictionary<string, Tensor>(names.Length, StringComparer.Ordinal);
         try
         {
             foreach (string name in names)
             {
                 state.Add(name, await LoadTensorAsync(name, cancellationToken: cancellationToken));
+            }
+            return state;
+        }
+        catch
+        {
+            foreach (Tensor tensor in state.Values)
+            {
+                tensor.Dispose();
+            }
+            throw;
+        }
+    }
+
+    public async ValueTask<Dictionary<string, Tensor>> LoadAllAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var state = new Dictionary<string, Tensor>(
+            Entries.Count,
+            StringComparer.Ordinal);
+        try
+        {
+            foreach (VibeVoiceStateEntry entry in Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                state.Add(
+                    entry.Name,
+                    await LoadTensorAsync(
+                        entry.Name,
+                        maximumBytes: 2_000_000_000,
+                        cancellationToken));
             }
             return state;
         }

@@ -57,45 +57,36 @@ No `TODO`, `FIXME`, `HACK`, `NYI`, `WIP`, `dummy`, or `fake` markers remain in p
 
 ## Wingen Audio native worker cutover
 
-The temporary Python inference process is isolated behind the stable `/v1`
-worker contract. `wingen.audio.exe` is the Windows production host and is built
-self-contained on .NET 11. PowerShell 7 remains the Windows operator and
-recovery plane; DarbotLM/MXC owns native containment; F# owns typed domain
-contracts and placement; C# owns HTTP, process, JSON, audio-artifact, and MXC
-execution. Complete these in order:
+The detailed architecture, commands, dependency pin, security boundary, and
+current proof state are in [WINGEN_AUDIO.md](WINGEN_AUDIO.md).
 
-1. **Freeze the worker wire contract.** Version the status, preflight, load,
-   unload, and generate receipts; define F# error codes, 64 KiB request and
-   4 MiB response limits, cancellation, output roots, hashes, and worker health.
-2. **Finish MXC residency.** Add persistent `wingen.audio.exe mxc host` lifecycle
-   support for ProcessContainer and GPU-capable WSLC: provision, start, execute,
-   stop, deprovision, bounded stdout, process tree cleanup, and container-state
-   recovery.
-3. **Package native model assets.** Produce immutable VibeVoice and PersonaPlex
-   tokenizer/model/voice manifests with ONNX or TensorRT graph hashes, providers,
-   precision, required GPU/RAM, and migration checks from the current weights.
-4. **Implement the F# model domain.** Put engine selection, generation requests,
-   placement budgets, tokenizer/voice confinement, cancellation, and stable
-   receipts in `WingenAudio.Contracts`.
-5. **Implement the C# inference runtime.** Add ONNX Runtime/TensorRT or DirectML
-   adapters, tokenizer and PCM pipelines, CUDA/CPU/WSLC placement, streaming,
-   bounded buffers, GPU memory accounting, and atomic WAV publication.
-6. **Expose the native `/v1` server.** Run the worker endpoints from
-   ASP.NET Core inside MXC, preserving the existing loopback-only contract and
-   using authenticated coordinator transport for remote nodes.
-7. **Own worker lifecycle from Windows.** Switch `start-speech-7b.ps1` and
-   `cluster.ps1` to Scheduled Task + MXC host supervision, Job Objects, process
-   affinity, port ownership, Event Log, restart budgets, and graceful GPU model
-   unload.
-8. **Gate on real generation.** Run fixed VibeVoice and PersonaPlex prompts through
-   old and new workers; verify WAV rate/channels/duration, deterministic seeds
-   where available, memory limits, startup, cancellation, and failure receipts.
-9. **Cut over installed products.** Ship `wingen.audio.exe` in NSIS, MSI, MSIX,
-   and NuGet; switch `GEN_AUDIO_*_WORKER_URL` defaults to the MXC-backed native
-   worker; keep rollback only behind an explicit compatibility flag.
-10. **Remove the temporary runtime.** After parity and recovery soak, delete the
-    Python `model_workers` package, isolated 7B Python environments, Python
-    dependency branches, and Python process launch paths.
+Completed framework milestones:
+
+1. Pinned PowerTorch/MXC dependencies and a self-contained `.NET 11`
+   `wingen.audio.exe`.
+2. Added PowerShell `contracts`, `execution`, `preflight`, `vibevoice`,
+   `cluster`, `model_clients`, `plugins`, and service control surfaces.
+3. Enabled PowerShell-over-SSH using the existing Windows identity store; WinRM
+   is enabled on all four workers. WSL SSH activates automatically when a WSL
+   distribution becomes available.
+4. Added native BF16 checkpoint validation, 1,205-tensor/10-shard model mapping,
+   Qwen2/GQA/RoPE, tokenizer/BPE, PCM WAV input/resampling, acoustic/semantic
+   tokenizer graphs, diffusion graph, KV-cache primitives, and synthetic WAV
+   publication.
+5. Kept the public worker contract live through `plugins.ps1` and
+   `wingen.audio.exe worker-server`; VibeVoice and PersonaPlex production
+   services remain available during parity work.
+
+Current production gate:
+
+- A real VibeVoice 7B CPU load succeeds, but a 48-token generation exceeded the
+  bounded 20-minute real-run gate on the current host. The legacy workers are
+  restored after that test.
+- The remaining native work is measured generation performance, exact stream/KV
+  equivalence, sustained stop/cancel behavior, real WAV/manifest publication,
+  and accelerator transfer/residency.
+- Do not remove the isolated upstream compute workers or stamp VibeVoice/PersonaPlex
+  fully native until real 7B generation and rollback-soak gates pass.
 
 ### Forward log: replacing seven worker dependencies
 

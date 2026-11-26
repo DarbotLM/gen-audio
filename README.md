@@ -421,6 +421,10 @@ Windows tooling uses a small set of canonical entry points. Compatibility script
 | `scripts\mcp-call.ps1 -Tool <name> [-ArgsJson <json>] [-Port <n>]` | One MCP `tools/call` over HTTP. Finds the server from `-Port`, `GEN_AUDIO_MCP_ADDR`, `127.0.0.1:8765`, then the loopback ports a `gen-audio` process listens on, and checks `initialize` says `gen-audio`. Example: `scripts\mcp-call.ps1 -Tool ui_navigate -ArgsJson '{"slide":"slide:library"}'`. |
 | `scripts\ui-shot.ps1 -Out <png>` | Captures the Gen-Audio window with Win32 `PrintWindow`. No input injection and no screen-scrape fallback. Fails on a blank capture and prints the PNG's sha256. |
 
+See [docs/WINGEN_AUDIO.md](docs/WINGEN_AUDIO.md) for the verified command
+surface, native model state, PowerTorch/MXC pinning, SSH/WSL/PowerShell remoting,
+release integration, and the exact remaining production gates.
+
 `scripts/lib/devenv.ps1` holds the shared helpers (`Import-VsDevEnv`, `Invoke-Checked`) and is the only file that may source `vcvars64.bat`. The remaining `scripts/*.py` files are compatibility shims into `gen_audio.cli`. Library rev-3 cube JSON/PNG comes from `scripts\cube_layers.ps1 WAV OUT_JSON -Stem STEM -Engine ENGINE [-Label LABEL] [-Png PNG]`; the F# generator records its own normalized source hash. The existing Python manifest command still synchronizes legacy cube blocks while the rest of manifest ownership moves native. The Library manifest has one home, `apps/desktop/public/library/manifest.json`. Vite copies it into `dist` at build time.
 
 ## Layout

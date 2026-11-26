@@ -245,7 +245,6 @@ function Invoke-SprawlGate {
         'scripts/deploy-cluster-node.ps1', 'scripts/run-resident-worker.ps1', 'scripts/start-speech-7b.ps1', 'scripts/Invoke-GenAudio7B.ps1', 'scripts/Invoke-GenAudioCluster.ps1',
         'scripts/cluster.ps1', 'scripts/model_clients.ps1', 'scripts/service.ps1', 'scripts/cube_layers.ps1', 'scripts/contracts.ps1',
         'scripts/execution.ps1', 'scripts/preflight.ps1', 'scripts/vibevoice.ps1', 'scripts/plugins.ps1',
- 'scripts/plugins.ps1',
         'apps/desktop/src-tauri/windows/hooks.nsh', 'apps/desktop/validate.check.mts')
     $self = 'scripts/test.ps1'
     $vcvarsOwner = 'scripts/lib/devenv.ps1'

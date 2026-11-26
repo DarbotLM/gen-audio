@@ -8,6 +8,9 @@ import {
   exitCompare,
   getCubeMeta,
   isCompareOn,
+  isSemanticCube,
+  loadSemanticCube,
+  semanticCubeCaption,
   loadCompareCube,
   loadCube,
   onCubeClock,
@@ -37,6 +40,8 @@ import {
   userPlayControl,
 } from "./play-control";
 import { fixturesRequested } from "./viewport-source";
+import { projectSemanticCube } from "./semantic-cube";
+import { bindSemanticCubePanel } from "./semantic-cube-panel";
 import { loadLibraryCatalog, mediaUrl, sourceSha256, type LibraryCatalog } from "./library-assets";
 import { decorateLibraryTiles } from "./livestrip";
 import { fillAgentVoiceSlides, flipAgentVoiceTile, loadAgentVoiceCatalog } from "./agentvoice";
@@ -358,12 +363,15 @@ function syncCubeChrome(): void {
     fillCubeGlyph(glyphSlot, cube?.uid ?? null, announceCopy);
   }
   const select = document.querySelector<HTMLSelectElement>("#cube-source");
-  if (select && cubeClipId) select.value = cubeClipId;
+  if (select) {
+    if (isSemanticCube()) select.selectedIndex = -1;
+    else if (cubeClipId) select.value = cubeClipId;
+  }
   const compareToggle = document.querySelector<HTMLButtonElement>("#cube-compare-toggle");
   if (compareToggle) {
     compareToggle.setAttribute("aria-pressed", cubeMode.state().cube_mode === "compare" ? "true" : "false");
     const available = Boolean(compareCubeFor(cubeClipId));
-    compareToggle.disabled = !isCompareOn() && !available;
+    compareToggle.disabled = isSemanticCube() || (!isCompareOn() && !available);
     compareToggle.title = available || isCompareOn()
       ? "Library formulas (rev 3) beside pipeline formulas (rev 2, PR #4) on the same WAV, one playback slice"
       : "No comparison cube for this clip in assets.json";
@@ -371,14 +379,14 @@ function syncCubeChrome(): void {
   const play = document.querySelector<HTMLButtonElement>("#cube-play");
   if (play) {
     const tile = cubeClipId ? board.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(cubeClipId)}"]`) : null;
-    play.disabled = !tile?.dataset.wavUrl;
+    play.disabled = isSemanticCube() || !tile?.dataset.wavUrl;
     play.textContent = cubeClipId && isClipPlaying(cubeClipId) ? "Pause" : "Play";
   }
 }
 
 /** When the Cube tab opens with nothing bound, bind the default library cube. */
 function ensureDefaultCube(): void {
-  if (boundCubeUrl() || noCubeClipId) return;
+  if (isSemanticCube() || boundCubeUrl() || noCubeClipId) return;
   const sources = cubeSources();
   const preferred = sources.find((item) => item.clipId === DEFAULT_CUBE_CLIP) ?? sources[0];
   if (!preferred) {
@@ -539,6 +547,7 @@ function libraryTile(clipId: string): HTMLElement | null {
 }
 
 function bindCubeToPlayingClip(clipId: string): void {
+  if (isSemanticCube()) return;
   const tile = libraryTile(clipId);
   if (!tile) return;
   const url = tile.dataset.cubeJson || "";
@@ -579,6 +588,31 @@ function bindCubeCanvas(): void {
     void cubeMode.request(next, cubeClipId || null).then(reportCubeMode);
   });
   rebuildLayerMatrixUi();
+  const picker = document.querySelector<HTMLElement>(".cube-picker");
+  if (picker) bindSemanticCubePanel(picker, (value, current) => projectSemanticCube(value, async args => {
+    const payload = await mcpCall("semantic_cube_project", args);
+    const error = (payload as { error?: { message?: unknown } } | null)?.error;
+    if (error) throw new Error(String(error.message ?? "Metric cube refused"));
+    const body = toolBody(payload);
+    if (!body) throw new Error("Native semantic projection unavailable");
+    return body;
+  }, current), async (result, current) => {
+    const before = cubeBindSeq;
+    if (!current()) return;
+    if (cubeMode.state().cube_mode === "compare") {
+      const ended = await cubeMode.request("single");
+      if (!ended.ok) throw new Error(ended.reason);
+    }
+    if (!current() || before !== cubeBindSeq) throw new Error("Cube binding changed while applying metrics");
+    cubeBindSeq++;
+    cubeClipId = "";
+    noCubeClipId = "";
+    setCubeClockClip(null);
+    const message = loadSemanticCube(result);
+    const caption = document.querySelector<HTMLElement>("#cube-caption");
+    if (caption) caption.textContent = message;
+    syncCubeChrome();
+  });
   const select = document.querySelector<HTMLSelectElement>("#cube-source");
   if (select) {
     select.replaceChildren();
@@ -621,6 +655,7 @@ function bindCubeCanvas(): void {
     const fraction = Number(input.value) / 1000;
     // ONE clock: scrubber seeks library audio AND slices cube layers.
     setCubeScrub(fraction);
+    if (isSemanticCube()) return;
     void (cubeClipId ? seekClipFraction(cubeClipId, fraction) : seekActiveFraction(fraction))
       .then((seeked) => {
         if (seeked !== "no player" && seeked !== "superseded") status.textContent = `Shared clock ${Math.round(fraction * 100)}% \u00b7 ${seeked}`;
@@ -645,7 +680,12 @@ function bindCubeCanvas(): void {
   }
   // Re-render keeps the bound cube; first render binds the default cube.
   const already = boundCubeUrl();
-  if (already) reportAsync(bindCubeSource(cubeClipId || DEFAULT_CUBE_CLIP, already, "default"), "cube");
+  if (isSemanticCube()) {
+    const caption = document.querySelector<HTMLElement>("#cube-caption");
+    if (caption) caption.textContent = semanticCubeCaption();
+    canvas.setAttribute("aria-label", "Semantic metric cube. Drag to rotate, wheel to zoom.");
+    syncCubeChrome();
+  } else if (already) reportAsync(bindCubeSource(cubeClipId || DEFAULT_CUBE_CLIP, already, "default"), "cube");
   else ensureDefaultCube();
 }
 
@@ -722,11 +762,12 @@ async function openCube(url: string, source: string): Promise<void> {
     return;
   }
   const owner = board.querySelector<HTMLElement>(`.library-tile[data-cube-json="${CSS.escape(url)}"]`);
-  cubeBindSeq += 1;
+  const seq = ++cubeBindSeq;
   cubeClipId = owner?.dataset.id ?? "";
   noCubeClipId = "";
   setCubeClockClip(cubeClipId || null, cubeClipId ? clipUid(cubeClipId) : null);
   const message = await loadCube(url);
+  if (seq !== cubeBindSeq) return;
   if (caption) caption.textContent = `${source}: ${message}`;
   syncCubeChrome();
   await followCubeMode(cubeClipId);
@@ -1139,7 +1180,7 @@ async function resyncViewport(): Promise<void> {
     if (typeof record.focus === "string") {
       focusClipTile(record.focus);
       bindCubeToPlayingClip(record.focus);
-      setCubeClockClip(record.focus, clipUid(record.focus));
+      if (!isSemanticCube()) setCubeClockClip(record.focus, clipUid(record.focus));
     } else if (record.focus === null) {
       setCubeClockClip(null);
     }

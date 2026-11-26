@@ -1061,3 +1061,13 @@ th, td { text-align: left; padding: 0.12rem 0.25rem; border-bottom: 1px solid va
 .av-appearance-list { margin: 0.1rem 0 0; padding-left: 1.4rem; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.1rem 0.4rem; font-size: 0.64rem; }
 .av-appearance { padding: 0.02rem 0.3rem; font-size: 0.64rem; font-variant-numeric: tabular-nums; }
 .av-pager { display: flex; align-items: center; gap: 0.3rem; margin-top: 0.1rem; }
+
+
+/* Semantic metric editor: uses the existing spatial stage and native MCP. */
+.semantic-editor { width: min(64rem, 90vw); max-height: 90vh; color: #dce6f5; background: #111827; border: 1px solid #425474; border-radius: 0.8rem; }
+.semantic-editor::backdrop { background: #030712cc; }
+.semantic-editor h2 { margin: 0 0 1rem; }
+.semantic-toolbar { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; }
+.semantic-toolbar input[type="file"] { max-width: 16rem; }
+.semantic-editor textarea { width: 100%; box-sizing: border-box; height: min(52vh, 36rem); margin: 1rem 0 0; resize: vertical; padding: 0.8rem; color: #e4edfa; background: #090e18; border: 1px solid #425474; font: 0.8rem/1.5 Consolas, monospace; }
+.semantic-feedback { min-height: 1.5rem; margin: 0.4rem 0; }

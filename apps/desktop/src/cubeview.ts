@@ -1,6 +1,7 @@
 /** Interactive library cube. Points come from cube JSON only. No invented layers. */
 
 import { surfaceUiError } from "./play-control";
+import { axisValue, hexRgb, type SemanticCube, type SemanticResult } from "./semantic-cube";
 import {
   checkPair,
   paneHeading,
@@ -32,6 +33,9 @@ export interface LayerParams {
   gain: number; // 0.25..3
   blend: BlendMode;
   order: number; // draw order only; the plane height comes from the layer (z) in JSON
+  label?: string;
+  color?: string;
+  position?: number;
 }
 
 /** Legend colors match the matplotlib reference PNG: blue / green / orange / pink. */
@@ -139,7 +143,10 @@ function newView(id: CubeView["id"], fallbackSelector: string): CubeView {
 const primary = newView("primary", "#cube-fallback");
 const compareView = newView("compare", "#cube-compare-fallback");
 
+let loadRevision = 0;
 const state = {
+  semantic: null as SemanticCube | null,
+  semanticCaption: "",
   layerIds: [] as string[],
   layers: new Map<string, LayerParams>(),
   yaw: -0.45,
@@ -322,9 +329,10 @@ export function getCubePlayhead(): CubePlayhead | null {
 
 /** ONE clock: fraction 0..1 of the bound clip's WAV. Optionally notify audio scrubbers. */
 export function setCubeScrub(fraction: number, opts?: { silent?: boolean }): void {
+  if (!Number.isFinite(fraction) || (state.semantic && opts?.silent)) return;
   state.scrub = Math.max(0, Math.min(1, fraction));
   draw();
-  if (!opts?.silent) {
+  if (!opts?.silent && !state.semantic) {
     for (const listener of state.clockListeners) listener(state.scrub);
   }
   const scrub = document.querySelector<HTMLInputElement>("#cube-scrub");
@@ -338,6 +346,21 @@ export function getCubeScrub(): number {
 
 /** Readout + coverage badge + covered scrub segment. Classes only (CSP style-src 'self'). */
 function syncClockUi(): void {
+  if (state.semantic) {
+    const clock = document.querySelector<HTMLElement>("#cube-clock");
+    if (clock) {
+      clock.textContent = axisValue(state.semantic.axes.x, state.scrub);
+      clock.classList.remove("is-beyond");
+    }
+    const badge = document.querySelector<HTMLElement>("#cube-badge");
+    if (badge) {
+      badge.textContent = `Metric cube · ${state.semantic.source.kind} · ${state.semantic.source.label}`;
+      badge.classList.remove("is-partial", "is-beyond");
+    }
+    const compareClock = document.querySelector<HTMLElement>("#cube-compare-clock");
+    if (compareClock) compareClock.textContent = "";
+    return;
+  }
   const meta = primary.meta;
   const head = getCubePlayhead();
   const compareClock = document.querySelector<HTMLElement>("#cube-compare-clock");
@@ -438,16 +461,20 @@ export async function loadCompareCube(url: string, shas: { primary: string | nul
   };
   if (!primary.meta || !primary.doc) return refuse("Bind a library cube before comparing.");
   const boundUrl = primary.meta.url;
+  const revision = loadRevision;
   const left = sideFromDoc(boundUrl, primary.doc, shas.primary);
   if (typeof left === "string") return refuse(left);
   let data: CubeDoc;
   try {
     const response = await fetch(url);
+    if (revision !== loadRevision) return { ok: false, reason: "Cube binding superseded." };
     if (!response.ok) return refuse(`Comparison cube JSON did not load (${response.status}). Nothing is drawn in its place.`);
     data = await response.json();
   } catch (error) {
+    if (revision !== loadRevision) return { ok: false, reason: "Cube binding superseded." };
     return refuse(`Comparison cube JSON did not load (${String(error)}). Nothing is drawn in its place.`);
   }
+  if (revision !== loadRevision) return { ok: false, reason: "Cube binding superseded." };
   if (primary.meta?.url !== boundUrl) return refuse("The bound cube changed while the comparison cube loaded.");
   const right = sideFromDoc(url, data, shas.compare);
   if (typeof right === "string") return refuse(right);
@@ -504,7 +531,7 @@ function setCompareChrome(): void {
       "aria-label",
       compare
         ? `${compare.sides[0].label} cube. Shared axes: seconds by Hz by layer. Drag to rotate both cubes, wheel to zoom.`
-        : "Inverse-HDR bitdot cube. Drag to rotate, wheel to zoom.",
+        : state.semantic ? "Semantic metric cube. Drag to rotate, wheel to zoom." : "Inverse-HDR bitdot cube. Drag to rotate, wheel to zoom.",
     );
   }
   if (compareView.canvas) {
@@ -565,6 +592,8 @@ export function listCubeLayers(): LayerParams[] {
 }
 
 function resetCube(): void {
+  state.semantic = null;
+  state.semanticCaption = "";
   if (state.compare) exitCompare();
   primary.points = [];
   primary.doc = null;
@@ -633,9 +662,11 @@ export function parseCubeDoc(url: string, data: CubeDoc): { points: CubePoint[];
 }
 
 export async function loadCube(url: string): Promise<string> {
+  const revision = ++loadRevision;
   let data: CubeDoc;
   try {
     const response = await fetch(url);
+    if (revision !== loadRevision) return "Cube load superseded.";
     if (!response.ok) {
       resetCube();
       draw();
@@ -643,11 +674,13 @@ export async function loadCube(url: string): Promise<string> {
     }
     data = await response.json();
   } catch (error) {
+    if (revision !== loadRevision) return "Cube load superseded.";
     resetCube();
     draw();
     surfaceUiError(error, "cube");
     return `Cube JSON did not load (${String(error)}).`;
   }
+  if (revision !== loadRevision) return "Cube load superseded.";
   const parsed = parseCubeDoc(url, data);
   if (typeof parsed === "string") {
     resetCube();
@@ -655,7 +688,10 @@ export async function loadCube(url: string): Promise<string> {
     return parsed;
   }
   // A new bound cube ends Compare: the comparison cube belonged to the old WAV.
+  state.semantic = null;
+  state.semanticCaption = "";
   if (state.compare) exitCompare();
+  setCompareChrome();
   primary.points = parsed.points;
   primary.doc = data;
   state.layerIds = [...parsed.names];
@@ -692,12 +728,50 @@ function shapeOf(data: { cube_shape_f_t?: unknown; layers?: Record<string, unkno
 }
 
 export function clearCube(message: string): void {
+  loadRevision++;
   resetCube();
+  setCompareChrome();
   draw();
   const caption = document.querySelector<HTMLElement>("#cube-caption");
   if (caption) caption.textContent = message;
   rebuildLayerMatrixUi();
   syncClockUi();
+}
+
+/** A validated native projection is rendered by the existing WebGL viewport. */
+export function isSemanticCube(): boolean { return state.semantic !== null; }
+
+export function semanticCubeDocument(): SemanticCube | null {
+  if (!state.semantic) return null;
+  const doc = structuredClone(state.semantic);
+  doc.layers = listCubeLayers().map(params => {
+    const source = doc.layers.find(layer => layer.id === params.id)!;
+    return { ...source, enabled: params.on, opacity: params.opacity, gain: params.gain, blend: params.blend };
+  });
+  return doc;
+}
+
+export function semanticCubeCaption(): string { return state.semanticCaption; }
+
+export function loadSemanticCube(result: SemanticResult): string {
+  const { document: doc, projection } = result;
+  loadRevision++;
+  resetCube();
+  state.semantic = structuredClone(doc);
+  primary.points = projection.points;
+  state.layerIds = doc.layers.map(layer => layer.id);
+  doc.layers.forEach((layer, order) => state.layers.set(layer.id, {
+    id: layer.id, label: layer.label, color: layer.color, position: layer.position,
+    on: layer.enabled, opacity: layer.opacity, gain: layer.gain, blend: layer.blend, order,
+  }));
+  state.scrub = 0;
+  primary.meta = { url: "", name: doc.id, title: doc.title, invHdr: null, points: projection.points.length,
+    freqBins: 0, timeBins: 0, durationS: null, binSeconds: null, coversS: null, revision: null, pngUrl: "" };
+  primary.dataVersion++;
+  state.semanticCaption = `${doc.source.label} · ${projection.points.length} observations · ${projection.skipped} missing · ${projection.clipped} clipped`;
+  setCompareChrome();
+  draw(); rebuildLayerMatrixUi(); setCubeScrub(0);
+  return state.semanticCaption;
 }
 
 /** Build / refresh opacity·gain·blend·reorder controls from JSON layers only. */
@@ -706,6 +780,17 @@ export function rebuildLayerMatrixUi(): void {
   if (!host) return;
   host.replaceChildren();
   const layers = listCubeLayers();
+  const legend = document.querySelector<HTMLElement>(".cube-legend");
+  if (legend) {
+    legend.replaceChildren();
+    const entries = state.semantic ? layers.map(layer => ({ id: layer.id, label: layer.label ?? layer.id })) : EXPECTED.map(id => ({ id, label: id }));
+    for (const entry of entries) {
+      const item = document.createElement("li");
+      item.dataset.layer = entry.id;
+      item.textContent = entry.label;
+      legend.append(item);
+    }
+  }
   if (layers.length === 0) {
     const empty = document.createElement("p");
     empty.className = "summary";
@@ -727,7 +812,7 @@ export function rebuildLayerMatrixUi(): void {
 
     const name = document.createElement("span");
     name.className = "cube-layer-name";
-    name.textContent = layer.id;
+    name.textContent = layer.label ?? layer.id;
     name.dataset.layer = layer.id; // swatch color via CSS class rules (CSP style-src self)
 
     const opacity = document.createElement("input");
@@ -1051,7 +1136,11 @@ function drawView(view: CubeView, slice: SliceHead | null): void {
   let headX = -1;
   let planeX = -1;
   let band = 0;
-  if (slice) {
+  if (state.semantic) {
+    headX = state.scrub * 2 - 1;
+    planeX = headX;
+    band = 0.04;
+  } else if (slice) {
     // Compare: the slice plane sits at the clock's exact second (same x on both cubes);
     // the highlight band follows this cube's own bin under it.
     planeX = slice.x * 2 - 1;
@@ -1083,7 +1172,7 @@ function drawView(view: CubeView, slice: SliceHead | null): void {
     if (!layer.on) continue;
     const entry = cache.layerBuffers.get(layer.id);
     if (!entry || entry.count === 0) continue;
-    const color = LAYER_COLORS[layer.id] ?? [0.7, 0.7, 0.7];
+    const color = layer.color ? hexRgb(layer.color) : LAYER_COLORS[layer.id] ?? [0.7, 0.7, 0.7];
     gl.uniform3f(gl.getUniformLocation(points, "u_color"), color[0], color[1], color[2]);
     gl.uniform1f(gl.getUniformLocation(points, "u_opacity"), layer.opacity);
     gl.uniform1f(gl.getUniformLocation(points, "u_gain"), layer.gain);
@@ -1113,20 +1202,21 @@ function gridLines(view: CubeView): number[] {
   for (const x of [-1, 1]) for (const z of [-1, 1]) pushSeg(out, [x, -1, z], [x, 1, z], box);
   const meta = view.meta;
   const axes = state.compare?.axes ?? null;
-  const timeTicks = axes ? secondTicks(axes.timeMaxS).map((s) => s / axes.timeMaxS) : ticks(meta?.timeBins ?? 0, tickStep(meta?.timeBins ?? 0, 50));
+  const timeTicks = state.semantic ? [0, 0.25, 0.5, 0.75, 1] : axes ? secondTicks(axes.timeMaxS).map((s) => s / axes.timeMaxS) : ticks(meta?.timeBins ?? 0, tickStep(meta?.timeBins ?? 0, 50));
   for (const t of timeTicks) {
     const x = t * 2 - 1;
     pushSeg(out, [x, -1, -1], [x, -1, 1], faint);
     pushSeg(out, [x, -1, 1], [x, 1, 1], faint);
   }
-  const freqTicks = axes ? hzTicks(axes.freqMaxHz).map((hz) => hz / axes.freqMaxHz) : ticks(meta?.freqBins ?? 0, tickStep(meta?.freqBins ?? 0, 20));
+  const freqTicks = state.semantic ? [0, 0.25, 0.5, 0.75, 1] : axes ? hzTicks(axes.freqMaxHz).map((hz) => hz / axes.freqMaxHz) : ticks(meta?.freqBins ?? 0, tickStep(meta?.freqBins ?? 0, 20));
   for (const f of freqTicks) {
     const z = f * 2 - 1;
     pushSeg(out, [-1, -1, z], [1, -1, z], faint);
     pushSeg(out, [-1, -1, z], [-1, 1, z], faint);
   }
-  EXPECTED.forEach((_, index) => {
-    const y = planeY(index / 3);
+  const planes = state.semantic ? state.semantic.layers.map(layer => layer.position) : EXPECTED.map((_, index) => index / 3);
+  planes.forEach(position => {
+    const y = planeY(position);
     pushSeg(out, [-1, y, 1], [1, y, 1], faint);
     pushSeg(out, [-1, y, -1], [-1, y, 1], faint);
   });
@@ -1180,7 +1270,8 @@ function ticks(bins: number, step: number): number[] {
 }
 
 export function layerCss(id: string): string {
-  const c = LAYER_COLORS[id] ?? [0.7, 0.7, 0.7];
+  const authored = state.layers.get(id)?.color;
+  const c = authored ? hexRgb(authored) : LAYER_COLORS[id] ?? [0.7, 0.7, 0.7];
   return `rgb(${Math.round(c[0] * 255)}, ${Math.round(c[1] * 255)}, ${Math.round(c[2] * 255)})`;
 }
 
@@ -1206,7 +1297,15 @@ function drawLabels(view: CubeView, slice: SliceHead | null): void {
     ctx.fillText(value, p.px + dx * ratio, p.py + dy * ratio);
   };
   const axes = state.compare?.axes ?? null;
-  if (axes) {
+  if (state.semantic) {
+    const doc = state.semantic;
+    for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+      text(axisValue(doc.axes.x, fraction), project3(fraction * 2 - 1, -1, -1), 0, 14);
+      text(axisValue(doc.axes.y, fraction), project3(1, -1, fraction * 2 - 1), 14, 8, "left");
+    }
+    text(`${doc.axes.x.label} (${doc.axes.x.unit})`, project3(0, -1, -1.28), 0, 26);
+    text(`${doc.axes.y.label} (${doc.axes.y.unit})`, project3(1.3, -1, 0), 20, 18, "left");
+  } else if (axes) {
     // Compare: shared axes in seconds and kHz, identical on both cubes.
     for (const s of secondTicks(axes.timeMaxS)) text(formatClock(s), project3((s / axes.timeMaxS) * 2 - 1, -1, -1), 0, 14);
     text("time (s, shared)", project3(0, -1, -1.28), 0, 26);
@@ -1224,15 +1323,18 @@ function drawLabels(view: CubeView, slice: SliceHead | null): void {
     }
     text("freq bin", project3(1.3, -1, 0), 20, 18, "left");
   }
-  EXPECTED.forEach((id, index) => {
-    ctx.fillStyle = layerCss(id);
-    text(id, project3(1, planeY(index / 3), 1), 10, 0, "left");
+  const labelPlanes = state.semantic ? state.semantic.layers.map(layer => ({ id: layer.id, label: layer.label, position: layer.position })) : EXPECTED.map((id, index) => ({ id, label: id, position: index / 3 }));
+  labelPlanes.forEach(layer => {
+    ctx.fillStyle = layerCss(layer.id);
+    text(layer.label, project3(1, planeY(layer.position), 1), 10, 0, "left");
   });
   // Axis title sits above the back-left vertical edge, clear of the layer-matrix overlay (top-right).
   ctx.fillStyle = ink;
-  text("layer (+value)", project3(-1, 1, 1), 0, -14, "left");
+  text(state.semantic ? "metric layer" : "layer (+value)", project3(-1, 1, 1), 0, -14, "left");
   ctx.fillStyle = "rgba(41, 211, 255, 0.95)";
-  if (slice) {
+  if (state.semantic) {
+    text(axisValue(state.semantic.axes.x, state.scrub), project3(state.scrub * 2 - 1, 1, -1), 0, -12);
+  } else if (slice) {
     text(`bin ${slice.bin}`, project3(slice.x * 2 - 1, 1, -1), 0, -12);
   } else {
     const head = getCubePlayhead();
@@ -1250,7 +1352,7 @@ function showFallback(view: CubeView, reason: string): void {
     img.hidden = false;
   }
   const caption = document.querySelector<HTMLElement>("#cube-caption");
-  if (caption) caption.textContent = `${reason} Showing the static cube PNG.`;
+  if (caption) caption.textContent = view.meta?.pngUrl ? `${reason} Showing the static cube PNG.` : `${reason} No static cube image is available.`;
 }
 
 function hideFallback(view: CubeView): void {

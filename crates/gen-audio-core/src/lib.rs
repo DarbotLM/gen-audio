@@ -5,6 +5,7 @@
 pub mod asset;
 pub mod asset_catalog;
 pub mod asset_migrate;
+pub(crate) mod audio_input;
 pub mod authoring;
 pub mod benchmark;
 pub mod bridge;

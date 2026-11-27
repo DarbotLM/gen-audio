@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Partial implementation: `wingen.audio_mix` renders verified stereo float WAVs (§5.3.10).** Native validation remains internal. The bounded renderer supports existing PCM16 library clips, trims, offsets, gains, pan/balance, mute/solo and fades; it is not the complete Level-1 mixer. Music generation, MIDI, instruments, new asset kinds, ducking, loops, calibrated mastering and streaming remain proposed. Inventory below describes the historical baseline. |
+| Status | **Partial implementation: `wingen.audio_mix` renders verified stereo float WAVs (§5.3.10).** It accepts authorized encoded audio/music, resamples, and supports authored dialogue sequencing as well as trims, gains, pan/balance, mute/solo and fades. It is not the complete Level-1 mixer. Music generation, MIDI, instruments, new asset kinds, ducking, loops, calibrated mastering and streaming remain proposed. Inventory below describes the historical baseline. |
 | Audience | DarbotLabs engineers and coding agents evaluating a future implementation |
 | Intended repo path | `docs/MUSIC_GENERATION_SPEC.md` |
 | Baseline inspected | Local `main` at `e7603537289f69e45199395cf9d6d4371896bb60`; `origin/main` is `7fa121cd9b79bf1382e7f80730f2555f8afdcb44`. `e760353` only updates desktop Vite and `fast-uri` dependencies, so the product-code facts below are current at both revisions. |
@@ -540,8 +540,12 @@ process runner. It does not invoke Python or the speech `improve()` chain.
 
 **Supported mode**
 
-- 1..16 existing mono/stereo PCM16 `audio_clip` layers, at the **same** rate as
-  the project (16/24/44.1/48 kHz); stereo IEEE float32 WAV output only.
+- 1..16 mono/stereo source layers. Existing `audio_clip` UID callers remain
+  supported. WAV/MP3/FLAC/OGG/Opus/M4A/AAC files are decoded using the installed
+  native FFmpeg/FFprobe, with explicit demuxers and local-only protocols;
+  MOV external data references are disabled. Input rates 8..192 kHz resample
+  to the project's 16/24/44.1/48 kHz using SWR. Channels are preserved during
+  decoding. Output remains stereo IEEE float32 WAV, not relabeled MP3/FLAC.
 - Exact round-half-up sample trims and offsets; layers are cut/padded to the
   project length. Linear fades apply to each trimmed, timeline-clipped audible
   span, then gain, mono constant-power pan (−3.01 dB center), or stereo balance.
@@ -552,16 +556,21 @@ process runner. It does not invoke Python or the speech `improve()` chain.
   Master gain and non-overlapping linear fades are supported.
 - Source paths are confined, symlinks/reparse points rejected, and the actual
   WAV bytes, SHA256, rate, channels and duration must match catalog metadata.
-  Sources are rechecked when copied to private staging, including muted ones.
+  Hash-verified source bytes are copied to private staging, including muted ones.
   Baked sources require a checkout's staged locked library WAVs; generated
-  sources use the existing user library. No arbitrary paths or URLs are tool
-  inputs.
+  sources use the existing user library. General audio uses
+  `{"path":"relative/track.mp3","sha256":"<64 lowercase hex>"}` under the
+  listener's absolute `GEN_AUDIO_INPUT_ROOT`, or
+  `{"issued":"mix.wav","sha256":"<64 lowercase hex>"}` for an artifact issued
+  by that listener. Absolute paths, parent traversal, symlinks/reparse points,
+  unapproved extensions and hash mismatches refuse. The operator configures
+  the root; RPC callers cannot change it. File roles are authored, not inferred.
 - The rendered container, float format, exact frame count, finite PCM, full-scale
   sample peak and persisted bytes are independently checked before success.
   Over-full-scale output refuses instead of clipping. This is **not** a
   calibrated true-peak or loudness measurement.
 
-**Explicitly unsupported:** loops, ducking, resampling, mono output, PCM16/24
+**Explicitly unsupported:** loops, ducking, mono output, PCM16/24 or MP3/FLAC
 export, normalization, limiting, custom true-peak ceilings, overlapping fades,
 jobs/cancel/wait controls and Teams renditions. Set `master.limiter:false`,
 omit `target_lufs_milli`, leave the inactive `true_peak_mdbtp` at its default,
@@ -569,7 +578,8 @@ and use `loop.mode:"off"` without `duck`. Unsupported options refuse before
 output staging; nothing is silently ignored.
 
 **Bounds and persistence:** 100..600000 ms, 64 KiB project JSON, 16 layers,
-256 MiB combined unique source WAVs, 256 MiB output, two concurrent renders,
+256 MiB combined unique encoded sources and separately 256 MiB decoded sources,
+600 seconds per source, 256 MiB output, two concurrent renders,
 no queue, 120 seconds total deadline. Names must be unique scratch basenames.
 WAV and JSON provenance are published together with rollback on failure.
 Set the listener's `GEN_AUDIO_WORK_DIR` to a dedicated persistent directory
@@ -584,6 +594,38 @@ audible layer spans and pan gains, sample peak/RMS, and
 libraryImported:false`. Inherited source speech/fixture facts are explicit.
 This is an **unregistered processing artifact**, not a fake ga1 `mix` asset;
 the §5.2 asset extension and import/release policy remain required future work.
+
+**Authored sequencing and section safety**
+
+An optional `project.sequence` has 1..64 ordered segments:
+
+```json
+{"id":"alice_turn_2","layer":"alice","source_start_ms":3200,
+ "duration_ms":1800,"gap_ms":170,"gain_mdb":-1000,
+ "fade_in_ms":30,"fade_out_ms":60}
+```
+
+- `layer` names a declared layer; every layer must be referenced. Each segment
+  has a unique id. Layer `offset_ms`, `trim_start_ms`, and `trim_end_ms` must
+  remain zero because sequencing replaces them.
+- Without `at_ms`, placement follows the preceding segment's end, plus
+  `gap_ms` (0..30000, default zero) or minus an explicit `overlap_ms`
+  (0..2500). `at_ms` sets absolute placement and cannot combine with either
+  field. A voice intersection requires `overlap_ms` or `allow_overlap:true`;
+  no voice identity is guessed. Music placements may overlap voice.
+- `source_start_ms` slips into the source without changing output placement.
+  Durations are exact after resampling; unavailable source spans or project
+  overruns refuse instead of silently truncating authored segments.
+  Segment gain adds to layer gain; segment fades override layer fades.
+- `sections:[{"id":"riffs","start_ms":45000,"end_ms":60000,
+  "content":"music_only"}]` defines non-overlapping declared windows.
+  `music_only` rejects intersecting `role:"voice"` segments; `speech_only`
+  rejects other roles; `mixed` permits both. These are authored-role checks,
+  not acoustic proof of speech/music identity.
+- Without `sequence`, original manual layer offsets remain unchanged.
+  The production provenance's `audibleLayers` gives effective segment ids,
+  roles, source identities, start/source-start frame positions, exact frame
+  counts and gains, with `arrangementMode` distinguishing the two modes.
 
 The existing PowerShell MCP client calls a running built listener:
 

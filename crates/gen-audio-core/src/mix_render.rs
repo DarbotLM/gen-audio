@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::{asset, asset_catalog, library_store, mastering, mix, paths};
+use crate::{asset, audio_input, mastering, mix, paths};
 use mastering::process;
 use paths::Scratch;
 
@@ -26,17 +26,17 @@ impl Drop for Permit {
 }
 
 #[derive(Clone, Copy)]
-struct Wav {
-    rate: u64,
-    channels: u64,
-    frames: u64,
-    format: u16,
-    bits: u16,
-    data_start: usize,
-    data_len: usize,
+pub(crate) struct Wav {
+    pub rate: u64,
+    pub channels: u64,
+    pub frames: u64,
+    pub format: u16,
+    pub bits: u16,
+    pub data_start: usize,
+    pub data_len: usize,
 }
 
-fn wav(bytes: &[u8]) -> Result<Wav, String> {
+pub(crate) fn wav(bytes: &[u8]) -> Result<Wav, String> {
     let bad = || "Malformed or unsupported WAV container".to_string();
     let u16_at = |offset| u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
     let u32_at = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
@@ -166,7 +166,7 @@ fn fades(value: &Value, length: u64, rate: u64) -> Result<String, String> {
     Ok(filters)
 }
 
-fn confined(root: &Path, relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn confined(root: &Path, relative: &str) -> Result<PathBuf, String> {
     asset::check_media_path(relative).map_err(|_| "Invalid library media path")?;
     let root = root
         .canonicalize()
@@ -195,23 +195,6 @@ fn confined(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-struct Source {
-    path: PathBuf,
-    media: Value,
-    envelope: Value,
-    wav: Wav,
-}
-
-fn verified_bytes(source: &Source) -> Result<Vec<u8>, String> {
-    let bytes = mastering::read_bounded(&source.path, MAX_BYTES)?;
-    if bytes.len() as u64 != source.media["bytes"].as_u64().unwrap_or(0)
-        || asset::sha256_hex(&bytes) != source.media["sha256"].as_str().unwrap_or("")
-    {
-        return Err("Library source bytes or SHA256 do not match the asset envelope".into());
-    }
-    Ok(bytes)
-}
-
 /// Render a synchronous, stereo float-WAV mix; unsupported processing refuses
 /// before staging any output. All source files, including muted ones, are verified.
 pub fn render(
@@ -224,6 +207,7 @@ pub fn render(
         return Ok(validation);
     }
     let project = &validation["normalized"];
+    mix::arrange(project).map_err(|reason| (-32602, reason))?;
     let output = args["output"]
         .as_str()
         .ok_or((-32602, "output must be a WAV basename".into()))?;
@@ -308,77 +292,43 @@ fn render_validated(
         return Err("Output exceeds 256 MiB".into());
     }
     let master_fades = fades(&project["master"], length, rate)?;
-    let layers = project["layers"].as_array().unwrap();
+    let layers = mix::arrange(project)?;
     let mut sources = BTreeMap::new();
-    let mut total_bytes = 0u64;
-    for layer in layers {
+    let mut total_bytes = 0usize;
+    let mut decoded_bytes = 0usize;
+    let work = mastering::StagingDir::create(&scratch.dir)?;
+    for layer in &layers {
         remaining(start)?;
-        let uid = layer["source"].as_str().unwrap();
-        if sources.contains_key(uid) {
+        let key = asset::canonicalize(&layer["source"]).map_err(|_| "Invalid source identity")?;
+        if sources.contains_key(&key) {
             continue;
         }
-        let envelope =
-            asset_catalog::require(uid).map_err(|_| "Source asset could not be revalidated")?;
-        if envelope["kind"] != "audio_clip" {
-            return Err("Only audio_clip sources are implemented".into());
-        }
-        let media = envelope["media"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|media| media["role"] == "wav")
-            .ok_or("Source has no WAV media")?
-            .clone();
-        let relative = media["path"]
-            .as_str()
-            .ok_or("Source WAV has no media path")?;
-        let root = if relative.starts_with("generated/") {
-            library_store::user_library_dir()?
-        } else {
-            repo.ok_or("Baked library audio requires a checkout with staged locked WAVs")?
-                .join("apps")
-                .join("desktop")
-                .join("public")
-                .join("library")
-        };
-        let path = confined(&root, relative)?;
+        let source = audio_input::prepare(
+            &layer["source"],
+            scratch,
+            repo,
+            &work.path,
+            sources.len(),
+            rate,
+            start,
+        )?;
         total_bytes = total_bytes
-            .checked_add(media["bytes"].as_u64().ok_or("Invalid source size")?)
-            .filter(|total| *total <= MAX_BYTES as u64)
-            .ok_or("Combined source WAVs exceed 256 MiB")?;
-        let bytes = mastering::read_bounded(&path, MAX_BYTES)?;
-        if bytes.len() as u64 != media["bytes"].as_u64().unwrap()
-            || asset::sha256_hex(&bytes) != media["sha256"].as_str().unwrap()
-        {
-            return Err("Library source bytes or SHA256 do not match the asset envelope".into());
-        }
-        let info = wav(&bytes)?;
-        if info.format != 1
-            || info.bits != 16
-            || info.rate != rate
-            || envelope["fields"]["sample_rate_hz"] != info.rate
-            || envelope["fields"]["channels"] != info.channels
-            || envelope["fields"]["duration_ms"] != asset::ms_from_frames(info.frames, info.rate)
-        {
-            return Err("Sources must be PCM16 WAVs at the project rate with matching catalog duration/channels; resampling is not implemented".into());
-        }
-        sources.insert(
-            uid.to_owned(),
-            Source {
-                path,
-                media,
-                envelope,
-                wav: info,
-            },
-        );
+            .checked_add(source.input_bytes)
+            .filter(|total| *total <= MAX_BYTES)
+            .ok_or("Combined encoded sources exceed 256 MiB")?;
+        decoded_bytes = decoded_bytes
+            .checked_add(source.decoded_bytes)
+            .filter(|total| *total <= MAX_BYTES)
+            .ok_or("Combined decoded sources exceed 256 MiB")?;
+        sources.insert(key, source);
     }
     let any_solo = layers.iter().any(|layer| layer["solo"] == true);
     let mut graph = String::new();
     let mut inputs = Vec::new();
     let mut audible = Vec::new();
-    for layer in layers {
-        let uid = layer["source"].as_str().unwrap();
-        let source = &sources[uid];
+    for layer in &layers {
+        let key = asset::canonicalize(&layer["source"]).map_err(|_| "Invalid source identity")?;
+        let source = &sources[&key];
         let trim_start = frames(layer, "trim_start_ms", rate);
         let trim_end = frames(layer, "trim_end_ms", rate);
         let available = source
@@ -388,7 +338,15 @@ fn render_validated(
             .filter(|n| *n > 0)
             .ok_or("Rounded trims leave no source frames")?;
         let offset = frames(layer, "offset_ms", rate);
-        let span = available.min(length.saturating_sub(offset));
+        let span = if layer.get("render_duration_ms").is_some() {
+            let requested = frames(layer, "render_duration_ms", rate);
+            if requested > available || requested > length.saturating_sub(offset) {
+                return Err("Authored segment exceeds its decoded source or project span".into());
+            }
+            requested
+        } else {
+            available.min(length.saturating_sub(offset))
+        };
         // Even muted options are checked; toggling mute must not conceal an
         // unsupported fade span or source format.
         let layer_fades = fades(layer, span, rate)?;
@@ -399,7 +357,7 @@ fn render_validated(
             continue;
         }
         let index = inputs.len();
-        inputs.push(uid.to_owned());
+        inputs.push(key);
         let theta =
             (layer["pan_milli"].as_i64().unwrap() as f64 + 1000.0) * std::f64::consts::PI / 4000.0;
         let (mut left, mut right) = (theta.cos(), theta.sin());
@@ -410,7 +368,7 @@ fn render_validated(
         let right_channel = if source.wav.channels == 1 { 0 } else { 1 };
         graph += &format!("[{index}:a]atrim=start_sample={trim_start}:end_sample={},asetpts=PTS-STARTPTS{layer_fades},volume={:.17}:precision=double,pan=stereo|c0={left:.17}*c0|c1={right:.17}*c{right_channel},adelay={offset}S:all=1,apad=whole_len={length},atrim=end_sample={length}[l{index}];", trim_start + span, gain(layer));
         audible.push(
-            json!({"id":layer["id"],"source":uid,"startFrame":offset,"sourceStartFrame":trim_start,
+            json!({"id":layer["id"],"layerId":layer.get("layer_id").unwrap_or(&layer["id"]),"role":layer["role"],"source":layer["source"],"startFrame":offset,"sourceStartFrame":trim_start,
             "frames":span,"leftGain":left * gain(layer),"rightGain":right * gain(layer)}),
         );
     }
@@ -427,14 +385,8 @@ fn render_validated(
     }
     graph += &format!("[sum]volume={:.17}:precision=double{master_fades},aformat=sample_fmts=flt:channel_layouts=stereo[out]", gain(&project["master"]));
     remaining(start)?;
-    let work = mastering::StagingDir::create(&scratch.dir)?;
-    let mut snapshots = BTreeMap::new();
-    for (index, (uid, source)) in sources.iter().enumerate() {
-        remaining(start)?;
-        let snapshot = work.path.join(format!("source-{index}.wav"));
-        mastering::write_new(&snapshot, &verified_bytes(source)?)?;
-        snapshots.insert(uid.clone(), snapshot);
-    }
+    let graph_path = work.path.join("mix-filter.txt");
+    mastering::write_new(&graph_path, graph.as_bytes())?;
     let program = mastering::ffmpeg_program()?;
     let mut command = Command::new(program);
     for key in [
@@ -472,13 +424,15 @@ fn render_validated(
                 "wav",
                 "-i",
             ])
-            .arg(&snapshots[uid]);
+            .arg(&sources[uid].path);
     }
     let staged_wav = work.path.join("render.wav");
     command
         .args([
-            "-filter_complex",
-            &graph,
+            "-/filter_complex",
+            graph_path
+                .to_str()
+                .ok_or("Unsupported staging path encoding")?,
             "-map",
             "[out]",
             "-map_metadata",
@@ -537,26 +491,23 @@ fn render_validated(
     }
     let provenance: Vec<Value> = sources
         .iter()
-        .map(|(uid, source)| {
-            json!({
-                "uid":uid,"sha256":source.media["sha256"],"bytes":source.media["bytes"],
-                "honesty":source.envelope["honesty"]
-            })
-        })
+        .map(|(_, source)| source.provenance.clone())
         .collect();
     let result = json!({"ok":true,"renderedAudio":true,"processedAudio":true,"verifiedAudio":true,
         "synthesizedSpeech":false,"absolutePathsOmitted":true,"wav":output,"manifest":report_name,
         "format":"wav-f32","sampleRate":rate,"channels":2,"frames":length,
         "durationMs":asset::ms_from_frames(length, rate),"sha256":asset::sha256_hex(&bytes),
         "bytes":bytes.len(),"projectSha256":project_hash,"samplePeak":peak,"rms":(energy / (length * 2) as f64).sqrt(),
-        "fixture":sources.values().any(|s| s.envelope["honesty"]["fixture"] == true),
-        "containsSynthesizedSpeech":inputs.iter().any(|uid| sources[uid].envelope["honesty"]["synthesized_speech"] == true),
+        "fixture":sources.values().any(|s| s.provenance["honesty"]["fixture"] == true),
+        "containsSynthesizedSpeech":inputs.iter().any(|uid| sources[uid].provenance["honesty"]["synthesized_speech"] == true),
         "assetMinted":false,"libraryImported":false,
-        "provenance":{"schema":"wingen-audio-mix-wav-1","renderer":"ffmpeg-native-f32-v1",
+        "provenance":{"schema":"wingen-audio-mix-wav-2","renderer":"ffmpeg-native-f32-v2",
             "project":project,"sources":provenance,"audibleLayers":audible,
+            "arrangementMode":if project.get("sequence").is_some() { "authored_sequence" } else { "manual_offsets" },
+            "roleAttribution":"Roles and speaker identity are authored, not inferred from spectra",
             "filterGraphSha256":asset::sha256_hex(graph.as_bytes()),
             "sourceHashesVerified":true,"loudnessMeasured":false,"truePeakMeasured":false},
-        "limitations":["No ga1 mix asset or library import","No resampling, ducking, loops, loudness normalization, limiter, jobs, cancellation, or Teams rendition"]});
+        "limitations":["No ga1 mix asset or library import","No ducking, loops, loudness normalization, limiter, jobs, cancellation, or Teams rendition"]});
     let report_bytes =
         serde_json::to_vec_pretty(&result).map_err(|_| "Could not encode mix provenance")?;
     if report_bytes.len() > 64 * 1024 {

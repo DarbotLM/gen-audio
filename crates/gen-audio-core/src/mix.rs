@@ -29,28 +29,149 @@ fn validator() -> &'static jsonschema::Validator {
 }
 
 /// Inline local definitions for MCP clients without external schema retrieval.
-pub fn project_schema() -> Value {
-    fn expand(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => {
-                let mut expanded = match map.get("$ref").and_then(Value::as_str) {
-                    Some(reference) => {
-                        expand(&schema().pointer(&reference[1..]).expect("local definition"))
-                    }
-                    None => json!({}),
-                };
-                for (key, child) in map {
-                    if !matches!(key.as_str(), "$ref" | "$defs" | "$id" | "$schema") {
-                        expanded[key] = expand(child);
-                    }
+fn expand(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut expanded = match map.get("$ref").and_then(Value::as_str) {
+                Some(reference) => {
+                    expand(&schema().pointer(&reference[1..]).expect("local definition"))
                 }
-                expanded
+                None => json!({}),
+            };
+            for (key, child) in map {
+                if !matches!(key.as_str(), "$ref" | "$defs" | "$id" | "$schema") {
+                    expanded[key] = expand(child);
+                }
             }
-            Value::Array(items) => Value::Array(items.iter().map(expand).collect()),
-            _ => value.clone(),
+            expanded
+        }
+        Value::Array(items) => Value::Array(items.iter().map(expand).collect()),
+        _ => value.clone(),
+    }
+}
+
+pub fn project_schema() -> Value {
+    expand(schema())
+}
+
+pub fn source_schema() -> Value {
+    expand(&schema()["$defs"]["source"])
+}
+
+/// Resolve an authored sequence without guessing speaker identity. Legacy
+/// projects retain their explicitly authored simultaneous layer offsets.
+pub(crate) fn arrange(project: &Value) -> Result<Vec<Value>, String> {
+    let layers = project["layers"].as_array().ok_or("Missing layers")?;
+    let Some(sequence) = project["sequence"].as_array() else {
+        if project.get("sections").is_some() {
+            return Err("Sections require an explicit sequence".into());
+        }
+        return Ok(layers.clone());
+    };
+    if layers.iter().any(|layer| {
+        ["offset_ms", "trim_start_ms", "trim_end_ms"]
+            .iter()
+            .any(|key| layer[*key] != 0)
+    }) {
+        return Err("Sequence placement replaces layer offsets/trims; leave those at zero".into());
+    }
+    let duration = project["duration_ms"].as_u64().unwrap();
+    let mut cursor = 0u64;
+    let mut ids = std::collections::BTreeSet::new();
+    let mut used = std::collections::BTreeSet::new();
+    let mut placed: Vec<Value> = Vec::new();
+    for segment in sequence {
+        let id = segment["id"].as_str().unwrap();
+        if !ids.insert(id) {
+            return Err("Sequence segment ids must be unique".into());
+        }
+        let layer_id = segment["layer"].as_str().unwrap();
+        let base = layers
+            .iter()
+            .find(|layer| layer["id"] == layer_id)
+            .ok_or("Sequence names an unknown layer")?;
+        used.insert(layer_id);
+        let gap = segment["gap_ms"].as_u64().unwrap_or(0);
+        let overlap = segment["overlap_ms"].as_u64().unwrap_or(0);
+        let at = match segment["at_ms"].as_u64() {
+            Some(at) => at,
+            None => (cursor + gap)
+                .checked_sub(overlap)
+                .ok_or("Sequence overlap precedes time zero")?,
+        };
+        let length = segment["duration_ms"].as_u64().unwrap();
+        let end = at
+            .checked_add(length)
+            .filter(|end| *end <= duration)
+            .ok_or("Sequence segment exceeds the project duration")?;
+        if overlap >= length {
+            return Err("Overlap must be shorter than its segment".into());
+        }
+        if base["role"] == "voice"
+            && segment["allow_overlap"] != true
+            && overlap == 0
+            && placed.iter().any(|other| {
+                other["role"] == "voice"
+                    && at
+                        < other["offset_ms"].as_u64().unwrap()
+                            + other["render_duration_ms"].as_u64().unwrap()
+                    && end > other["offset_ms"].as_u64().unwrap()
+            })
+        {
+            return Err("Voice overlap requires explicit overlap_ms or allow_overlap:true".into());
+        }
+        let mut layer = base.clone();
+        layer["id"] = json!(id);
+        layer["layer_id"] = json!(layer_id);
+        layer["offset_ms"] = json!(at);
+        layer["trim_start_ms"] = segment["source_start_ms"].clone();
+        layer["render_duration_ms"] = json!(length);
+        layer["gain_mdb"] =
+            json!(base["gain_mdb"].as_i64().unwrap() + segment["gain_mdb"].as_i64().unwrap_or(0));
+        for key in ["fade_in_ms", "fade_out_ms"] {
+            if let Some(value) = segment.get(key) {
+                layer[key] = value.clone();
+            }
+        }
+        if layer["fade_in_ms"].as_u64().unwrap() + layer["fade_out_ms"].as_u64().unwrap() > length {
+            return Err("Segment fades must fit without overlap".into());
+        }
+        placed.push(layer);
+        cursor = end;
+    }
+    if used.len() != layers.len() {
+        return Err("Every declared layer must be referenced by the sequence".into());
+    }
+    if let Some(sections) = project["sections"].as_array() {
+        let mut ranges = Vec::new();
+        let mut names = std::collections::BTreeSet::new();
+        for section in sections {
+            let start = section["start_ms"].as_u64().unwrap();
+            let end = section["end_ms"].as_u64().unwrap();
+            if !names.insert(section["id"].as_str().unwrap())
+                || start >= end
+                || end > duration
+                || ranges.iter().any(|&(lo, hi)| start < hi && end > lo)
+            {
+                return Err("Sections need unique ids and non-overlapping positive ranges within the project".into());
+            }
+            ranges.push((start, end));
+            for layer in &placed {
+                let at = layer["offset_ms"].as_u64().unwrap();
+                let stop = at + layer["render_duration_ms"].as_u64().unwrap();
+                if at < end
+                    && stop > start
+                    && ((section["content"] == "music_only" && layer["role"] == "voice")
+                        || (section["content"] == "speech_only" && layer["role"] != "voice"))
+                {
+                    return Err(
+                        "Segment role violates a declared speech-only or music-only section".into(),
+                    );
+                }
+            }
         }
     }
-    expand(schema())
+    Ok(placed)
 }
 
 fn defaults(value: &mut Value, definition: &Value) {
@@ -175,7 +296,13 @@ pub fn validate(project: &Value) -> Result<Value, (i32, String)> {
     )];
     let mut sources = BTreeMap::new();
     for layer in normalized["layers"].as_array().expect("validated layers") {
-        let uid = layer["source"].as_str().expect("validated source");
+        let Some(uid) = layer["source"].as_str() else {
+            if let Some(path) = layer["source"]["path"].as_str() {
+                asset::check_media_path(path)
+                    .map_err(|_| invalid("Source path must be relative and confined"))?;
+            }
+            continue;
+        };
         let kind = uid.split(':').nth(1).expect("validated uid");
         if matches!(kind, "music_track" | "ambient_bed" | "mix") {
             return Ok(refused(

@@ -45,6 +45,7 @@ internal static class WingenAudioHost
             {
                 "version" => WriteVersion(),
                 "cube-layers" => RunCubeLayers(args[1..]),
+                "bitcube" => RunBitcube(args[1..]),
                 "mxc" => await RunMxcAsync(args[1..]),
                 "powertorch" => RunPowerTorch(args[1..]),
                 "vibevoice" => await RunVibeVoiceAsync(args[1..]),
@@ -101,6 +102,32 @@ internal static class WingenAudioHost
             cubeShape = new[] { result.CubeShape.Item1, result.CubeShape.Item2 },
             durationSeconds = result.DurationSeconds,
             invHdr = result.InvHdr,
+        }, JsonOptions));
+        return 0;
+    }
+
+    private static int RunBitcube(string[] args)
+    {
+        var options = ParseOptions(args);
+        if (options.Keys.Any(key => key is not ("input" or "output" or "png" or "spectrogram" or "stem" or "repo-root")))
+        {
+            throw new ArgumentException("Unknown bitcube option.");
+        }
+        var result = CubeLayers.Analyze(
+            Require(options, "input"), Require(options, "output"), Require(options, "png"),
+            Require(options, "spectrogram"), Require(options, "stem"),
+            options.GetValueOrDefault("repo-root") ?? Directory.GetCurrentDirectory());
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            ok = true,
+            output = result.OutputPath,
+            png = result.PngPath?.Value,
+            spectrogram = result.SpectrogramPath?.Value,
+            result.SourceSha256,
+            pointCount = result.PointCount,
+            durationSeconds = result.DurationSeconds,
+            invHdr = result.InvHdr,
+            synthesizedSpeech = false,
         }, JsonOptions));
         return 0;
     }
@@ -675,6 +702,7 @@ internal static class WingenAudioHost
         Console.WriteLine("""
 wingen.audio version
 wingen.audio cube-layers --input WAV --output JSON --stem STEM --engine ENGINE [--label LABEL] [--png PNG] [--repo-root ROOT]
+wingen.audio bitcube --input WAV --output JSON --png PNG --spectrogram PNG --stem STEM [--repo-root ROOT]
 wingen.audio worker --action <status|preflight|load|unload|generate> --engine <vibevoice|personaplex> [--url URL] [--request FILE] [--output FILE] [--timeout SECONDS]
 wingen.audio worker-server --engine ENGINE --listen http://127.0.0.1:PORT --upstream http://127.0.0.1:PORT [--timeout SECONDS]
 wingen.audio mxc probe

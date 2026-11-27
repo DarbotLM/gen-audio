@@ -719,45 +719,34 @@ pub(crate) fn publish(
     final_bytes: &[u8],
     report_bytes: &[u8],
 ) -> Result<(), String> {
+    publish_files(scratch, &[
+        (staged_wav, &destination.0, final_bytes),
+        (staged_report, &destination.1, report_bytes),
+    ])
+}
+
+pub(crate) fn publish_files(
+    scratch: &Scratch,
+    artifacts: &[(&Path, &Path, &[u8])],
+) -> Result<(), String> {
     let mut publication = Publication {
         created: Vec::new(),
         committed: false,
     };
-    for (from, to) in [
-        (staged_wav, &destination.0),
-        (staged_report, &destination.1),
-    ] {
+    for (from, to, _) in artifacts {
         fs::hard_link(from, to)
             .map_err(|_| "mastering could not publish its reserved artifacts")?;
-        publication.created.push(to.clone());
+        publication.created.push(to.to_path_buf());
     }
     scratch
         .adopt_new_files()
         .map_err(|_| "mastering could not issue its verified artifacts")?;
-    let output_name = destination
-        .0
-        .file_name()
-        .and_then(OsStr::to_str)
-        .ok_or("invalid mastering artifact name")?;
-    let report_name = destination
-        .1
-        .file_name()
-        .and_then(OsStr::to_str)
-        .ok_or("invalid mastering artifact name")?;
-    let persisted_wav = read_bounded(
-        &scratch
-            .open_input(output_name)
-            .map_err(|_| "mastering WAV was not persisted")?,
-        final_bytes.len(),
-    )?;
-    let persisted_report = read_bounded(
-        &scratch
-            .open_input(report_name)
-            .map_err(|_| "mastering report was not persisted")?,
-        report_bytes.len(),
-    )?;
-    if persisted_wav != final_bytes || persisted_report != report_bytes {
-        return Err("mastering artifacts failed persistence verification".into());
+    for (_, to, expected) in artifacts {
+        let name = to.file_name().and_then(OsStr::to_str).ok_or("invalid audio artifact name")?;
+        let persisted = read_bounded(&scratch.open_input(name)?, expected.len())?;
+        if persisted != *expected {
+            return Err("Audio artifacts failed persistence verification".into());
+        }
     }
     publication.committed = true;
     Ok(())

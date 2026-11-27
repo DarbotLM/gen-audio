@@ -7,5 +7,6 @@
     <Compile Include="Placement.fs" />
     <Compile Include="CubeLayers.fs" />
     <Compile Include="VibeVoice.fs" />
+    <EmbeddedResource Include="CubeLayers.fs" LogicalName="WingenAudio.Contracts.CubeLayers.fs" />
   </ItemGroup>
 </Project>

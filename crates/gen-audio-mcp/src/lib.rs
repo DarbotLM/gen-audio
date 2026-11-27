@@ -130,6 +130,7 @@ pub fn smoke() -> Result<String, String> {
         "ui_generate",
         "master_audio",
         "wingen.audio_mix",
+        "wingen.bitcube",
         "library_list",
         "library_rename",
         "library_harvest",
@@ -258,6 +259,7 @@ fn tool_defs() -> Vec<Value> {
         tool("master_audio", "Create a separate independently verified podcast master from an issued mono 24 kHz PCM16 WAV (up to 600 seconds). Rust runs bounded, shell-free FFmpeg two-pass loudness normalization to -16 LUFS/-1.5 dBTP/LRA 4 and persists a WAV plus JSON report. This is audio processing, not speech synthesis."),
         tool("wingen.audio_mix", "Render a verified stereo float WAV from catalog audio_clip UIDs, hash-pinned files relative to the operator's GEN_AUDIO_INPUT_ROOT, or process-issued files. Supports WAV/MP3/FLAC/OGG/Opus/M4A/AAC and native resampling. Optional authored sequence has source slips, variable gaps, explicit voice overlap and speech/music-only sections. Applies gain, pan/balance, mute/solo and fades. Requires limiter:false, no loudness target, loops or ducking. Bounded synchronous execution; WAV/provenance artifacts only, not new speech or ga1 assets."),
         tool("spectrogram", "Run the Python spectrogram helper on work-directory WAVs."),
+        tool("wingen.bitcube", "Analyze an authorized catalog, operator-root, or issued audio source with the native .NET/F# host. Publishes a real 3D time/frequency/layer cube PNG, point JSON, and spectrogram with source hashes, per-channel metrics and attenuation-only mixing guidance. Analysis resamples to 24 kHz and downmixes only for metrics; source audio is unchanged. Maximum 60-second analysis window. No speaker recognition, video, or calibrated LUFS claims."),
         tool("cube_revision", "Run the Python inverse-HDR cube revision sketch on a work-directory WAV."),
         tool("serve_health", "Probe a configured genaid-audio host. With no host the result is unconfigured and is not a live probe."),
         tool("connector_health", "Health for one connector id or the full roster of seven."),
@@ -304,6 +306,10 @@ static UID_PROP: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
 
 fn tool(name: &str, description: &str) -> Value {
     let (properties, required) = match name {
+        "wingen.bitcube" => (json!({"source":gen_audio_core::mix::source_schema(),
+            "output":{"type":"string","maxLength":100,"pattern":"^[A-Za-z0-9][A-Za-z0-9._-]*\\.json$"},
+            "startMs":{"type":"integer","minimum":0,"maximum":600000},
+            "durationMs":{"type":"integer","minimum":1,"maximum":60000}}), json!(["source","output"])),
         "wingen.audio_mix" => (json!({"project":gen_audio_core::mix::project_schema(),"output":{"type":"string","maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._-]*\\.wav$"}}), json!(["project","output"])),
         "semantic_cube_project" => (json!({"document":{"type":"object"},"offset":{"type":"integer","minimum":0,"maximum":32768},"limit":{"type":"integer","minimum":1,"maximum":2048,"default":2048}}), json!(["document"])),
         "synth" => (
@@ -475,6 +481,7 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
     }
     known_arguments(name, &args)?;
     let payload = match name {
+        "wingen.bitcube" => gen_audio_core::bitcube::analyze(&server.scratch, server.repo.as_deref(), &args)?,
         "wingen.audio_mix" => gen_audio_core::mix_render::render(&server.scratch, server.repo.as_deref(), &args)?,
         "semantic_schema_library" => gen_audio_core::semantic_cube::library(),
         "semantic_cube_project" => {
@@ -559,6 +566,7 @@ pub fn call_tool(server: &Server, params: &Value) -> Result<Value, ToolError> {
 /// inputSchema properties (tested): the UI and agents speak one contract.
 fn allowed_arguments(name: &str) -> &'static [&'static str] {
     match name {
+        "wingen.bitcube" => &["source","output","startMs","durationMs"],
         "wingen.audio_mix" => &["project","output"],
         "semantic_schema_library" => &[],
         "semantic_cube_project" => &["document", "offset", "limit"],

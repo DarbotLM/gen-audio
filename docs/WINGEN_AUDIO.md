@@ -36,11 +36,39 @@ wingen.audio.exe worker-server --engine personaplex --listen http://127.0.0.1:89
 
 wingen.audio.exe vibevoice capability --model-dir PATH
 wingen.audio.exe vibevoice synthetic --tokenizer-dir PATH
+wingen.audio.exe bitcube --input analysis.wav --output analysis.json --png analysis-cube.png --spectrogram analysis-spectrogram.png --stem analysis
 ```
 
 The public VibeVoice/PersonaPlex ports remain `8996` and `8997`. Isolated model
 workers use private local ports and are addressed through the native
 `worker-server` front end.
+
+## Native audio analysis
+
+MCP `wingen.bitcube` is the authorized encoded-audio entry point. It accepts the
+same catalog UID, `GEN_AUDIO_INPUT_ROOT`-relative SHA256-pinned source, or
+process-issued source reference as `wingen.audio_mix`. Rust owns confinement,
+bounded FFmpeg decoding, timeout and artifact publication; `bitcube` in the
+existing .NET 11 host runs `WingenAudio.Contracts.CubeLayers`.
+
+`output` is a JSON basename; the tool also publishes `-cube.png` and
+`-spectrogram.png`. Optional `startMs`/`durationMs` selects an explicit window,
+up to 60 seconds. Analysis resamples to 24 kHz, preserves the channel count in
+its decoded input, records per-channel RMS/peak/DC/full-scale fraction, and
+averages channels **only for analysis**. It never rewrites the mix audio.
+The JSON includes actual three-dimensional time/frequency/layer-strength points,
+an isometric Z-projected PNG with labels/legend, a windowed-amplitude spectrogram,
+100 ms activity measurements, downmix cancellation and an attenuation-only
+sample-headroom recommendation. None is speaker recognition, calibrated LUFS/
+true peak, or proof of perceptual quality. No video is produced.
+
+Set `WINGEN_AUDIO_EXE` to the built native host when it is not beside the MCP
+binary or in the checkout's production sidecar staging directory.
+The original `cube-layers` command and `scripts\cube_layers.ps1` arguments remain
+compatible; the F# implementation now handles stereo/float WAVs, corrects CRLF
+hash normalization and single-sample reflection, and caps STFT frame allocation.
+The generator's own source is embedded for reproducible provenance even without
+a source checkout installed.
 
 ## PowerShell plugin and remoting model
 

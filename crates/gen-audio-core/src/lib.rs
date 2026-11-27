@@ -8,6 +8,7 @@ pub mod asset_migrate;
 pub(crate) mod audio_input;
 pub mod authoring;
 pub mod benchmark;
+pub mod bitcube;
 pub mod bridge;
 pub mod cards;
 pub mod catalog;

@@ -19,6 +19,7 @@ type CubePoint =
 type CubeLayerResult =
     { OutputPath: string
       PngPath: string option
+      SpectrogramPath: string option
       SourceSha256: string
       PointCount: int
       CubeShape: int * int
@@ -46,14 +47,14 @@ module CubeLayers =
         let mutable count = 0
 
         for i = 0 to bytes.Length - 1 do
-            if not (i > 0 && bytes[i - 1] = byte '\r' && bytes[i] = byte '\n') then
+            if not (bytes[i] = byte '\r' && i + 1 < bytes.Length && bytes[i + 1] = byte '\n') then
                 count <- count + 1
 
         let normalized = Array.zeroCreate<byte> count
         let mutable target = 0
 
         for i = 0 to bytes.Length - 1 do
-            if not (i > 0 && bytes[i - 1] = byte '\r' && bytes[i] = byte '\n') then
+            if not (bytes[i] = byte '\r' && i + 1 < bytes.Length && bytes[i + 1] = byte '\n') then
                 normalized[target] <- bytes[i]
                 target <- target + 1
 
@@ -65,61 +66,107 @@ module CubeLayers =
     let private sourceHash path = sha256Bytes (File.ReadAllBytes path)
 
     let private generatorHash repoRoot =
-        Path.Combine(repoRoot, generatorPath.Replace('/', Path.DirectorySeparatorChar))
-        |> File.ReadAllBytes
-        |> normalizeLineEndings
-        |> sha256Bytes
+        use source = typeof<CubePoint>.Assembly.GetManifestResourceStream("WingenAudio.Contracts.CubeLayers.fs")
+        require (not (isNull source)) "Native cube source resource is missing."
+        use bytes = new MemoryStream()
+        source.CopyTo bytes
+        bytes.ToArray() |> normalizeLineEndings |> sha256Bytes
 
-    let private readWav path =
+    let private readWav path maxSeconds =
         use stream = File.OpenRead path
+        require (stream.Length >= 44L && stream.Length <= 268435456L) "WAV exceeds its 256 MiB bound or is truncated."
         use reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen = false)
         require (Encoding.ASCII.GetString(reader.ReadBytes 4) = "RIFF") "WAV is missing a RIFF header."
-        reader.ReadUInt32() |> ignore
+        require (int64 (reader.ReadUInt32()) + 8L = stream.Length) "WAV RIFF length does not match the file."
         require (Encoding.ASCII.GetString(reader.ReadBytes 4) = "WAVE") "WAV is missing a WAVE header."
 
         let mutable audioFormat = 0us
         let mutable channels = 0us
         let mutable sampleRate = 0u
         let mutable bits = 0us
+        let mutable blockAlign = 0us
+        let mutable byteRate = 0u
+        let mutable hasFormat = false
         let mutable pcm: byte[] option = None
 
         while stream.Position + 8L <= stream.Length do
             let id = Encoding.ASCII.GetString(reader.ReadBytes 4)
             let size = int64 (reader.ReadUInt32())
             let start = stream.Position
+            require (start + size + size % 2L <= stream.Length) "WAV chunk exceeds the file."
 
             match id with
             | "fmt " when size >= 16L ->
+                require (not hasFormat) "Duplicate WAV format."
+                hasFormat <- true
                 audioFormat <- reader.ReadUInt16()
                 channels <- reader.ReadUInt16()
                 sampleRate <- reader.ReadUInt32()
-                reader.ReadUInt32() |> ignore
-                reader.ReadUInt16() |> ignore
+                byteRate <- reader.ReadUInt32()
+                blockAlign <- reader.ReadUInt16()
                 bits <- reader.ReadUInt16()
-            | "data" -> pcm <- Some(reader.ReadBytes(int size))
+                if audioFormat = 65534us then
+                    require (size >= 40L && reader.ReadUInt16() = 22us && reader.ReadUInt16() = bits) "Unsupported extensible WAV."
+                    let mask = reader.ReadUInt32()
+                    require (mask = 0u || mask = (if channels = 1us then 4u else 3u)) "Unsupported channel layout."
+                    let subtype = reader.ReadUInt32()
+                    require (subtype = 1u || subtype = 3u) "Unsupported WAV subtype."
+                    require (reader.ReadBytes(12) = [|0uy;0uy;16uy;0uy;128uy;0uy;0uy;170uy;0uy;56uy;155uy;113uy|]) "Invalid WAV subtype GUID."
+                    audioFormat <- uint16 subtype
+            | "data" ->
+                require pcm.IsNone "Duplicate WAV data."
+                pcm <- Some(reader.ReadBytes(int size))
             | _ -> ()
 
             stream.Position <- start + size
             if size % 2L = 1L && stream.Position < stream.Length then
                 stream.Position <- stream.Position + 1L
 
-        require (audioFormat = 1us && channels = 1us && bits = 16us && sampleRate > 0u) "Cube input must be mono PCM16 WAV."
+        require (stream.Position = stream.Length) "Trailing partial WAV chunk."
+        require (hasFormat && ((audioFormat = 1us && bits = 16us) || (audioFormat = 3us && bits = 32us))
+                 && (channels = 1us || channels = 2us) && sampleRate >= 8000u && sampleRate <= 192000u
+                 && blockAlign = channels * (bits / 8us) && byteRate = sampleRate * uint32 blockAlign)
+                "Cube input must be mono/stereo PCM16 or float32 WAV."
 
         match pcm with
         | None -> invalidArg "path" "WAV has no data chunk."
         | Some bytes when bytes.Length = 0 -> invalidArg "path" "WAV data chunk is empty."
         | Some bytes ->
-            let samples = Array.zeroCreate<float> (bytes.Length / 2)
+            require (bytes.Length % int blockAlign = 0) "WAV data is not frame-aligned."
+            let frameCount = bytes.Length / int blockAlign
+            require (int64 frameCount <= int64 sampleRate * maxSeconds) "Analysis input exceeds its duration bound."
+            let samples = Array.zeroCreate<float> frameCount
+            let sums = Array.zeroCreate<float> (int channels)
+            let energies = Array.zeroCreate<float> (int channels)
+            let peaks = Array.zeroCreate<float> (int channels)
+            let clipped = Array.zeroCreate<int> (int channels)
             for i = 0 to samples.Length - 1 do
-                samples[i] <- float (BitConverter.ToInt16(bytes, i * 2)) / 32768.0
-            samples, int sampleRate
+                for channel = 0 to int channels - 1 do
+                    let offset = i * int blockAlign + channel * int (bits / 8us)
+                    let value = if audioFormat = 1us then float (BitConverter.ToInt16(bytes, offset)) / 32768.0 else float (BitConverter.ToSingle(bytes, offset))
+                    require (Double.IsFinite value) "PCM contains non-finite samples."
+                    samples[i] <- samples[i] + value / float channels
+                    sums[channel] <- sums[channel] + value
+                    energies[channel] <- energies[channel] + value * value
+                    peaks[channel] <- max peaks[channel] (abs value)
+                    if abs value >= 1.0 then clipped[channel] <- clipped[channel] + 1
+            let metrics = JsonArray()
+            for channel = 0 to int channels - 1 do
+                let metric = JsonObject()
+                metric["channel"] <- JsonValue.Create channel
+                metric["rms"] <- JsonValue.Create(Math.Sqrt(energies[channel] / float samples.Length))
+                metric["sample_peak"] <- JsonValue.Create peaks[channel]
+                metric["dc"] <- JsonValue.Create(sums[channel] / float samples.Length)
+                metric["full_scale_fraction"] <- JsonValue.Create(float clipped[channel] / float samples.Length)
+                metrics.Add metric
+            samples, int sampleRate, metrics
 
     let private reflectSample (source: float[]) index =
-        let mutable i = index
-        while i < 0 || i >= source.Length do
-            if i < 0 then i <- -i
-            elif i >= source.Length then i <- (source.Length - 1) * 2 - i
-        source[i]
+        if source.Length = 1 then source[0]
+        else
+            let period = 2 * (source.Length - 1)
+            let i = ((index % period) + period) % period
+            source[if i < source.Length then i else period - i]
 
     let private fft (values: Complex[]) =
         let n = values.Length
@@ -152,19 +199,21 @@ module CubeLayers =
     let private stft (audio: float[]) =
         let pad = nFft / 2
         let paddedLength = audio.Length + pad * 2
-        let frameCount = max 1 (1 + (paddedLength - nFft) / hop)
+        let baseFrames = max 1 (1 + (paddedLength - nFft) / hop)
+        let actualHop = hop * max 1 ((baseFrames + 5999) / 6000)
+        let frameCount = max 1 (1 + (paddedLength - nFft) / actualHop)
         let frequencies = nFft / 2 + 1
         let magnitude = Array2D.zeroCreate<float> frequencies frameCount
         for frame = 0 to frameCount - 1 do
             let windowed = Array.zeroCreate<Complex> nFft
             for sample = 0 to nFft - 1 do
-                let position = frame * hop + sample - pad
+                let position = frame * actualHop + sample - pad
                 let window = 0.5 - 0.5 * Math.Cos(2.0 * Math.PI * float sample / float (nFft - 1))
                 windowed[sample] <- Complex(reflectSample (audio: float[]) position * window, 0.0)
             fft windowed
             for frequency = 0 to frequencies - 1 do
                 magnitude[frequency, frame] <- windowed[frequency].Magnitude
-        magnitude
+        magnitude, actualHop
 
     let private percentile (values: float[]) quantile =
         require (values.Length > 0) "Cannot compute a percentile from empty values."
@@ -317,7 +366,7 @@ module CubeLayers =
                     let value = JsonObject()
                     value["t"] <- JsonValue.Create(Math.Round(float point.X / float (max 1 (nt - 1)), 5, MidpointRounding.ToEven))
                     value["f"] <- JsonValue.Create(Math.Round(float point.Y / float (max 1 (nf - 1)), 5, MidpointRounding.ToEven))
-                    value["z"] <- JsonValue.Create(float layer / 3.0)
+                    value["z"] <- JsonValue.Create(Math.Round(point.Z / 3.85, 5, MidpointRounding.ToEven))
                     value["v"] <- JsonValue.Create(Math.Round(normalized, 5, MidpointRounding.ToEven))
                     value["layer"] <- JsonValue.Create layerNames[layer]
                     result.Add value
@@ -379,23 +428,7 @@ module CubeLayers =
         let checksum = Array.concat [| named; payload |]
         writeBigEndian stream (crc32 checksum)
 
-    let private writePng path (points: CubePoint[]) title =
-        let width, height = 1200, 900
-        let pixels = Array.zeroCreate<byte> (width * height * 3)
-        Array.fill pixels 0  pixels.Length 255uy
-        let stride = max 1 ((points.Length + 79999) / 80000)
-        let maxX = if points.Length = 0 then 1 else max 1 (points |> Array.maxBy (fun point -> point.X)).X
-        let maxY = if points.Length = 0 then 1 else max 1 (points |> Array.maxBy (fun point -> point.Y)).Y
-        for index in 0..stride..points.Length - 1 do
-            let point = points[index]
-            let x = int (40.0 + float point.X / float maxX * float (width - 80))
-            let y = int (float (height - 40) - float point.Y / float maxY * float (height - 80))
-            if x >= 0 && x < width && y >= 0 && y < height then
-                let r, g, b = layerColors[point.Layer]
-                let offset = (y * width + x) * 3
-                pixels[offset] <- byte (r * 255.0)
-                pixels[offset + 1] <- byte (g * 255.0)
-                pixels[offset + 2] <- byte (b * 255.0)
+    let private savePng path width height (pixels: byte[]) =
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath path)) |> ignore
         use output = File.Create path
         output.Write([| 137uy; 80uy; 78uy; 71uy; 13uy; 10uy; 26uy; 10uy |], 0, 8)
@@ -420,15 +453,130 @@ module CubeLayers =
         writeChunk output "IDAT" (compressed.ToArray())
         writeChunk output "IEND" [||]
 
-    [<CompiledName("Generate")>]
-    let generate (input: string) (output: string) (png: string) (stem: string) (engine: string) (label: string) (repoRoot: string) =
+    let private glyphs =
+        [| 'A',"0E11111F111111"; 'B',"1E11111E11111E"; 'C',"0E11101010110E"; 'D',"1E11111111111E"
+           'E',"1F10101E10101F"; 'F',"1F10101E101010"; 'G',"0E11101711110F"; 'H',"1111111F111111"
+           'I',"0E04040404040E"; 'J',"0702020212120C"; 'K',"11121418141211"; 'L',"1010101010101F"
+           'M',"111B1515111111"; 'N',"11191513111111"; 'O',"0E11111111110E"; 'P',"1E11111E101010"
+           'Q',"0E11111115120D"; 'R',"1E11111E141211"; 'S',"0F10100E01011E"; 'T',"1F040404040404"
+           'U',"1111111111110E"; 'V',"11111111110A04"; 'W',"11111115151B11"; 'X',"11110A040A1111"
+           'Y',"11110A04040404"; 'Z',"1F01020408101F"; '0',"0E11131519110E"; '1',"040C040404040E"
+           '2',"0E11010204081F"; '3',"1E01010E01011E"; '4',"02060A121F0202"; '5',"1F10101E01011E"
+           '6',"0E10101E11110E"; '7',"1F010204080808"; '8',"0E11110E11110E"; '9',"0E11110F01010E"
+           '-',"0000001F000000"; '.',"00000000000C0C"; '+',"0004041F040400"; ':',"000C0C000C0C00"
+           '(',"02040808080402"; ')',"08040202020408"; '/',"01010204081010"; '_',"0000000000001F"
+           '=',"00001F001F0000" |]
+        |> Array.map (fun (letter, rows) -> letter, Convert.FromHexString rows)
+        |> Map.ofArray
+
+    let private canvas width height =
+        let pixels = Array.create (width * height * 3) 250uy
+        let pixel x y (r, g, b) =
+            if x >= 0 && y >= 0 && x < width && y < height then
+                let offset = (y * width + x) * 3
+                pixels[offset] <- byte r
+                pixels[offset + 1] <- byte g
+                pixels[offset + 2] <- byte b
+        let line (x1, y1) (x2, y2) color =
+            let steps = max 1 (max (abs (x2 - x1)) (abs (y2 - y1)))
+            for step = 0 to steps do
+                pixel (x1 + (x2 - x1) * step / steps) (y1 + (y2 - y1) * step / steps) color
+        let text x y scale (value: string) color =
+            for index = 0 to value.Length - 1 do
+                match Map.tryFind (Char.ToUpperInvariant value[index]) glyphs with
+                | None -> ()
+                | Some rows ->
+                    for row = 0 to 6 do
+                        for column = 0 to 4 do
+                            if (rows[row] &&& (1uy <<< (4 - column))) <> 0uy then
+                                for dy = 0 to scale - 1 do
+                                    for dx = 0 to scale - 1 do
+                                        pixel (x + (index * 6 + column) * scale + dx) (y + row * scale + dy) color
+        pixels, pixel, line, text
+
+    let private writePng path (points: CubePoint[]) nf nt (duration: float) (maxFrequency: float) title =
+        let pixels, pixel, line, text = canvas 1200 900
+        let project t f z = int (140.0 + t * 760.0 + f * 170.0), int (760.0 - f * 240.0 - z * 410.0)
+        let ink, grid = (35, 45, 60), (205, 213, 225)
+        for layer = 0 to 3 do
+            let z = float layer / 3.85
+            for step = 0 to 4 do
+                let value = float step / 4.0
+                line (project value 0.0 z) (project value 1.0 z) grid
+                line (project 0.0 value z) (project 1.0 value z) grid
+        line (project 0.0 0.0 0.0) (project 1.0 0.0 0.0) ink
+        line (project 0.0 0.0 0.0) (project 0.0 1.0 0.0) ink
+        line (project 0.0 0.0 0.0) (project 0.0 0.0 1.0) ink
+        let ordered = points |> Array.sortBy (fun point -> -point.Y, point.Z, point.X)
+        let stride = max 1 ((ordered.Length + 79999) / 80000)
+        for index in 0..stride..ordered.Length - 1 do
+            let point = ordered[index]
+            let x, y = project (float point.X / float (max 1 (nt - 1))) (float point.Y / float (max 1 (nf - 1))) (point.Z / 3.85)
+            let r, g, b = layerColors[point.Layer]
+            let intensity = 0.45 + 0.55 * point.Value
+            let color = int (r * intensity * 255.0), int (g * intensity * 255.0), int (b * intensity * 255.0)
+            pixel x y color
+            pixel (x + 1) y color
+        text 50 25 3 "BITCUBE 3D" ink
+        text 50 60 2 (title |> Seq.truncate 60 |> Seq.toArray |> String) ink
+        text 410 825 2 "TIME (S)" ink
+        for y = 475 to 507 do line (150, y) (337, y) (250, 250, 250)
+        for y = 510 to 535 do line (238, y) (316, y) (250, 250, 250)
+        text 160 485 2 "FREQUENCY (HZ)" ink
+        text 25 305 2 "LAYER + VALUE" ink
+        for step = 0 to 4 do
+            let t = float step / 4.0
+            let x, y = project t 0.0 0.0
+            text (x - 10) (y + 15) 2 ((duration * t).ToString("0.0", Globalization.CultureInfo.InvariantCulture)) ink
+        text 245 515 2 (maxFrequency.ToString("0", Globalization.CultureInfo.InvariantCulture)) ink
+        for y = 90 to 225 do line (915, y) (1190, y) (250, 250, 250)
+        for layer = 0 to 3 do
+            let r, g, b = layerColors[layer]
+            let color = int (r * 255.0), int (g * 255.0), int (b * 255.0)
+            for y = 0 to 11 do
+                line (925, 100 + layer * 30 + y) (945, 100 + layer * 30 + y) color
+            text 955 (100 + layer * 30) 2 layerNames[layer] ink
+            let _, y = project 0.0 0.0 (float layer / 3.85)
+            text 115 (y - 7) 2 (string layer) ink
+        text 50 870 1 "HEURISTIC METRICS - NOT SPEAKER IDENTITY OR A LOUDNESS CERTIFICATE" ink
+        savePng path 1200 900 pixels
+
+    let private writeSpectrogram path (magnitude: float[,]) sampleRate duration =
+        let pixels, pixel, line, text = canvas 1200 760
+        let ink = 35, 45, 60
+        let color value =
+            let v = clamp01 value
+            int (255.0 * clamp01 (3.0 * v - 1.0)), int (230.0 * Math.Sin(Math.PI * v / 2.0)), int (220.0 * (1.0 - v))
+        let nf, nt = Array2D.length1 magnitude, Array2D.length2 magnitude
+        for x = 0 to 939 do
+            let t = min (nt - 1) (x * nt / 940)
+            for y = 0 to 539 do
+                let f = min (nf - 1) ((539 - y) * nf / 540)
+                let scale = (if f = 0 || f = nf - 1 then 2.0 else 4.0) / float (nFft - 1)
+                let db = 20.0 * Math.Log10(max 1e-6 (magnitude[f, t] * scale))
+                pixel (100 + x) (100 + y) (color ((db + 100.0) / 100.0))
+        for y = 0 to 539 do
+            line (1070, 100 + y) (1090, 100 + y) (color (1.0 - float y / 539.0))
+        text 45 25 3 "SPECTROGRAM" ink
+        text 45 65 2 "HANN WINDOW - ONE-SIDED AMPLITUDE DBFS" ink
+        text 420 705 2 "TIME (S)" ink
+        text 10 70 2 "HZ" ink
+        for step = 0 to 4 do
+            text (85 + step * 235) 660 2 ((duration * float step / 4.0).ToString("0.0", Globalization.CultureInfo.InvariantCulture)) ink
+            text 5 (630 - step * 135) 2 (string (sampleRate * step / 8)) ink
+        for step = 0 to 5 do
+            text 1100 (100 + step * 106) 2 (string (-20 * step)) ink
+        text 100 737 1 "ANALYSIS DOWNMIX ONLY - ORIGINAL AUDIO CHANNELS ARE UNCHANGED" ink
+        savePng path 1200 760 pixels
+
+    let private generateCore (input: string) (output: string) (png: string) (spectrogram: string) (stem: string) (engine: string) (label: string) (repoRoot: string) =
         let inputPath = Path.GetFullPath(input)
         let outputPath = Path.GetFullPath(output)
         let root = Path.GetFullPath(repoRoot)
         require (File.Exists inputPath) "Input WAV does not exist."
-        let samples, sampleRate = readWav inputPath
-        require (samples.Length > 0) "library_cube expects non-empty mono audio."
-        let magnitude = stft samples
+        let samples, sampleRate, channelMetrics = readWav inputPath (if String.IsNullOrWhiteSpace spectrogram then 600L else 60L)
+        require (samples.Length > 0) "library_cube expects non-empty audio."
+        let magnitude, actualHop = stft samples
         let full = computeLayers magnitude sampleRate
         let sampled, sf, st = downsample full
         let points = makePoints sampled
@@ -436,19 +584,19 @@ module CubeLayers =
         let previewPoints, counts = preview points nf nt
         let pointArray = JsonArray()
         for point in previewPoints do pointArray.Add point
-        let binSeconds = float (st * hop) / float sampleRate
+        let binSeconds = float (st * actualHop) / float sampleRate
         let hash = sourceHash inputPath
         let displayLabel = if String.IsNullOrWhiteSpace label then stem else label
         let doc = JsonObject()
-        doc["source_wav"] <- JsonValue.Create($"artifacts/library/{stem}.wav")
+        doc["source_wav"] <- JsonValue.Create(Path.GetFileName inputPath)
         doc["source_sha256"] <- JsonValue.Create(hash)
         doc["engine"] <- JsonValue.Create(engine)
         doc["title"] <- JsonValue.Create($"Inverse-HDR cube — {displayLabel}")
-        doc["cube_revision"] <- JsonValue.Create revision
+        doc["cube_revision"] <- JsonValue.Create(if String.IsNullOrWhiteSpace spectrogram then revision else 4)
         doc["sample_rate"] <- JsonValue.Create sampleRate
         doc["duration_s"] <- JsonValue.Create(float samples.Length / float sampleRate)
         doc["n_fft"] <- JsonValue.Create nFft
-        doc["hop"] <- JsonValue.Create hop
+        doc["hop"] <- JsonValue.Create actualHop
         doc["inv_hdr"] <- JsonValue.Create(invHdr samples)
         doc["layer_score"] <- JsonValue.Create(layerScore full)
         doc["n_points"] <- JsonValue.Create previewPoints.Length
@@ -472,8 +620,9 @@ module CubeLayers =
         doc["axes"] <- axes
         doc["layers"] <- layerStats full sampled
         doc["points_preview"] <- pointArray
-        doc["pngUrl"] <- JsonValue.Create($"/library/{stem}_cube3d.png")
-        doc["wavUrl"] <- JsonValue.Create($"/library/{stem}.wav")
+        if String.IsNullOrWhiteSpace spectrogram then
+            doc["pngUrl"] <- JsonValue.Create($"/library/{stem}_cube3d.png")
+            doc["wavUrl"] <- JsonValue.Create($"/library/{stem}.wav")
         let legend = JsonObject()
         legend["signal"] <- JsonValue.Create "blue"
         legend["tonality"] <- JsonValue.Create "green"
@@ -482,7 +631,8 @@ module CubeLayers =
         doc["legend"] <- legend
         let parameters = JsonObject()
         parameters["n_fft"] <- JsonValue.Create nFft
-        parameters["hop"] <- JsonValue.Create hop
+        parameters["hop"] <- JsonValue.Create actualHop
+        parameters["max_stft_frames"] <- JsonValue.Create 6000
         parameters["max_f"] <- JsonValue.Create maxF
         parameters["max_t"] <- JsonValue.Create maxT
         parameters["thresh"] <- JsonValue.Create threshold
@@ -490,9 +640,33 @@ module CubeLayers =
         let provenance = JsonObject()
         provenance["generator"] <- JsonValue.Create generatorPath
         provenance["generator_sha256"] <- JsonValue.Create(generatorHash root)
-        provenance["layer_method"] <- JsonValue.Create layerMethod
+        provenance["layer_method"] <- JsonValue.Create(if String.IsNullOrWhiteSpace spectrogram then layerMethod else "native_bitcube_r4")
         provenance["params"] <- parameters
         doc["provenance"] <- provenance
+        let analysis = JsonObject()
+        analysis["channels"] <- channelMetrics
+        analysis["downmix"] <- JsonValue.Create(if channelMetrics.Count = 1 then "none" else "arithmetic mean for analysis only; source unchanged")
+        let monoRms = Math.Sqrt(samples |> Array.averageBy (fun value -> value * value))
+        let maxPeak = channelMetrics |> Seq.map (fun node -> node["sample_peak"].GetValue<float>()) |> Seq.max
+        let channelRms = Math.Sqrt(channelMetrics |> Seq.averageBy (fun node -> let rms = node["rms"].GetValue<float>() in rms * rms))
+        analysis["downmix_rms"] <- JsonValue.Create monoRms
+        analysis["downmix_cancellation_defined"] <- JsonValue.Create(channelRms > 1e-12)
+        analysis["downmix_cancellation_db"] <- JsonValue.Create(if channelRms <= 1e-12 then 0.0 else 20.0 * Math.Log10(max 1e-6 (monoRms / channelRms)))
+        let recommended = if maxPeak <= 0.5011872336 then 0 else int (Math.Floor(20000.0 * Math.Log10(0.5011872336 / maxPeak)))
+        analysis["recommended_gain_mdb"] <- JsonValue.Create(max -60000 recommended)
+        analysis["recommendation_basis"] <- JsonValue.Create "Attenuation-only starting point for -6 dBFS sample headroom; not LUFS/true peak, speaker identity, or a quality guarantee."
+        let activity = JsonArray()
+        let step = max 1 (sampleRate / 10)
+        for offset in 0..step..samples.Length - 1 do
+            let count = min step (samples.Length - offset)
+            let mutable energy = 0.0
+            for index = offset to offset + count - 1 do energy <- energy + samples[index] * samples[index]
+            let item = JsonObject()
+            item["start_ms"] <- JsonValue.Create(int64 offset * 1000L / int64 sampleRate)
+            item["rms"] <- JsonValue.Create(Math.Sqrt(energy / float count))
+            activity.Add item
+        analysis["activity_100ms"] <- activity
+        doc["analysis"] <- analysis
 
         Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
         File.WriteAllText(outputPath, doc.ToJsonString(), UTF8Encoding(false))
@@ -501,12 +675,27 @@ module CubeLayers =
                 None
             else
                 let path = Path.GetFullPath png
-                writePng path points $"Inverse-HDR cube — {displayLabel}"
+                writePng path points nf nt (float samples.Length / float sampleRate) (float (nf * sf - 1) * float sampleRate / float nFft) displayLabel
+                Some path
+        let spectrogramPath =
+            if String.IsNullOrWhiteSpace spectrogram then None
+            else
+                let path = Path.GetFullPath spectrogram
+                writeSpectrogram path magnitude sampleRate (float samples.Length / float sampleRate)
                 Some path
         { OutputPath = outputPath
           PngPath = pngPath
+          SpectrogramPath = spectrogramPath
           SourceSha256 = hash
           PointCount = previewPoints.Length
           CubeShape = nf, nt
           DurationSeconds = float samples.Length / float sampleRate
           InvHdr = invHdr samples }
+
+    [<CompiledName("Generate")>]
+    let generate input output png stem engine label repoRoot =
+        generateCore input output png "" stem engine label repoRoot
+
+    [<CompiledName("Analyze")>]
+    let analyze input output png spectrogram stem repoRoot =
+        generateCore input output png spectrogram stem "native_analysis" stem repoRoot

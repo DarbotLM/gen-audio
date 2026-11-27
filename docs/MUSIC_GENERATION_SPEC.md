@@ -660,6 +660,42 @@ $project = @{
 
 It returns a `mix` asset plus `loudness: {integratedLufsMilli, truePeakMdbtp, lraMilli, gainAppliedMdb}`.
 
+#### Native analysis companion: `wingen.bitcube`
+
+Implemented alongside the mixer, without a second execution owner:
+
+```powershell
+$source = @{ path = 'evaluation/mix.wav'; sha256 = '<lowercase SHA256>' }
+.\scripts\mcp-call.ps1 -Tool wingen.bitcube -TimeoutSec 150 -ArgsJson (
+    @{ source = $source; output = 'mix-analysis.json'; startMs = 0; durationMs = 60000 } |
+    ConvertTo-Json -Depth 8 -Compress)
+```
+
+Sources use the same operator-root/issued-file/UID authorization as mixing.
+`output` is an unused JSON basename (at most 100 characters); companion files
+are `<stem>-cube.png` and `<stem>-spectrogram.png`. Both PNGs and the point JSON
+are hash-checked and published together. Omitting `durationMs` analyzes the
+remaining source only if it fits 60 seconds; longer inputs require an explicit
+window. Two concurrent analyses, a 120-second deadline and the shared encoded/
+decoded input caps apply.
+
+The existing native F# `CubeLayers` implementation produces the analysis:
+the PNG projection actually uses Z (layer plus strength), labels all axes and
+four layers, and the separate spectrogram plots Hann-windowed, one-sided FFT
+amplitude. JSON preserves source/decoded-window SHA256, channel metadata,
+generator identity, time/frequency/layer coordinates and measured channel
+RMS/peak/DC/full-scale fraction. STFT allocation is capped at 6000 frames;
+the actual hop is recorded. At 24 kHz analysis rate, the Nyquist limit is 12 kHz.
+Stereo is averaged only for metrics, with cancellation measured and the original
+audio left untouched. `recommended_gain_mdb` is an attenuation-only starting
+point for −6 dBFS **sample** headroom and can be applied to a mixer layer; it
+does not claim loudness normalization or true-peak limiting. Spectral tonality,
+confidence and quality are heuristics, never inferred speaker identity.
+
+Per-track and final-mix analyses use the same tool. No video, hosted service,
+model weights or Python wrapper is involved. This does not establish cross-studio
+or model-evaluation parity.
+
 #### 5.3.11 `audio_encode` (Level 2)
 
 `{uid, codec, sampleRate?, channels?, bitDepth?, opusBitrateKbps?: 32..256 (default 128 stereo / 64 mono)}` → a new asset of the same kind with `src: [uid]` (re-encode = new uid; existing rule).

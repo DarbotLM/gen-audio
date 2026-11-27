@@ -530,7 +530,7 @@ GEN_AUDIO_MODEL_DIR"}` and no audio asset is minted. `musicgen` without the
 non-commercial opt-in returns `license_blocked`. These failures are not a
 `synthesizedSpeech` claim.
 
-#### 5.3.10 `wingen.audio_mix` (implemented bounded WAV mode); full mixer remains Level 1
+#### 5.3.10 `wingen.audio_mix` (encoded-audio inputs → float-WAV mixes); full mixer remains Level 1
 
 The public validation-only route has been replaced, not aliased.
 `wingen.audio_mix {project: <MixProject>, output: "name.wav"}` performs
@@ -540,12 +540,17 @@ process runner. It does not invoke Python or the speech `improve()` chain.
 
 **Supported mode**
 
-- 1..16 mono/stereo source layers. Existing `audio_clip` UID callers remain
-  supported. WAV/MP3/FLAC/OGG/Opus/M4A/AAC files are decoded using the installed
-  native FFmpeg/FFprobe, with explicit demuxers and local-only protocols;
-  MOV external data references are disabled. Input rates 8..192 kHz resample
-  to the project's 16/24/44.1/48 kHz using SWR. Channels are preserved during
-  decoding. Output remains stereo IEEE float32 WAV, not relabeled MP3/FLAC.
+The earlier PCM16-only, same-rate input restriction is retired. **Resampling
+is supported; encoded export is not.** The callable contract is:
+
+| Boundary | Supported contract |
+|---|---|
+| Catalog source | `source:"ga:audio_clip:<full uid>"`; the registered PCM16/float32 WAV must match its envelope's hash, byte count, rate, channels and duration. Existing UID callers remain supported. |
+| Operator-authorized file | `source:{"path":"relative/track.mp3","sha256":"<64 lowercase hex>"}` under the listener's absolute `GEN_AUDIO_INPUT_ROOT`. Supported extensions: `.wav`, `.mp3`, `.flac`, `.ogg`, `.opus`, `.m4a`, `.aac`, subject to installed native decoder support. |
+| Listener-issued file | `source:{"issued":"mix.wav","sha256":"<64 lowercase hex>"}`; the same listener must have issued that scratch file. A file from an earlier listener instead needs explicit operator-root authorization. |
+| Decode/resample | 1..16 mono/stereo layers; FFmpeg/FFprobe decode the selected audio stream using explicit demuxers and local-only protocols. MOV external data references are disabled. Input rates 8..192 kHz resample through SWR to project rates 16/24/44.1/48 kHz. Decoding preserves channel count. |
+| Output | A verified **stereo IEEE float32 WAV** plus production provenance JSON. Input MP3/FLAC support does not imply MP3/FLAC export. |
+
 - Exact round-half-up sample trims and offsets; layers are cut/padded to the
   project length. Linear fades apply to each trimmed, timeline-clipped audible
   span, then gain, mono constant-power pan (−3.01 dB center), or stereo balance.
@@ -610,8 +615,9 @@ An optional `project.sequence` has 1..64 ordered segments:
   remain zero because sequencing replaces them.
 - Without `at_ms`, placement follows the preceding segment's end, plus
   `gap_ms` (0..30000, default zero) or minus an explicit `overlap_ms`
-  (0..2500). `at_ms` sets absolute placement and cannot combine with either
-  field. A voice intersection requires `overlap_ms` or `allow_overlap:true`;
+  (0..2500, shorter than the segment). Gap and overlap are mutually exclusive.
+  `at_ms` sets absolute placement and cannot combine with either field.
+  A voice intersection requires `overlap_ms` or `allow_overlap:true`;
   no voice identity is guessed. Music placements may overlap voice.
 - `source_start_ms` slips into the source without changing output placement.
   Durations are exact after resampling; unavailable source spans or project
@@ -619,6 +625,8 @@ An optional `project.sequence` has 1..64 ordered segments:
   Segment gain adds to layer gain; segment fades override layer fades.
 - `sections:[{"id":"riffs","start_ms":45000,"end_ms":60000,
   "content":"music_only"}]` defines non-overlapping declared windows.
+  Sections require a sequence and unique ids, with positive ranges wholly
+  inside the project.
   `music_only` rejects intersecting `role:"voice"` segments; `speech_only`
   rejects other roles; `mixed` permits both. These are authored-role checks,
   not acoustic proof of speech/music identity.
@@ -645,7 +653,8 @@ $project = @{
 .\scripts\mcp-call.ps1 -Tool wingen.audio_mix -TimeoutSec 150 -ArgsJson (@{ project = $project; output = 'mix.wav' } | ConvertTo-Json -Depth 12 -Compress)
 ```
 
-- **Still proposed:** `mix_render`:
+- **Future full-mixer contract, not a registered tool or an alias for
+  `wingen.audio_mix`:** the original `mix_render` proposal remains below.
 
 ```json
 {"type":"object","additionalProperties":false,"required":["project"],
@@ -658,7 +667,9 @@ $project = @{
   "waitMs":{"$ref":"#/$defs/waitMs"}}}
 ```
 
-It returns a `mix` asset plus `loudness: {integratedLufsMilli, truePeakMdbtp, lraMilli, gainAppliedMdb}`.
+That future contract would return a `mix` asset plus
+`loudness: {integratedLufsMilli, truePeakMdbtp, lraMilli, gainAppliedMdb}`.
+The implemented tool does not mint that asset or claim those measurements.
 
 #### Native analysis companion: `wingen.bitcube`
 
@@ -667,14 +678,17 @@ Implemented alongside the mixer, without a second execution owner:
 ```powershell
 $source = @{ path = 'evaluation/mix.wav'; sha256 = '<lowercase SHA256>' }
 .\scripts\mcp-call.ps1 -Tool wingen.bitcube -TimeoutSec 150 -ArgsJson (
-    @{ source = $source; output = 'mix-analysis.json'; startMs = 0; durationMs = 60000 } |
+    @{ source = $source; output = 'mix-bitcube.json'; startMs = 0; durationMs = 60000 } |
     ConvertTo-Json -Depth 8 -Compress)
 ```
 
 Sources use the same operator-root/issued-file/UID authorization as mixing.
 `output` is an unused JSON basename (at most 100 characters); companion files
 are `<stem>-cube.png` and `<stem>-spectrogram.png`. Both PNGs and the point JSON
-are hash-checked and published together. Omitting `durationMs` analyzes the
+are hash-checked and published together. The example therefore produces
+`mix-bitcube.json`, `mix-bitcube-cube.png`, and `mix-bitcube-spectrogram.png`,
+with matching titles and filename/hash references in the JSON.
+Omitting `durationMs` analyzes the
 remaining source only if it fits 60 seconds; longer inputs require an explicit
 window. Two concurrent analyses, a 120-second deadline and the shared encoded/
 decoded input caps apply.
